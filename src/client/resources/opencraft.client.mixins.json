@@ -1,9 +1,9 @@
 {
 	"required": true,
-	"package": "com.example.client.mixin",
+	"package": "com.swaydy.opencraft.client.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"ExampleClientMixin"
+		"OpenCraftClientMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

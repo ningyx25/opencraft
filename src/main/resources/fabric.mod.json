@@ -1,31 +1,31 @@
 {
 	"schemaVersion": 1,
-	"id": "modid",
+	"id": "opencraft",
 	"version": "${version}",
-	"name": "Example Mod",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"name": "OpenCraft",
+	"description": "An open-source Minecraft mod!",
 	"authors": [
-		"Me!"
+		"SwayDy"
 	],
 	"contact": {
 		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/FabricMC/fabric-example-mod"
+		"sources": "https://github.com/ningyx25/opencraft"
 	},
 	"license": "CC0-1.0",
-	"icon": "assets/modid/icon.png",
+	"icon": "assets/opencraft/icon.png",
 	"environment": "*",
 	"entrypoints": {
 		"main": [
-			"com.example.ExampleMod"
+			"com.swaydy.opencraft.OpenCraftMod"
 		],
 		"client": [
-			"com.example.client.ExampleModClient"
+			"com.swaydy.opencraft.client.OpenCraftModClient"
 		]
 	},
 	"mixins": [
-		"modid.mixins.json",
+		"opencraft.mixins.json",
 		{
-			"config": "modid.client.mixins.json",
+			"config": "opencraft.client.mixins.json",
 			"environment": "client"
 		}
 	],

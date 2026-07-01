@@ -18,7 +18,7 @@ loom {
 	splitEnvironmentSourceSets()
 
 	mods {
-		"modid" {
+		"opencraft" {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
