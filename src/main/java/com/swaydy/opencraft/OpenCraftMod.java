@@ -1,5 +1,6 @@
 package com.swaydy.opencraft;
 
+import com.swaydy.opencraft.block.ModBlocks;
 import net.fabricmc.api.ModInitializer;
 
 import net.minecraft.resources.Identifier;
@@ -22,6 +23,9 @@ public class OpenCraftMod implements ModInitializer {
 		// Proceed with mild caution.
 
 		LOGGER.info("Hello Fabric world!");
+
+		// 触发方块 / BlockItem 注册 + 加入创造标签页
+		ModBlocks.register();
 	}
 
 	public static Identifier id(String path) {

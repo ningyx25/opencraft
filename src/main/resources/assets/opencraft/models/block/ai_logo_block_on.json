@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:block/cube_all",
+  "textures": {
+    "all": "opencraft:block/ai_logo_block_on"
+  }
+}

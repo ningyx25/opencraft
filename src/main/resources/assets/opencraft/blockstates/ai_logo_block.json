@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "powered=false": {
+      "model": "opencraft:block/ai_logo_block"
+    },
+    "powered=true": {
+      "model": "opencraft:block/ai_logo_block_on"
+    }
+  }
+}
