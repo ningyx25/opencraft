@@ -20,6 +20,9 @@
 		],
 		"client": [
 			"com.swaydy.opencraft.client.OpenCraftModClient"
+		],
+		"fabric-gametest": [
+			"com.swaydy.opencraft.test.OpenCraftGameTests"
 		]
 	},
 	"mixins": [

@@ -17,11 +17,101 @@ repositories {
 loom {
 	splitEnvironmentSourceSets()
 
+	runs {
+		// 运行 Fabric Gametest（无头测试服务器，跑完自动退出）：
+		//   ./gradlew runGametestServer
+		gametestServer {
+			server()
+			vmArg '-Dfabric-api.gametest=true'
+			vmArg '-Dfabric-api.gametest.filter=opencraft:*'
+			vmArg '-Dfabric-api.gametest.report-file=build/gametest-results.xml'
+		}
+	}
+
 	mods {
 		"opencraft" {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
+	}
+}
+
+// ------------------------------------------------------------------
+// 项目级环境变量：读取项目根目录的 .env，注入到本项目的所有 run 任务
+// （runClient / runServer / runGametestServer）的 JavaExec 进程环境变量，
+// 仅在本项目生效。代码里的 OPEN_CRAFT_* 默认值会优先读这些环境变量。
+// ------------------------------------------------------------------
+def loadLocalEnv() {
+	File envFile = file('.env')
+	if (!envFile.exists()) {
+		return [:]
+	}
+	def envMap = [:]
+	envFile.readLines().each { line ->
+		def trimmed = line.trim()
+		if (trimmed.isEmpty() || trimmed.startsWith('#') || !trimmed.contains('=')) {
+			return
+		}
+		def eq = trimmed.indexOf('=')
+		def key = trimmed.substring(0, eq).trim()
+		def value = trimmed.substring(eq + 1).trim()
+		// 去掉成对引号（支持 key="value with spaces"）
+		if (value.length() >= 2 && value.startsWith('"') && value.endsWith('"')) {
+			value = value.substring(1, value.length() - 1)
+		}
+		if (!key.isEmpty()) {
+			envMap[key] = value
+		}
+	}
+	return envMap
+}
+def localEnv = loadLocalEnv()
+
+// 把 .env 变量注入到所有 JavaExec 派生的 run 任务（runClient/runServer/runGametestServer）
+tasks.withType(JavaExec).configureEach {
+	it.environment(localEnv)
+}
+
+// ------------------------------------------------------------------
+// 编译期烘焙默认值：把 .env 的值以 XOR 混淆字节（key "opencraft"）写入
+// build/generated/resources/opencraft/defaults.dat，随 jar 发布。
+// 这样 jar 放进游戏后无需任何环境变量也能用上 .env 的默认配置，
+// 且 jar 内不出现明文（与 AiBlockConfig.decodeXor 对应）。
+// ------------------------------------------------------------------
+def xorEncode(String plain, String key) {
+	byte[] plainBytes = plain.getBytes("UTF-8")
+	byte[] keyBytes = key.getBytes("UTF-8")
+	StringBuilder sb = new StringBuilder()
+	for (int i = 0; i < plainBytes.length; i++) {
+		sb.append(String.format("%02x", plainBytes[i] ^ keyBytes[i % keyBytes.length]))
+	}
+	return sb.toString()
+}
+
+tasks.register('generateDefaultsResource') {
+	def outputDir = layout.buildDirectory.dir('generated/resources/opencraft')
+	def env = loadLocalEnv()
+	inputs.property('env', env.toString())
+	outputs.dir(outputDir)
+	doLast {
+		def dir = outputDir.get().asFile
+		dir.mkdirs()
+		def key = 'opencraft'
+		def content = new StringBuilder()
+		// .env 缺失某个值时回退到代码内置默认（与 AiBlockConfig 的回退一致）
+		content.append('baseUrl=').append(xorEncode(env.OPEN_CRAFT_BASE_URL ?: 'https://api.openai.com/v1', key)).append('\n')
+		content.append('model=').append(xorEncode(env.OPEN_CRAFT_MODEL ?: 'gpt-4o', key)).append('\n')
+		content.append('apiKey=').append(xorEncode(env.OPEN_CRAFT_API_KEY ?: '', key)).append('\n')
+		new File(dir, 'defaults.dat').text = content.toString()
+	}
+}
+sourceSets.main.resources.srcDir(layout.buildDirectory.dir('generated/resources'))
+tasks.named('processResources') { dependsOn(tasks.named('generateDefaultsResource')) }
+// 生成物不算源码：sourcesJar 不打包 defaults.dat，但要声明依赖避免 Gradle 校验报错
+tasks.configureEach { task ->
+	if (task.name == 'sourcesJar') {
+		task.dependsOn(tasks.named('generateDefaultsResource'))
+		task.exclude('opencraft/defaults.dat')
 	}
 }
 
@@ -83,3 +173,4 @@ publishing {
 		// retrieving dependencies.
 	}
 }
+

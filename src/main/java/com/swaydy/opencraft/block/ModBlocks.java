@@ -26,7 +26,8 @@ public final class ModBlocks {
 					.mapColor(MapColor.COLOR_CYAN)
 					.strength(2.0F, 6.0F)                    // 硬度 / 抗爆
 					.sound(SoundType.METAL)
-					.requiresCorrectToolForDrops()
+					// 掉落由战利品表决定（无 match_tool 条件，徒手/任意工具都能挖到）；
+					// 1.21.11 中 requiresCorrectToolForDrops() 已无运行时作用，故不再调用
 					// 激活时自身发光（亮度 15），未激活时不发光
 					.lightLevel(state -> state.getValue(AiLogoBlock.POWERED) ? 15 : 0)
 					.setId(blockKey("ai_logo_block")))

@@ -5,6 +5,9 @@ build/
 out/
 classes/
 
+# 本地密钥/配置（勿提交）
+.env
+
 # eclipse
 
 *.launch

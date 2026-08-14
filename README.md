@@ -1,9 +1,87 @@
-# Example Mod
+# OpenCraft
 
-## Setup
+一个为 Minecraft 1.21.11 (Fabric) 开发的模组，目标是给游戏增添 **AI 游戏助手**，陪玩家一起冒险、建造、生存。
 
-For setup instructions, please see the [Fabric Documentation page](https://docs.fabricmc.net/develop/getting-started/creating-a-project#setting-up) related to the IDE that you are using.
+## 功能
+
+### AI 游戏助手（实体）
+- 通过 `/opencraft summon` 或右键 AI 徽标方块点“用本方块召唤助手”召唤。
+- 助手绑定它召唤时使用的 AI 徽标方块；绑定后跟随玩家移动；距离过远时自动瞬移到玩家身边；**跨维度跟随**——主人进入地狱/末地时，助手会自动传送过去。
+- 右键助手：绑定（第一次）/ 在“跟随”与“待命”模式间切换。
+- 助手不会自然消失，主人、跟随状态、绑定方块都会写入存档；新召唤时助手会主动打招呼。
+- **多助手共存**：每个 AI 徽标方块最多绑定一个助手，一个玩家可以同时拥有多个助手（各绑定不同的方块）。聊天时以 `[名字 (x,y,z)]`（名字可在配置界面设置，默认「小智」）区分是哪个助手在说话。
+
+### 大模型对话
+- `/opencraft ask <消息>` 让“最近的”AI 助手回答你（按绑定方块距离），回复以 `[名字 (x,y,z)]` 前缀广播到游戏聊天。
+- 每个助手（按绑定方块）拥有独立的对话记忆；`/opencraft reset [all]` 可清空最近/全部助手的记忆。
+- 助手会获得玩家的实时游戏状态（维度、坐标、时间、生命、饥饿、手持物品等）作为上下文，回答更贴合当前游戏。
+- AI 请求在独立线程池中异步执行，不阻塞服务端主线程。
+
+### 游戏内动作（AI 工具调用）
+当玩家明确提出请求时，助手可以在回复中附带动作标记，真正改变游戏（受 `ai.allowActions` 配置控制）：
+- `[ACTION: give minecraft:dirt 64]` —— 给玩家物品（数量 1~640）
+- `[ACTION: time day|night|noon|sunset|midnight]` —— 设置时间
+- `[ACTION: heal]` / `[ACTION: feed]` —— 治疗 / 恢复饥饿
+- `[ACTION: xp 10]` —— 给予经验等级
+- `[ACTION: mode follow|stay]` —— 切换助手模式
+- `[ACTION: tp]` —— 让助手瞬移到身边（可跨维度）
+- `[ACTION: weather clear|rain|thunder]` —— 设置天气
+
+动作标记不会显示在聊天里，只保留助手的说明文字。
+
+### 指令
+| 指令 | 说明 |
+|---|---|
+| `/opencraft ask <消息...>` | 和“最近的”AI 助手聊天（按绑定方块距离） |
+| `/opencraft summon` | 召唤一个助手（自动绑定最近的未绑定方块） |
+| `/opencraft dismiss [all]` | 送走最近 / 全部助手 |
+| `/opencraft status` | 列出你的全部助手及各自配置状态 |
+| `/opencraft reset [all]` | 清空最近 / 全部助手的对话记忆 |
+| `/opencraft help` | 显示帮助 |
+
+### AI 徽标方块 —— 游戏内唯一的 AI 配置载体
+- **可获取**：有合成配方（4 铁锭 + 4 红石 + 1 玻璃），徒手/任意工具挖掘都会掉落自身（战利品表无工具条件）。
+- **普通右键**：打开游戏内配置编辑器，编辑本方块保存的全部 AI 配置（分 3 页 Tab）：
+  - 「接口与密钥」：AI 功能开关、接口地址、API Key、模型、语言；
+  - 「对话与动作」：助手名字、允许游戏内动作、温度、请求超时、对话记忆条数、系统提示词；
+  - 「伴侣行为」：跟随/停止/瞬移/最大距离、移动速度。
+  - 点“保存配置”立即生效。**只有管理员（op）可以保存**；非管理员只读。
+  - **默认配置**：接口地址、API Key、模型的默认值**在编译期从项目根目录 `.env` 烘焙进 jar**（以 XOR 混淆字节存储，jar 内无明文）：把 `OPEN_CRAFT_BASE_URL`、`OPEN_CRAFT_MODEL`、`OPEN_CRAFT_API_KEY` 写进 `.env` 再 `./gradlew build`，生成的 jar 放到任何环境（游戏启动器/服务器）都自带这些默认值。运行时优先级：JVM 参数（`-Dopencraft.*`）> 环境变量（`OPEN_CRAFT_*`）> jar 内烘焙值 > 代码内置回退（OpenAI 官方地址 `https://api.openai.com/v1` / `gpt-4o` / 混淆默认密钥）。助手名字默认「小智」——新放置的方块可直接用。
+  - **安全**：API Key 的任何部分都不会发送到客户端/显示在界面——只显示“已设置（已隐藏）/未设置”；更换密钥需勾选“更换 API Key”，输入框以圆点掩码显示，留空表示清除。
+  - **“用本方块召唤助手”**：把 AI 助手绑定到本方块（一个方块最多一个助手），助手运行时配置全部读取本方块保存的内容。
+- **激活状态自动管理**：有 AI 助手绑定本方块（被召唤）时方块亮起（亮度 15，切换为发光贴图）；助手被送走/消失后自动熄灭。潜行右键可查看当前状态说明。
+
+## 配置方式（纯游戏内，无外部文件）
+
+**AI 助手的配置只保存在游戏内的 AI 徽标方块实体里**（每个方块一份，随方块存档持久化），不再依赖任何外部配置文件：
+
+1. 放置 AI 徽标方块（合成：4 铁锭 + 4 红石 + 1 玻璃）；
+2. 右键方块 → 在配置编辑器里填好接口地址（任意 OpenAI 兼容的 Chat Completions 接口）、模型、API Key 等；
+3. 点“用本方块召唤助手”→ 助手绑定该方块，`/opencraft ask` 聊天、跟随距离等全部使用该方块的配置；
+4. 修改配置 → 点“保存配置”立即生效；换方块=换配置（每个方块独立）。
+
+**多助手共存**：每个 AI 徽标方块最多绑定一个助手；想同时拥有多个助手，就放置多个 AI 徽标方块并分别配置、分别召唤——它们会同时跟随你，`/opencraft ask` 由绑定方块离你最近的助手回答，聊天前缀 `[名字 (x,y,z)]` 可区分是谁在说话。破坏方块时，绑定它的助手（及其记忆）一起消失。
+
+## 构建与运行
+
+```bash
+./gradlew build        # 编译 + 打包
+./gradlew runClient    # 启动客户端
+./gradlew runServer    # 启动专用服务器
+```
+
+要求：JDK 21+。
+
+## 项目结构
+
+- `src/main/java/com/swaydy/opencraft/` —— 通用代码（服务端/客户端共用）
+  - `entity/` —— AI 助手实体与跟随 AI、实体注册
+  - `ai/` —— 大模型客户端与对话服务
+  - `command/` —— `/opencraft` 指令
+  - `config/` —— 配置文件
+  - `block/` —— AI 徽标方块
+- `src/client/java/com/swaydy/opencraft/client/` —— 客户端代码（渲染器注册）
 
 ## License
 
-This template is available under the CC0 license. Feel free to learn from it and incorporate it in your own projects.
+MIT（保留自模板的许可声明）。

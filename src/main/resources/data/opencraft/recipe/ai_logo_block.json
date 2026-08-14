@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "building",
+  "pattern": [
+    "IRI",
+    "RGR",
+    "IRI"
+  ],
+  "key": {
+    "I": "minecraft:iron_ingot",
+    "R": "minecraft:redstone",
+    "G": "minecraft:glass"
+  },
+  "result": {
+    "id": "opencraft:ai_logo_block",
+    "count": 1
+  }
+}
