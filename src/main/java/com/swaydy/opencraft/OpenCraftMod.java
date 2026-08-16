@@ -48,13 +48,16 @@ public class OpenCraftMod implements ModInitializer {
 		// AI 服务（对话历史、线程池、服务器生命周期）
 		AiCompanionService.init();
 
-		// AI 配置编辑器网络包：注册类型 + 保存/召唤接收器
+		// AI 配置编辑器网络包：注册类型 + 保存/召唤/送走接收器
 		PayloadTypeRegistry.playC2S().register(
 				AiConfigPayloads.AiConfigSavePayload.TYPE,
 				AiConfigPayloads.AiConfigSavePayload.STREAM_CODEC);
 		PayloadTypeRegistry.playC2S().register(
 				AiConfigPayloads.AiConfigSummonPayload.TYPE,
 				AiConfigPayloads.AiConfigSummonPayload.STREAM_CODEC);
+		PayloadTypeRegistry.playC2S().register(
+				AiConfigPayloads.AiConfigDismissPayload.TYPE,
+				AiConfigPayloads.AiConfigDismissPayload.STREAM_CODEC);
 		PayloadTypeRegistry.playS2C().register(
 				AiConfigPayloads.AiConfigDataPayload.TYPE,
 				AiConfigPayloads.AiConfigDataPayload.STREAM_CODEC);
@@ -70,6 +73,13 @@ public class OpenCraftMod implements ModInitializer {
 				(payload, context) -> {
 					ServerPlayer player = context.player();
 					context.server().execute(() -> AiConfigHandler.summonWithBlock(
+							player, payload.pos(), payload.dimension()));
+				});
+		ServerPlayNetworking.registerGlobalReceiver(
+				AiConfigPayloads.AiConfigDismissPayload.TYPE,
+				(payload, context) -> {
+					ServerPlayer player = context.player();
+					context.server().execute(() -> AiConfigHandler.dismissWithBlock(
 							player, payload.pos(), payload.dimension()));
 				});
 	}

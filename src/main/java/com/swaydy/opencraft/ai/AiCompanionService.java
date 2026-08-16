@@ -11,6 +11,7 @@ import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
@@ -47,6 +48,13 @@ public final class AiCompanionService {
 		t.setDaemon(true);
 		return t;
 	});
+
+	/**
+	 * 流式回复刷新到玩家 action bar 的最小间隔（毫秒）。
+	 * SSE 增量通常很小且很密集，按时间节流合并后再上屏，
+	 * 避免每个 token 都向玩家推送一次网络包。
+	 */
+	private static final long FLUSH_INTERVAL_MS = 150L;
 
 	/**
 	 * 对话历史，按“助手绑定的 AI 徽标方块”键控（每个方块至多一个助手，
@@ -92,7 +100,19 @@ public final class AiCompanionService {
 				return;
 			}
 		}
-		AiAssistantEntity assistant = target;
+		ask(player, target, question);
+	}
+
+	/**
+	 * 让玩家向【指定】助手提问（异步）——多助手同时存在时，用
+	 * /opencraft ask <名字> <消息> 精确指定和哪个助手对话；每个助手有独立记忆，
+	 * 回复会以该助手自己的名字广播到聊天。
+	 */
+	public static void ask(ServerPlayer player, AiAssistantEntity assistant, String question) {
+		if (assistant == null) {
+			player.sendSystemMessage(Component.translatable("command.opencraft.ask.no_assistant"));
+			return;
+		}
 		AiBlockConfig config = assistant.getConfig();
 		if (!config.isUsable()) {
 			player.sendSystemMessage(Component.translatable("command.opencraft.ask.no_config"));
@@ -120,12 +140,11 @@ public final class AiCompanionService {
 				messages,
 				config.timeoutSeconds);
 
-		// 提示玩家助手正在思考
+		// 提示玩家助手正在思考（流式回复会逐步覆盖这行提示）
 		player.displayClientMessage(Component.translatable("command.opencraft.ask.thinking"), true);
 
-		CompletableFuture.supplyAsync(() -> LlmClient.chat(request), EXECUTOR)
-				.thenAccept(response -> player.level().getServer()
-						.executeIfPossible(() -> handleResponse(player, assistant, response)));
+		// 流式回复：增量文本实时显示在玩家的 action bar，结束后广播完整回复
+		streamReply(player, assistant, request, historyKey);
 	}
 
 	/** 召唤（或找到）玩家最近的助手：自动绑定最近的、尚未被绑定的 AI 徽标方块。 */
@@ -231,17 +250,30 @@ public final class AiCompanionService {
 				Math.min(0.9, config.temperature),
 				messages,
 				config.timeoutSeconds);
-		CompletableFuture.supplyAsync(() -> LlmClient.chat(request), EXECUTOR)
-				.thenAccept(response -> player.level().getServer().executeIfPossible(() -> {
-					if (response.ok() && response.content() != null && !response.content().isBlank()) {
-						speakAsAssistant(level, assistant, AiActionParser.stripActions(response.content()));
-					}
-				}));
+		// 流式打招呼：增量显示在召唤者的 action bar，结束后以助手名义广播完整问候
+		// （historyKey 传 null：问候语不写入对话记忆）
+		streamReply(player, assistant, request, null);
 	}
 
 	/** 送走玩家“最近”的助手（按绑定方块距离）；没有可送走的则返回 false。 */
 	public static boolean dismissFor(ServerPlayer player) {
 		AiAssistantEntity assistant = ModEntities.findNearestAssistantFor(player);
+		if (assistant == null) {
+			return false;
+		}
+		dismissAssistant(assistant);
+		return true;
+	}
+
+	/**
+	 * 送走绑定到指定 AI 徽标方块的助手（配置界面“不召唤”按钮）：
+	 * 该方块没有绑定助手时返回 false（视为已是“未召唤”状态）。
+	 */
+	public static boolean dismissBoundTo(ServerLevel anyLevel, GlobalPos blockPos) {
+		if (anyLevel == null || blockPos == null) {
+			return false;
+		}
+		AiAssistantEntity assistant = ModEntities.findAssistantBoundTo(anyLevel, blockPos);
 		if (assistant == null) {
 			return false;
 		}
@@ -296,29 +328,99 @@ public final class AiCompanionService {
 	// 内部实现
 	// ------------------------------------------------------------------
 
-	/** 在服务端线程处理 LLM 响应。 */
-	private static void handleResponse(ServerPlayer player, AiAssistantEntity assistant, LlmClient.Response response) {
-		if (response.ok() && response.content() != null && !response.content().isBlank()) {
-			String content = response.content();
+	/**
+	 * 发起一次流式对话并处理回调：
+	 * - 增量文本按 {@link #FLUSH_INTERVAL_MS} 节流后实时显示在提问玩家的
+	 *   action bar（“流式”效果：回复一个字一个字地出现）；
+	 * - 流结束后回到服务端线程收尾（{@link #finishStreamReply}）：执行动作标记、
+	 *   写入对话历史（historyKey 非空时）、以助手名义把完整回复广播到聊天；
+	 * - 失败时向提问玩家发送错误提示。
+	 *
+	 * 端点不支持流式（忽略 stream 参数）时，LlmClient 会退化为一次性收到
+	 * 完整回复（一次 onDelta + onDone），本方法无需区分两种模式。
+	 * 所有 HTTP/流解析都在工作线程进行，绝不阻塞服务端主线程。
+	 */
+	private static void streamReply(ServerPlayer player, AiAssistantEntity assistant,
+	                                LlmClient.Request request, GlobalPos historyKey) {
+		MinecraftServer server = player.level().getServer();
+		StringBuilder buffer = new StringBuilder();
+		// 仅在 LlmClient 的工作线程上读写（回调串行），无需加锁
+		long[] lastFlushAt = {0L};
 
-			// 1) 解析并执行动作标记（可选，由方块配置控制）
-			if (assistant.getConfig().allowActions) {
-				List<AiAction> actions = AiActionParser.parse(content);
-				if (!actions.isEmpty()) {
-					executeActions(player, assistant, actions);
+		LlmClient.StreamListener listener = new LlmClient.StreamListener() {
+			@Override
+			public void onDelta(String delta) {
+				if (delta == null || delta.isEmpty()) {
+					return;
 				}
-				content = AiActionParser.stripActions(content);
+				buffer.append(delta);
+				String snapshot = buffer.toString();
+				long now = System.currentTimeMillis();
+				if (now - lastFlushAt[0] >= FLUSH_INTERVAL_MS) {
+					lastFlushAt[0] = now;
+					runOnServer(server, () -> showStreamingText(player, snapshot));
+				}
 			}
 
-			// 2) 把回复（已去掉动作标记）写入该助手的历史并广播
-			HISTORY.computeIfAbsent(historyKeyFor(assistant), k -> new ArrayList<>())
-					.add(LlmClient.Message.assistant(response.content()));
-			if (!content.isBlank()) {
-				speakAsAssistant((ServerLevel) player.level(), assistant, content);
+			@Override
+			public void onDone() {
+				String full = buffer.toString();
+				runOnServer(server, () -> finishStreamReply(player, assistant, historyKey, full));
 			}
-		} else {
-			player.sendSystemMessage(Component.translatable("command.opencraft.ask.error",
-					response.error() == null ? "未知错误" : response.error()));
+
+			@Override
+			public void onError(String error) {
+				String reason = error == null || error.isBlank() ? "未知错误" : error;
+				runOnServer(server, () -> player.sendSystemMessage(
+						Component.translatable("command.opencraft.ask.error", reason)));
+			}
+		};
+		CompletableFuture.runAsync(() -> LlmClient.stream(request, listener), EXECUTOR);
+	}
+
+	/** 把流式回复的当前进度显示到玩家的 action bar（overlay，可被下一次更新覆盖）。 */
+	private static void showStreamingText(ServerPlayer player, String text) {
+		// action bar 是单行渲染：把换行/连续空白折叠成单个空格，避免排版错乱
+		String preview = text.replaceAll("\\s+", " ").trim();
+		player.displayClientMessage(Component.literal(preview), true);
+	}
+
+	/**
+	 * 流式结束后（服务端线程）收尾：
+	 * 1) 清掉 action bar 上的流式残留；
+	 * 2) 解析并执行动作标记（可选，由方块配置控制）；
+	 * 3) 把完整回复（含动作标记原文）写入该助手的历史（historyKey 非空时）；
+	 * 4) 以助手名义把去掉动作标记的文本广播到聊天。
+	 */
+	private static void finishStreamReply(ServerPlayer player, AiAssistantEntity assistant,
+	                                      GlobalPos historyKey, String full) {
+		player.displayClientMessage(Component.empty(), true);
+		if (full == null || full.isBlank()) {
+			return; // 空回复：不广播也不报错（与旧行为一致）
+		}
+		String content = full;
+		if (assistant.getConfig().allowActions) {
+			List<AiAction> actions = AiActionParser.parse(full);
+			if (!actions.isEmpty()) {
+				executeActions(player, assistant, actions);
+			}
+			content = AiActionParser.stripActions(full);
+		}
+		if (historyKey != null) {
+			HISTORY.computeIfAbsent(historyKey, k -> new ArrayList<>())
+					.add(LlmClient.Message.assistant(full));
+		}
+		if (!content.isBlank()) {
+			speakAsAssistant((ServerLevel) player.level(), assistant, content);
+		}
+	}
+
+	/** 把任务调度回服务端线程执行；服务器已停止时静默丢弃并记日志。 */
+	private static void runOnServer(MinecraftServer server, Runnable task) {
+		try {
+			server.executeIfPossible(task);
+		} catch (Exception e) {
+			OpenCraftMod.LOGGER.warn("[OpenCraft] 无法调度到服务端线程: {}", e.toString());
 		}
 	}
 

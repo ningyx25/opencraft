@@ -23,7 +23,7 @@ loom {
 		gametestServer {
 			server()
 			vmArg '-Dfabric-api.gametest=true'
-			vmArg '-Dfabric-api.gametest.filter=opencraft:*'
+			vmArg "-Dfabric-api.gametest.filter=${project.findProperty('gametestFilter') ?: 'opencraft:*'}"
 			vmArg '-Dfabric-api.gametest.report-file=build/gametest-results.xml'
 		}
 	}

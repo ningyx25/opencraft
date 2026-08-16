@@ -41,6 +41,10 @@ import java.util.function.Consumer;
  * 采用 Minecraft 1.21 原生 TabNavigationBar 标签栏导航与 HeaderAndFooterLayout 布局系统，
  * 分为“接口与密钥”、“对话与动作”、“伴侣行为” 3 个清晰的分页。
  *
+ * “AI 功能”开关与“用本方块召唤助手”已合并为底部同一个按钮：未绑定助手时点击 =
+ * 召唤（绑定本方块）；已绑定自己的助手时点击 = 送走（不召唤）。绑定状态由服务器随
+ * 配置数据一起下发（AiConfigDataPayload.bound/boundByMe），每次保存/召唤/送走后刷新。
+ *
  * 安全特性：API Key 从不在网络中明文传输，客户端输入时采用掩码格式化，仅 OP 管理员可保存生效。
  * 配置只保存在被右键的 AI 徽标方块实体里（不依赖任何外部配置文件），
  * 因此保存/召唤请求都会携带目标方块的坐标 + 维度。
@@ -59,7 +63,10 @@ public class AiConfigScreen extends Screen {
 	private BlockPos blockPos;
 	private ResourceKey<Level> dimension;
 
-	private boolean aiEnabled;
+	/** 目标方块当前是否已绑定助手 / 绑定的是否是本玩家的助手（决定合并按钮的召唤/送走状态）。 */
+	private boolean blockBound;
+	private boolean blockBoundByMe;
+
 	private String baseUrl;
 	private String model;
 	private String language;
@@ -85,18 +92,19 @@ public class AiConfigScreen extends Screen {
 	private TabNavigationBar tabNavigationBar;
 	private int selectedTab = 0;
 
-	public AiConfigScreen(AiConfigData data, boolean canEdit, BlockPos blockPos,
-	                      ResourceKey<Level> dimension) {
+	public AiConfigScreen(AiConfigData data, boolean canEdit, boolean blockBound, boolean blockBoundByMe,
+	                      BlockPos blockPos, ResourceKey<Level> dimension) {
 		super(Component.translatable("screen.opencraft.config.title"));
 		this.data = data;
 		this.canEdit = canEdit;
 		this.blockPos = blockPos;
 		this.dimension = dimension;
+		this.blockBound = blockBound;
+		this.blockBoundByMe = blockBoundByMe;
 		loadData(data);
 	}
 
 	private void loadData(AiConfigData data) {
-		this.aiEnabled = data.aiEnabled();
 		this.baseUrl = data.baseUrl();
 		this.model = data.model();
 		this.language = data.language();
@@ -118,10 +126,12 @@ public class AiConfigScreen extends Screen {
 	}
 
 	/** 服务器返回新数据时刷新界面 */
-	public void updateData(AiConfigData data, boolean canEdit, BlockPos blockPos,
-	                       ResourceKey<Level> dimension) {
+	public void updateData(AiConfigData data, boolean canEdit, boolean blockBound, boolean blockBoundByMe,
+	                       BlockPos blockPos, ResourceKey<Level> dimension) {
 		this.blockPos = blockPos;
 		this.dimension = dimension;
+		this.blockBound = blockBound;
+		this.blockBoundByMe = blockBoundByMe;
 		if (this.tabNavigationBar != null && this.tabManager.getCurrentTab() != null) {
 			int idx = this.tabNavigationBar.getTabs().indexOf(this.tabManager.getCurrentTab());
 			if (idx >= 0) {
@@ -157,11 +167,36 @@ public class AiConfigScreen extends Screen {
 		// 3. 构建底部按钮栏
 		LinearLayout footerLayout = LinearLayout.horizontal().spacing(8);
 
-		Button summonButton = Button.builder(
-				Component.translatable("screen.opencraft.config.summon_block"), b -> summonWithBlock())
+		// 合并按钮：“AI 功能”开关与“用本方块召唤助手”已合并为一个按钮——
+		// 未绑定助手 → 点击“用本方块召唤助手”；已绑定自己的助手 → 点击“送走本方块助手”（不召唤）；
+		// 已被他人助手绑定 → 按钮禁用并提示。服务器每次返回数据都会刷新这里的绑定状态。
+		Component toggleLabel;
+		Component toggleTooltip;
+		boolean toggleActive;
+		if (!this.blockBound) {
+			toggleLabel = Component.translatable("screen.opencraft.config.summon_block");
+			toggleTooltip = Component.translatable("screen.opencraft.config.summon_block.tooltip");
+			toggleActive = true;
+		} else if (this.blockBoundByMe) {
+			toggleLabel = Component.translatable("screen.opencraft.config.dismiss_block");
+			toggleTooltip = Component.translatable("screen.opencraft.config.dismiss_block.tooltip");
+			toggleActive = true;
+		} else {
+			toggleLabel = Component.translatable("screen.opencraft.config.block_bound_other");
+			toggleTooltip = Component.translatable("screen.opencraft.config.block_bound_other.tooltip");
+			toggleActive = false;
+		}
+		Button summonButton = Button.builder(toggleLabel, b -> {
+					if (this.blockBoundByMe) {
+						dismissWithBlock();
+					} else {
+						summonWithBlock();
+					}
+				})
 				.width(150)
-				.tooltip(Tooltip.create(Component.translatable("screen.opencraft.config.summon_block.tooltip")))
+				.tooltip(Tooltip.create(toggleTooltip))
 				.build();
+		summonButton.active = toggleActive;
 
 		Button saveButton = Button.builder(Component.translatable("screen.opencraft.config.save"), b -> save())
 				.width(150)
@@ -230,7 +265,6 @@ public class AiConfigScreen extends Screen {
 			return;
 		}
 		AiConfigData configToSave = new AiConfigData(
-				this.aiEnabled,
 				this.baseUrl,
 				this.changeKey ? this.newApiKey : "",
 				this.changeKey,
@@ -253,9 +287,15 @@ public class AiConfigScreen extends Screen {
 				configToSave.toJson(), this.blockPos, this.dimension));
 	}
 
-	/** 用当前方块召唤（或重新绑定）AI 助手，助手将使用本方块的配置。 */
+	/** 合并按钮的“召唤”半：用当前方块召唤（或重新绑定）AI 助手，助手将使用本方块的配置。 */
 	private void summonWithBlock() {
 		ClientPlayNetworking.send(new AiConfigPayloads.AiConfigSummonPayload(
+				this.blockPos, this.dimension));
+	}
+
+	/** 合并按钮的“不召唤”半：送走绑定在本方块的 AI 助手（取消召唤）。 */
+	private void dismissWithBlock() {
+		ClientPlayNetworking.send(new AiConfigPayloads.AiConfigDismissPayload(
 				this.blockPos, this.dimension));
 	}
 
@@ -269,15 +309,6 @@ public class AiConfigScreen extends Screen {
 			rows.defaultCellSetting().paddingVertical(2).alignHorizontallyCenter();
 
 			Font font = AiConfigScreen.this.font;
-
-			// AI 功能开关
-			CycleButton<Boolean> aiSwitch = CycleButton.onOffBuilder(AiConfigScreen.this.aiEnabled)
-					.withTooltip(val -> Tooltip.create(Component.translatable("screen.opencraft.config.ai_enabled.tooltip")))
-					.create(0, 0, CONTROL_WIDTH, ROW_HEIGHT,
-							Component.translatable("screen.opencraft.config.ai_enabled"),
-							(btn, val) -> AiConfigScreen.this.aiEnabled = val);
-			aiSwitch.active = AiConfigScreen.this.canEdit;
-			rows.addChild(aiSwitch);
 
 			// 接口地址 Base URL
 			EditBox baseUrlBox = new EditBox(font, 0, 0, CONTROL_WIDTH, ROW_HEIGHT,

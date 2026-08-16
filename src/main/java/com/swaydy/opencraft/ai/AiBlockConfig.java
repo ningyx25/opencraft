@@ -36,7 +36,6 @@ public final class AiBlockConfig {
 			""";
 
 	// AI 接口配置
-	public boolean aiEnabled = true;
 	/**
 	 * 默认接口地址：优先读环境变量 OPEN_CRAFT_BASE_URL
 	 * （或 JVM 参数 -Dopencraft.baseUrl），未设置时回退到内置默认地址。
@@ -68,9 +67,13 @@ public final class AiBlockConfig {
 	public double maxDistance = 64.0;
 	public double speed = 1.0;
 
-	/** 是否已配置可用的接口（enabled 且 baseUrl 非空）。 */
+	/**
+	 * 是否已配置可用的接口（baseUrl 非空）。
+	 * 注意：不再有独立的"AI 功能"开关——助手被召唤（绑定本方块）即视为启用，
+	 * 送走（取消召唤）即视为关闭，两者已合并为配置界面的同一个按钮。
+	 */
 	public boolean isUsable() {
-		return aiEnabled && baseUrl != null && !baseUrl.isBlank();
+		return baseUrl != null && !baseUrl.isBlank();
 	}
 
 	/** 生效的名字：未配置时回退为“小智”。 */
@@ -215,7 +218,7 @@ public final class AiBlockConfig {
 	/** 转成传输数据（apiKey 恒为空串，绝不外发）。 */
 	public AiConfigData toData() {
 		return new AiConfigData(
-				aiEnabled, baseUrl, "", false, !apiKey.isEmpty(),
+				baseUrl, "", false, !apiKey.isEmpty(),
 				model, systemPrompt,
 				temperature, maxHistoryMessages, timeoutSeconds, allowActions, language,
 				followDistance, stopDistance, teleportDistance, maxDistance, speed,
@@ -224,7 +227,6 @@ public final class AiBlockConfig {
 
 	/** 用编辑器传来的数据覆盖本配置（apiKey 仅在 apiKeyChanged 时更新）。 */
 	public void applyData(AiConfigData data) {
-		aiEnabled = data.aiEnabled();
 		baseUrl = data.baseUrl() == null ? "" : data.baseUrl().trim();
 		if (data.apiKeyChanged()) {
 			apiKey = data.apiKey() == null ? "" : data.apiKey().trim();
@@ -257,7 +259,6 @@ public final class AiBlockConfig {
 	}
 
 	public void saveAdditional(ValueOutput output) {
-		output.putBoolean("AIEnabled", aiEnabled);
 		output.putString("BaseUrl", baseUrl);
 		output.putString("ApiKey", apiKey);
 		output.putString("Model", model);
@@ -276,7 +277,7 @@ public final class AiBlockConfig {
 	}
 
 	public void loadAdditional(ValueInput input) {
-		aiEnabled = input.getBooleanOr("AIEnabled", true);
+		// 旧存档的 "AIEnabled" 标签已废弃：AI 功能的开/关由“是否召唤助手绑定本方块”决定
 		baseUrl = input.getStringOr("BaseUrl", defaultBaseUrl());
 		apiKey = input.getStringOr("ApiKey", defaultApiKey());
 		model = input.getStringOr("Model", defaultModel());

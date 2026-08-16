@@ -23,8 +23,12 @@ public final class AiConfigPayloads {
 	public static final StreamCodec<ByteBuf, ResourceKey<Level>> DIMENSION_CODEC =
 			ResourceKey.streamCodec(Registries.DIMENSION);
 
-	/** 服务器 → 客户端：某个 AI 徽标方块的配置数据（canEdit 表示是否有权限保存）。 */
-	public record AiConfigDataPayload(String json, boolean canEdit,
+	/**
+	 * 服务器 → 客户端：某个 AI 徽标方块的配置数据。
+	 * canEdit 表示是否有权限保存；bound/boundByMe 表示该方块当前是否已绑定助手、
+	 * 以及是否绑定的是本玩家自己的助手（配置界面据此把“召唤/送走”合并为同一个按钮）。
+	 */
+	public record AiConfigDataPayload(String json, boolean canEdit, boolean bound, boolean boundByMe,
 	                                  BlockPos pos, ResourceKey<Level> dimension)
 			implements CustomPacketPayload {
 		public static final CustomPacketPayload.Type<AiConfigDataPayload> TYPE =
@@ -33,6 +37,8 @@ public final class AiConfigPayloads {
 				StreamCodec.composite(
 						ByteBufCodecs.STRING_UTF8, AiConfigDataPayload::json,
 						ByteBufCodecs.BOOL, AiConfigDataPayload::canEdit,
+						ByteBufCodecs.BOOL, AiConfigDataPayload::bound,
+						ByteBufCodecs.BOOL, AiConfigDataPayload::boundByMe,
 						BlockPos.STREAM_CODEC, AiConfigDataPayload::pos,
 						DIMENSION_CODEC, AiConfigDataPayload::dimension,
 						AiConfigDataPayload::new);
@@ -71,6 +77,23 @@ public final class AiConfigPayloads {
 						BlockPos.STREAM_CODEC, AiConfigSummonPayload::pos,
 						DIMENSION_CODEC, AiConfigSummonPayload::dimension,
 						AiConfigSummonPayload::new);
+
+		@Override
+		public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
+	/** 客户端 → 服务器：送走绑定到指定方块的 AI 助手（取消召唤，按钮的“不召唤”状态）。 */
+	public record AiConfigDismissPayload(BlockPos pos, ResourceKey<Level> dimension)
+			implements CustomPacketPayload {
+		public static final CustomPacketPayload.Type<AiConfigDismissPayload> TYPE =
+				new CustomPacketPayload.Type<>(OpenCraftMod.id("ai_config_dismiss"));
+		public static final StreamCodec<ByteBuf, AiConfigDismissPayload> STREAM_CODEC =
+				StreamCodec.composite(
+						BlockPos.STREAM_CODEC, AiConfigDismissPayload::pos,
+						DIMENSION_CODEC, AiConfigDismissPayload::dimension,
+						AiConfigDismissPayload::new);
 
 		@Override
 		public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {

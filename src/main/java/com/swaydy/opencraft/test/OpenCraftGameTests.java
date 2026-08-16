@@ -38,13 +38,29 @@ import java.util.List;
  * 测试：
  * 1. assistantLifecycleAndChat —— 助手完整生命周期（召唤/聊天/动作/跨维度/送走）；
  * 2. aiLogoBlockConfigEditor —— AI 徽标方块作为配置载体（读写配置、权限、密钥安全）；
- * 3. assistantVanishesWithBlock —— 助手与绑定方块共存；
- * 4. multipleAssistantsCoexist —— 多助手共存（一方块一助手，独立配置，路由/送走/拆方块）；
- * 5. summonRequiresConfigBlock —— 没有未绑定的方块时拒绝召唤；
- * 6. unboundAssistantDiscarded —— 无绑定助手被安全网清除；
- * 7. aiLogoBlockMiningAndRecipe —— 配方注册 + 徒手挖掘掉落。
+ * 3. configScreenSummonDismissToggle —— 配置界面合并按钮（召唤/送走切换、他人不可送走）；
+ * 4. assistantVanishesWithBlock —— 助手与绑定方块共存；
+ * 5. multipleAssistantsCoexist —— 多助手共存（一方块一助手，独立配置，路由/送走/拆方块）；
+ * 6. summonRequiresConfigBlock —— 没有未绑定的方块时拒绝召唤；
+ * 7. unboundAssistantDiscarded —— 无绑定助手被安全网清除；
+ * 8. aiLogoBlockMiningAndRecipe —— 配方注册 + 徒手挖掘掉落；
+ * 9. askTargetsSpecificAssistant —— 多助手时指定和哪个助手对话（ask <名字> <消息>）。
  */
 public class OpenCraftGameTests {
+	/**
+	 * 通过真实指令派发器执行 /opencraft 指令，返回执行器的返回值
+	 * （0 = 拒绝/歧义，1 = 成功）。解析或执行抛异常时直接转为测试失败。
+	 */
+	private static int runCommand(GameTestHelper helper, ServerPlayer player, String command) {
+		try {
+			return helper.getLevel().getServer().getCommands().getDispatcher()
+					.execute(new com.mojang.brigadier.StringReader(command),
+							player.createCommandSourceStack());
+		} catch (Exception e) {
+			throw new AssertionError("指令执行失败: " + command + " -> " + e, e);
+		}
+	}
+
 	/** 把 mock 玩家的 LLM 配置写进指定方块（指向本地 mock 服务器）。 */
 	private static void configureMockBlock(GameTestHelper helper, BlockPos relPos,
 	                                       ServerPlayer player) {
@@ -131,28 +147,36 @@ public class OpenCraftGameTests {
 					// 3) 第一条对话（异步请求 mock LLM，回复无动作）
 					AiCompanionService.ask(player, "你好，小智！请介绍一下你自己。");
 				})
-				.thenIdle(80)
-				.thenExecute(() -> {
-					// 4) 一问（user）+ 一答（assistant）都应记录在该助手（按方块键控）的历史里
+				.thenWaitUntil(() -> {
+					// 4) 等第一条回复写入该助手（按方块键控）的历史。
+					//    流式回复在独立线程上读取、写回历史，因此轮询等待而不是固定 thenIdle
+					//    （gametest 服务器会“冲刺”tick，固定 tick 数的墙钟时间可能不够）。
 					AiAssistantEntity assistant = ModEntities.findNearestAssistantFor(player);
 					if (assistant == null) {
-						throw new AssertionError("对话后助手实体不存在");
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("对话后助手实体不存在"),
+								(int) helper.getTick());
 					}
-					int size = AiCompanionService.historySize(assistant.getConfigBlock());
-					if (size < 2) {
-						throw new AssertionError("期望对话历史 >= 2 条，实际 " + size
-								+ "（请确认方块配置的 ai.baseUrl 指向可用接口）");
+					if (AiCompanionService.historySize(assistant.getConfigBlock()) < 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"期望对话历史 >= 2 条（请确认方块配置的 ai.baseUrl 指向可用接口）"),
+								(int) helper.getTick());
 					}
+				})
+				.thenExecute(() -> {
 					// 5) 第二条消息：让 mock LLM 返回 [ACTION: give minecraft:dirt 5]
 					AiCompanionService.ask(player, "GIVE_ME_DIRT 请给我一些泥土");
 				})
-				.thenIdle(80)
-				.thenExecute(() -> {
-					// 6) 动作应该真的执行：背包里出现泥土
+				.thenWaitUntil(() -> {
+					// 6) 等动作真的执行（动作在流式回复收尾时解析执行）：背包里出现泥土
 					int dirt = countItem(player, Items.DIRT);
 					if (dirt < 5) {
-						throw new AssertionError("期望背包中至少有 5 个泥土，实际 " + dirt
-								+ "（动作未执行或 mock 未返回动作标记）");
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"期望背包中至少有 5 个泥土，实际 " + dirt
+												+ "（动作未执行或 mock 未返回动作标记）"),
+								(int) helper.getTick());
 					}
 				})
 				.thenExecute(() -> {
@@ -333,7 +357,7 @@ public class OpenCraftGameTests {
 					}
 					// 4) 管理员保存：修改模型 + 关闭动作 + 更换密钥（apiKeyChanged=true）+ 改名字
 					AiConfigData edited = new AiConfigData(
-							sent.aiEnabled(), sent.baseUrl(), "new-secret-key-456", true, true,
+							sent.baseUrl(), "new-secret-key-456", true, true,
 							"in-game-edited-model", sent.systemPrompt(),
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							false, sent.language(),
@@ -355,7 +379,7 @@ public class OpenCraftGameTests {
 					}
 					// 5) 未勾选更换时保存：密钥应保留（客户端只会传空串）
 					AiConfigData keepKey = new AiConfigData(
-							sent.aiEnabled(), sent.baseUrl(), "", false, true,
+							sent.baseUrl(), "", false, true,
 							"model-keep-key", sent.systemPrompt(),
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							true, sent.language(),
@@ -381,6 +405,88 @@ public class OpenCraftGameTests {
 					blockEntity.markConfigChanged();
 				})
 				.thenSucceed();
+	}
+
+	/**
+	 * 验证“配置界面合并按钮”（“AI 功能”开关与“用本方块召唤助手”合并为同一个
+	 * 召唤/不召唤按钮）的服务器端行为：
+	 * 1. 未绑定助手时 dismissWithBlock 幂等（无助手可送走也不报错）；
+	 * 2. summonWithBlock 召唤 → 助手绑定该方块、方块亮起；
+	 * 3. 别人的助手绑定该方块时 dismissWithBlock 应被拒绝（助手仍在）；
+	 * 4. 主人 dismissWithBlock 送走 → 助手消失、方块熄灭（“不召唤”状态）；
+	 * 5. 可反复切换：再次 summonWithBlock 又能重新绑定。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
+	public void configScreenSummonDismissToggle(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		ResourceKey<net.minecraft.world.level.Level> dimension = player.level().dimension();
+		BlockPos absPos = helper.absolutePos(blockPos);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(dimension, absPos);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 1) 未绑定：dismissWithBlock 幂等（合并按钮在“召唤”状态，点了也不会出错）
+					AiConfigHandler.dismissWithBlock(player, absPos, dimension);
+					if (!ModEntities.findAssistantsFor(player).isEmpty()) {
+						throw new AssertionError("无助手绑定时送走不应影响任何助手");
+					}
+					// 2) 召唤（合并按钮的“召唤”半）→ 助手绑定该方块（下一 tick 才进入查找表）
+					AiConfigHandler.summonWithBlock(player, absPos, dimension);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (ModEntities.findAssistantBoundTo(level, bindPos) == null) {
+						throw new AssertionError("用方块召唤后助手应绑定到该方块");
+					}
+					if (!helper.getLevel().getBlockState(absPos).getValue(AiLogoBlock.POWERED)) {
+						throw new AssertionError("召唤后绑定方块应亮起");
+					}
+					// 3) 别人尝试送走 → 被拒绝，助手仍在（合并按钮对他人显示为禁用态）
+					ServerPlayer other = helper.makeMockServerPlayerInLevel();
+					other.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+					AiConfigHandler.dismissWithBlock(other, absPos, dimension);
+					if (ModEntities.findAssistantBoundTo(level, bindPos) == null) {
+						throw new AssertionError("别人的助手不应被非主人送走");
+					}
+					// 4) 主人送走（合并按钮的“不召唤”半）→ 助手消失、方块熄灭
+					AiConfigHandler.dismissWithBlock(player, absPos, dimension);
+					if (!ModEntities.findAssistantsFor(player).isEmpty()) {
+						throw new AssertionError("送走后助手应消失");
+					}
+					if (helper.getLevel().getBlockState(absPos).getValue(AiLogoBlock.POWERED)) {
+						throw new AssertionError("送走后绑定方块应熄灭");
+					}
+					// 5) 再次召唤 → 又能重新绑定（反复切换）
+					AiConfigHandler.summonWithBlock(player, absPos, dimension);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (ModEntities.findAssistantBoundTo(level, bindPos) == null) {
+						throw new AssertionError("再次召唤后助手应重新绑定");
+					}
+					// 清理
+					AiConfigHandler.dismissWithBlock(player, absPos, dimension);
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
 	}
 
 	/**
@@ -705,6 +811,216 @@ public class OpenCraftGameTests {
 						}
 					}
 					throw new AssertionError("徒手挖掘后未掉落 AI 徽标方块");
+				});
+	}
+
+	/**
+	 * 验证“多助手同时存在时如何指定和哪个助手对话”：
+	 * 1. ModEntities.findAssistantsBySelector 的选择器匹配（纯名字 / 显示名 / 紧凑 名字(坐标) / 未知 / 重名）；
+	 * 2. /opencraft ask <消息>（不带名字）→ 路由到“最近”的助手（A 近 B 远），只有 A 的历史增长；
+	 * 3. /opencraft ask 小红 <消息> → 精确指定 B，只有 B 的历史增长；
+	 * 4. 用带坐标的显示名（引号括起）指定 → 同样命中 B；
+	 * 5. 名字不存在 → 提示后回退到最近的助手（A 的历史增长）；
+	 * 6. 两个助手同名 → 报“歧义”失败（指令返回 0），谁的历史都不增长。
+	 *
+	 * 历史按“助手绑定的方块”键控（一方块 = 一助手 = 一份记忆），ask() 会同步把
+	 * user 消息写入目标助手的记忆，因此“路由到哪个助手”可以立即断言，无需等回复。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 500)
+	public void askTargetsSpecificAssistant(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		// 平台 + 玩家
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		// 两个 AI 徽标方块：A 近（默认名字 小智）、B 远（名字 小红）
+		BlockPos blockA = new BlockPos(4, 1, 6);
+		BlockPos blockB = new BlockPos(1, 1, 4);
+		configureMockBlock(helper, blockA, player);
+		helper.setBlock(blockB, ModBlocks.AI_LOGO_BLOCK.defaultBlockState());
+		AiLogoBlockEntity blockBEntity = helper.getBlockEntity(blockB, AiLogoBlockEntity.class);
+		if (blockBEntity == null) {
+			throw new AssertionError("B 方块实体未创建");
+		}
+		blockBEntity.getConfig().baseUrl = "http://127.0.0.1:18923/v1";
+		blockBEntity.getConfig().apiKey = "test-key-123";
+		blockBEntity.getConfig().model = "mock-model-b";
+		blockBEntity.getConfig().name = "小红";
+		blockBEntity.markConfigChanged();
+
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos absA = GlobalPos.of(level.dimension(), helper.absolutePos(blockA));
+		GlobalPos absB = GlobalPos.of(level.dimension(), helper.absolutePos(blockB));
+		BlockPos absBBlock = helper.absolutePos(blockB);
+		String bXyz = absBBlock.getX() + "," + absBBlock.getY() + "," + absBBlock.getZ();
+
+		// 各步的“历史条数快照”（gametest 服务器按真实时间跑，而流式回复在独立线程，
+		// 因此用 thenWaitUntil 轮询等回复写入历史，而不是固定 thenIdle）
+		int[] aSize = {0};
+		int[] bSize = {0};
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					AiAssistantEntity a = AiCompanionService.summonFor(player, absA);
+					AiAssistantEntity b = AiCompanionService.summonFor(player, absB);
+					if (a == null || b == null || a == b) {
+						throw new AssertionError("两个助手召唤失败");
+					}
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					// 1) 选择器匹配
+					if (ModEntities.findAssistantsBySelector(player, "小红").size() != 1) {
+						throw new AssertionError("纯名字应匹配到 B");
+					}
+					if (ModEntities.findAssistantsBySelector(player, "小红 (" + bXyz + ")").size() != 1) {
+						throw new AssertionError("显示名应匹配到 B");
+					}
+					if (ModEntities.findAssistantsBySelector(player, "小红(" + bXyz + ")").size() != 1) {
+						throw new AssertionError("紧凑 名字(坐标) 应匹配到 B");
+					}
+					if (ModEntities.findAssistantsBySelector(player, "小智").size() != 1) {
+						throw new AssertionError("小智 应匹配到 A");
+					}
+					if (!ModEntities.findAssistantsBySelector(player, "不存在的助手").isEmpty()) {
+						throw new AssertionError("未知名字不应匹配");
+					}
+					// 2) 不带名字 → 问“最近”的助手（A）：只有 A 的历史立即增长（user 消息同步入史）
+					aSize[0] = AiCompanionService.historySize(absA);
+					bSize[0] = AiCompanionService.historySize(absB);
+					int result = runCommand(helper, player, "opencraft ask 给最近的助手打个招呼");
+					if (result != 1) {
+						throw new AssertionError("ask 指令应执行成功，实际 " + result);
+					}
+					if (AiCompanionService.historySize(absA) != aSize[0] + 1
+							|| AiCompanionService.historySize(absB) != bSize[0]) {
+						throw new AssertionError("ask <消息> 应路由到最近的助手（A），实际 A="
+								+ AiCompanionService.historySize(absA) + " B="
+								+ AiCompanionService.historySize(absB));
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 等 A 的流式回复写入历史
+					if (AiCompanionService.historySize(absA) < aSize[0] + 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+							net.minecraft.network.chat.Component.literal("等待 A 的回复写入历史…"),
+							(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 回复应只落在 A 的历史里
+					if (AiCompanionService.historySize(absB) != bSize[0]) {
+						throw new AssertionError("A 的回复不应进入 B 的历史，实际 B="
+								+ AiCompanionService.historySize(absB));
+					}
+					// 3) 指定名字 小红 → 只有 B 的历史增长
+					aSize[0] = AiCompanionService.historySize(absA);
+					bSize[0] = AiCompanionService.historySize(absB);
+					int result = runCommand(helper, player, "opencraft ask 小红 你好小红");
+					if (result != 1) {
+						throw new AssertionError("ask <名字> 指令应执行成功，实际 " + result);
+					}
+					if (AiCompanionService.historySize(absB) != bSize[0] + 1
+							|| AiCompanionService.historySize(absA) != aSize[0]) {
+						throw new AssertionError("ask 小红 <消息> 应只路由到 B，实际 A="
+								+ AiCompanionService.historySize(absA) + " B="
+								+ AiCompanionService.historySize(absB));
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 等 B 的流式回复写入历史
+					if (AiCompanionService.historySize(absB) < bSize[0] + 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+							net.minecraft.network.chat.Component.literal("等待 B 的回复写入历史…"),
+							(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// B 的回复不应进入 A 的历史
+					if (AiCompanionService.historySize(absA) != aSize[0]) {
+						throw new AssertionError("B 的回复不应进入 A 的历史，实际 A="
+								+ AiCompanionService.historySize(absA));
+					}
+					// 4) 带坐标的显示名（引号括起）指定 → 同样命中 B
+					aSize[0] = AiCompanionService.historySize(absA);
+					bSize[0] = AiCompanionService.historySize(absB);
+					int result = runCommand(helper, player,
+							"opencraft ask \"小红 (" + bXyz + ")\" 用显示名找你");
+					if (result != 1) {
+						throw new AssertionError("ask <显示名> 指令应执行成功，实际 " + result);
+					}
+					if (AiCompanionService.historySize(absB) != bSize[0] + 1
+							|| AiCompanionService.historySize(absA) != aSize[0]) {
+						throw new AssertionError("带坐标的显示名应路由到 B，实际 A="
+								+ AiCompanionService.historySize(absA) + " B="
+								+ AiCompanionService.historySize(absB));
+					}
+				})
+				.thenWaitUntil(() -> {
+					if (AiCompanionService.historySize(absB) < bSize[0] + 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+							net.minecraft.network.chat.Component.literal("等待 B 的回复写入历史…"),
+							(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 5) 名字不存在 → 提示并回退到最近的助手（A）
+					aSize[0] = AiCompanionService.historySize(absA);
+					bSize[0] = AiCompanionService.historySize(absB);
+					int result = runCommand(helper, player, "opencraft ask 不存在的人 你还好吗");
+					if (result != 1) {
+						throw new AssertionError("未知名字应回退（指令仍返回 1），实际 " + result);
+					}
+					if (AiCompanionService.historySize(absA) != aSize[0] + 1
+							|| AiCompanionService.historySize(absB) != bSize[0]) {
+						throw new AssertionError("未知名字应回退到最近的助手（A），实际 A="
+								+ AiCompanionService.historySize(absA) + " B="
+								+ AiCompanionService.historySize(absB));
+					}
+				})
+				.thenWaitUntil(() -> {
+					if (AiCompanionService.historySize(absA) < aSize[0] + 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+							net.minecraft.network.chat.Component.literal("等待 A 的回复写入历史…"),
+							(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 6) 两个助手同名 → 歧义失败，谁的历史都不增长
+					AiLogoBlockEntity bEntity = helper.getBlockEntity(blockB, AiLogoBlockEntity.class);
+					if (bEntity == null) {
+						throw new AssertionError("B 方块实体不见了");
+					}
+					bEntity.getConfig().name = "小智"; // 与 A 同名
+					bEntity.markConfigChanged();
+					aSize[0] = AiCompanionService.historySize(absA);
+					bSize[0] = AiCompanionService.historySize(absB);
+					int result = runCommand(helper, player, "opencraft ask 小智 你好");
+					if (result != 0) {
+						throw new AssertionError("同名时应返回失败（歧义），实际 " + result);
+					}
+					if (AiCompanionService.historySize(absA) != aSize[0]
+							|| AiCompanionService.historySize(absB) != bSize[0]) {
+						throw new AssertionError("同名歧义时不应询问任何助手，实际 A="
+								+ AiCompanionService.historySize(absA) + " B="
+								+ AiCompanionService.historySize(absB));
+					}
+					// 清理：送走全部助手并清空历史
+					AiCompanionService.dismissAllFor(player);
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
 				});
 	}
 }

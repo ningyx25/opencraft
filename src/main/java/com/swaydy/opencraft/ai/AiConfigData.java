@@ -14,7 +14,6 @@ import com.google.gson.GsonBuilder;
  * - 否则（apiKeyChanged=false）服务端在保存时保留原密钥。
  */
 public record AiConfigData(
-		boolean aiEnabled,
 		String baseUrl,
 		String apiKey,
 		boolean apiKeyChanged,

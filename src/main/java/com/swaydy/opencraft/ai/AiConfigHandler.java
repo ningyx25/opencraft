@@ -22,7 +22,8 @@ import net.minecraft.world.level.chunk.LevelChunk;
  * AI 配置编辑器（AI 徽标方块即配置载体）的服务器端处理：
  * - openFor：读取目标方块保存的配置发给客户端（打开编辑器）；
  * - save：把编辑后的配置写回目标方块（即时生效，随方块存档持久化）；
- * - summonWithBlock：用指定方块召唤并绑定助手。
+ * - summonWithBlock / dismissWithBlock：配置界面“召唤/不召唤助手”合并按钮的两半——
+ *   没有助手绑定时点按钮 = 召唤并绑定助手；已绑定自己的助手时点按钮 = 送走（取消召唤）。
  *
  * 配置完全保存在游戏内方块实体中，不依赖任何外部配置文件。
  * 只有管理员（op）可以保存；API Key 的任何部分都不会发送给客户端。
@@ -101,6 +102,36 @@ public final class AiConfigHandler {
 		syncBoundBlockPoweredState(player.level().getServer().getLevel(dimension), bindPos);
 		player.sendSystemMessage(Component.translatable("command.opencraft.summon.success"));
 		// 绑定后顺手把编辑器刷新为该方块配置
+		sendData(player, blockEntity.getConfig().toData(), canEdit(player), pos, dimension);
+	}
+
+	/**
+	 * 送走绑定到指定方块的助手（配置界面合并按钮的“不召唤”状态）。
+	 * 只允许助手的主人送走；别人的助手会被拒绝；本来就无人绑定时视为已是“未召唤”状态。
+	 */
+	public static void dismissWithBlock(ServerPlayer player, BlockPos pos, ResourceKey<Level> dimension) {
+		AiLogoBlockEntity blockEntity = findBlock(player, pos, dimension);
+		if (blockEntity == null) {
+			player.sendSystemMessage(Component.translatable("command.opencraft.config.no_block"));
+			return;
+		}
+		ServerLevel level = player.level().getServer().getLevel(dimension);
+		GlobalPos bindPos = GlobalPos.of(dimension, pos);
+		AiAssistantEntity existing = level == null ? null : ModEntities.findAssistantBoundTo(level, bindPos);
+		if (existing == null) {
+			// 本来就没有助手绑定：幂等视为成功，刷新界面即可
+			sendData(player, blockEntity.getConfig().toData(), canEdit(player), pos, dimension);
+			return;
+		}
+		if (existing.getOwnerUuid() == null || !existing.getOwnerUuid().equals(player.getUUID())) {
+			player.sendSystemMessage(Component.translatable("command.opencraft.dismiss.block_not_owned"));
+			sendData(player, blockEntity.getConfig().toData(), canEdit(player), pos, dimension);
+			return;
+		}
+		if (AiCompanionService.dismissBoundTo(level, bindPos)) {
+			player.sendSystemMessage(Component.translatable("command.opencraft.dismiss.success"));
+		}
+		// 送走后刷新界面（按钮回到“召唤”状态）
 		sendData(player, blockEntity.getConfig().toData(), canEdit(player), pos, dimension);
 	}
 
@@ -191,9 +222,22 @@ public final class AiConfigHandler {
 
 	private static void sendData(ServerPlayer player, AiConfigData data, boolean canEdit,
 	                             BlockPos pos, ResourceKey<Level> dimension) {
+		// 携带“本方块是否已绑定助手 / 是否绑定的是本玩家”状态，
+		// 供配置界面把“召唤/不召唤助手”合并为同一个按钮（未绑定→召唤；已绑定自己的→送走）。
+		ServerLevel level = player.level().getServer().getLevel(dimension);
+		boolean bound = false;
+		boolean boundByMe = false;
+		if (level != null) {
+			AiAssistantEntity boundAssistant =
+					ModEntities.findAssistantBoundTo(level, GlobalPos.of(dimension, pos));
+			bound = boundAssistant != null;
+			boundByMe = bound && boundAssistant.getOwnerUuid() != null
+					&& boundAssistant.getOwnerUuid().equals(player.getUUID());
+		}
 		try {
 			ServerPlayNetworking.send(player,
-					new AiConfigPayloads.AiConfigDataPayload(data.toJson(), canEdit, pos, dimension));
+					new AiConfigPayloads.AiConfigDataPayload(
+							data.toJson(), canEdit, bound, boundByMe, pos, dimension));
 		} catch (Exception e) {
 			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送 AI 配置数据失败（可能是模拟连接）: {}", e.toString());
 		}

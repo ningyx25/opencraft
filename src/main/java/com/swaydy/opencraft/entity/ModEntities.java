@@ -1,6 +1,7 @@
 package com.swaydy.opencraft.entity;
 
 import com.swaydy.opencraft.OpenCraftMod;
+import com.swaydy.opencraft.ai.AiBlockConfig;
 import net.fabricmc.fabric.api.object.builder.v1.entity.FabricDefaultAttributeRegistry;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
@@ -85,6 +86,48 @@ public final class ModEntities {
 					+ Math.abs(block.pos().getZ() - playerPos.getZ());
 		}));
 		return owned.get(0);
+	}
+
+	/**
+	 * 按玩家输入的选择器（助手名字）查找该玩家的助手，用于 /opencraft ask <名字> <消息>。
+	 * 支持（大小写不敏感、首尾空白忽略）：
+	 *   - 纯名字："小智"
+	 *   - 显示名："小智 (12,64,45)"
+	 *   - 紧凑带坐标："小智(12,64,45)" / "小智@12,64,45"（同名字的助手用坐标消歧）
+	 * 返回所有匹配（配置名字可以重复，因此可能有多个）；无匹配返回空列表。
+	 */
+	public static List<AiAssistantEntity> findAssistantsBySelector(ServerPlayer player, String selector) {
+		List<AiAssistantEntity> result = new ArrayList<>();
+		if (selector == null) {
+			return result;
+		}
+		String s = selector.trim().toLowerCase(java.util.Locale.ROOT);
+		if (s.isEmpty()) {
+			return result;
+		}
+		for (AiAssistantEntity assistant : findAssistantsFor(player)) {
+			AiBlockConfig config = assistant.getConfig();
+			String name = config == null ? "" : config.effectiveName();
+			GlobalPos block = assistant.getConfigBlock();
+			if (s.equals(name.toLowerCase(java.util.Locale.ROOT))) {
+				result.add(assistant);
+				continue;
+			}
+			if (block == null) {
+				continue;
+			}
+			String xyz = block.pos().getX() + "," + block.pos().getY() + "," + block.pos().getZ();
+			String display = name + " (" + xyz + ")";
+			String compact = name + "(" + xyz + ")";
+			String atForm = name + "@" + xyz;
+			String lower = s;
+			if (lower.equals(display.toLowerCase(java.util.Locale.ROOT))
+					|| lower.equals(compact.toLowerCase(java.util.Locale.ROOT))
+					|| lower.equals(atForm.toLowerCase(java.util.Locale.ROOT))) {
+				result.add(assistant);
+			}
+		}
+		return result;
 	}
 
 	/** 是否有任意助手（任意维度）绑定到指定 AI 徽标方块。 */
