@@ -35,6 +35,7 @@
 | 指令 | 说明 |
 |---|---|
 | `/opencraft ask <消息...>` | 和“最近的”AI 助手聊天（按绑定方块距离） |
+| `/opencraft ask <名字> <消息...>` | 和指定名字的助手聊天（多助手时用；Tab 补全名字） |
 | `/opencraft summon` | 召唤一个助手（自动绑定最近的未绑定方块） |
 | `/opencraft dismiss [all]` | 送走最近 / 全部助手 |
 | `/opencraft status` | 列出你的全部助手及各自配置状态 |
