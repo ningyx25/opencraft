@@ -44,7 +44,8 @@ import java.util.List;
  * 6. summonRequiresConfigBlock —— 没有未绑定的方块时拒绝召唤；
  * 7. unboundAssistantDiscarded —— 无绑定助手被安全网清除；
  * 8. aiLogoBlockMiningAndRecipe —— 配方注册 + 徒手挖掘掉落；
- * 9. askTargetsSpecificAssistant —— 多助手时指定和哪个助手对话（ask <名字> <消息>）。
+ * 9. askTargetsSpecificAssistant —— 多助手时指定和哪个助手对话（ask <名字> <消息>）；
+ * 10. assistantRightClickInteract —— 右键助手互动（绑定/普通右键开界面/潜行切换跟随/非主人拒绝/聊天/送走）。
  */
 public class OpenCraftGameTests {
 	/**
@@ -1018,6 +1019,252 @@ public class OpenCraftGameTests {
 								+ AiCompanionService.historySize(absB));
 					}
 					// 清理：送走全部助手并清空历史
+					AiCompanionService.dismissAllFor(player);
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 验证“右键 AI 助手与之交互”的服务器端行为：
+	 * 1. 未绑定助手：右键 → 绑定主人；
+	 * 2. 主人普通右键 → 不改变跟随状态（“打开互动界面”的 S2C 在 mock 连接上是空操作）；
+	 * 3. 主人潜行右键 → 快速切换跟随/待命；
+	 * 4. 非主人右键 → 被拒绝（“只听主人的话”），状态不变；
+	 * 5. resolveOwnedAssistant：正确实体 ID → 助手；他人 / 错误 ID → null（服务端不信任客户端）；
+	 * 6. 互动界面“聊天”路径：resolve + ask(player, assistant, msg) → 消息写入该助手历史；
+	 * 7. 互动界面“送走”：dismissAssistantEntity → 助手消失，重复调用幂等返回 false。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 300)
+	public void assistantRightClickInteract(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		// 平台 + 玩家 + 配置方块（指向 mock LLM）
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+		BlockPos configBlockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, configBlockPos, player);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(level.dimension(), helper.absolutePos(configBlockPos));
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					AiAssistantEntity assistant = AiCompanionService.summonFor(player, bindPos);
+					if (assistant == null) {
+						throw new AssertionError("召唤助手失败");
+					}
+					// 1) 未绑定助手：新造一个无主助手，右键应绑定主人
+					AiAssistantEntity unbound = new AiAssistantEntity(ModEntities.AI_ASSISTANT, level);
+					unbound.setPos(helper.absoluteVec(new net.minecraft.world.phys.Vec3(4.5, 2, 4.5)));
+					level.addFreshEntity(unbound);
+					net.minecraft.world.InteractionResult bindResult =
+							unbound.interact(player, net.minecraft.world.InteractionHand.MAIN_HAND);
+					if (!bindResult.consumesAction()) {
+						throw new AssertionError("右键应消费交互");
+					}
+					if (!player.getUUID().equals(unbound.getOwnerUuid())) {
+						throw new AssertionError("未绑定助手被右键后应绑定到该玩家");
+					}
+					// 无主助手没有绑定方块，安全网会清掉它：这里直接送走，避免干扰后续步骤
+					AiCompanionService.dismissAssistantEntity(unbound);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					AiAssistantEntity assistant = ModEntities.findAssistantBoundTo(level, bindPos);
+					if (assistant == null) {
+						throw new AssertionError("找不到已召唤的助手");
+					}
+					boolean initiallyFollowing = assistant.isFollowing();
+					// 2) 主人普通右键（不潜行）→ 打开互动界面，不改变跟随状态
+					net.minecraft.world.InteractionResult normal =
+							assistant.interact(player, net.minecraft.world.InteractionHand.MAIN_HAND);
+					if (!normal.consumesAction()) {
+						throw new AssertionError("主人普通右键应消费交互");
+					}
+					if (assistant.isFollowing() != initiallyFollowing) {
+						throw new AssertionError("普通右键不应改变跟随状态");
+					}
+					// 3) 主人潜行右键 → 切换跟随/待命
+					player.setShiftKeyDown(true);
+					try {
+						net.minecraft.world.InteractionResult sneak =
+								assistant.interact(player, net.minecraft.world.InteractionHand.MAIN_HAND);
+						if (!sneak.consumesAction()) {
+							throw new AssertionError("潜行右键应消费交互");
+						}
+						if (assistant.isFollowing() == initiallyFollowing) {
+							throw new AssertionError("潜行右键应切换跟随状态");
+						}
+					} finally {
+						player.setShiftKeyDown(false);
+					}
+					// 4) 非主人右键 → 被拒绝，跟随状态与主人都不变
+					ServerPlayer other = helper.makeMockServerPlayerInLevel();
+					other.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+					boolean followBefore = assistant.isFollowing();
+					net.minecraft.world.InteractionResult stranger =
+							assistant.interact(other, net.minecraft.world.InteractionHand.MAIN_HAND);
+					if (!stranger.consumesAction()) {
+						throw new AssertionError("非主人右键应消费交互（拒绝但消费）");
+					}
+					if (assistant.isFollowing() != followBefore
+							|| !player.getUUID().equals(assistant.getOwnerUuid())) {
+						throw new AssertionError("非主人右键不应改变任何状态");
+					}
+					// 5) resolveOwnedAssistant：正确 ID → 助手；他人 → null；错误 ID → null
+					if (AiCompanionService.resolveOwnedAssistant(player, assistant.getId()) != assistant) {
+						throw new AssertionError("主人按实体 ID 应解析到自己的助手");
+					}
+					if (AiCompanionService.resolveOwnedAssistant(other, assistant.getId()) != null) {
+						throw new AssertionError("他人按实体 ID 不应解析到我的助手");
+					}
+					if (AiCompanionService.resolveOwnedAssistant(player, 999999) != null) {
+						throw new AssertionError("不存在的实体 ID 应返回 null");
+					}
+					// 6) 互动界面“聊天”路径（服务器接收器做的正是 resolve + askGui：
+					//    GUI 模式把回复回传互动界面，同时照常写入该助手的历史）
+					int before = AiCompanionService.historySize(bindPos);
+					AiAssistantEntity resolved =
+							AiCompanionService.resolveOwnedAssistant(player, assistant.getId());
+					AiCompanionService.askGui(player, resolved, "右键互动测试消息",
+							bindPos.pos(), bindPos.dimension());
+					if (AiCompanionService.historySize(bindPos) != before + 1) {
+						throw new AssertionError("互动界面聊天应把消息写入该助手的历史");
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 等流式回复写入历史（独立线程，按墙钟时间到达）
+					if (AiCompanionService.historySize(bindPos) < 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("等待回复写入历史…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					AiAssistantEntity assistant = ModEntities.findAssistantBoundTo(level, bindPos);
+					if (assistant == null) {
+						throw new AssertionError("助手不应消失");
+					}
+					// 7) 互动界面“送走”：dismissAssistantEntity → 助手消失，重复调用幂等
+					if (!AiCompanionService.dismissAssistantEntity(assistant)) {
+						throw new AssertionError("送走指定助手应成功");
+					}
+					if (!ModEntities.findAssistantsFor(player).isEmpty()) {
+						throw new AssertionError("送走后不应再有任何助手");
+					}
+					if (AiCompanionService.dismissAssistantEntity(assistant)) {
+						throw new AssertionError("重复送走应幂等返回 false");
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 验证“配置界面聊天窗口”的服务器端流程（聊天页与 /opencraft ask 共享同一份记忆）：
+	 * 1. 未绑定助手时 chatWithBlock → 自动召唤一个助手并绑定本方块，user 消息入史；
+	 * 2. 流式回复写入该方块（即该助手）的历史（thenWaitUntil 轮询）；
+	 * 3. 再次 chatWithBlock → 路由到同一个助手，历史继续增长；
+	 * 4. 别人对已占用方块 chatWithBlock → 被拒绝（历史不变、原助手不受影响）；
+	 * 5. historyJson 返回可解析的 JSON 历史快照；sendChatHistory 不崩溃（模拟连接发送被吞）。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 400)
+	public void configScreenChatWindow(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		ResourceKey<net.minecraft.world.level.Level> dimension = player.level().dimension();
+		BlockPos absPos = helper.absolutePos(blockPos);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(dimension, absPos);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 1) 未绑定助手：chatWithBlock 自动召唤并绑定本方块，user 消息立即入史
+					AiConfigHandler.chatWithBlock(player, absPos, dimension, "你好，介绍一下你自己");
+					if (ModEntities.findAssistantBoundTo(level, bindPos) == null) {
+						throw new AssertionError("聊天应自动召唤一个助手并绑定本方块");
+					}
+					if (AiCompanionService.historySize(bindPos) != 1) {
+						throw new AssertionError("发送消息后历史应新增 1 条 user 消息，实际 "
+								+ AiCompanionService.historySize(bindPos));
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 2) 等流式回复写入历史（独立线程，按墙钟时间到达）
+					if (AiCompanionService.historySize(bindPos) < 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("等待聊天回复写入历史…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 3) 再次聊天：仍是同一个助手，历史继续增长
+					AiAssistantEntity bound = ModEntities.findAssistantBoundTo(level, bindPos);
+					int size = AiCompanionService.historySize(bindPos);
+					AiConfigHandler.chatWithBlock(player, absPos, dimension, "第二条消息");
+					if (ModEntities.findAssistantBoundTo(level, bindPos) != bound) {
+						throw new AssertionError("重复聊天应路由到同一个助手");
+					}
+					if (AiCompanionService.historySize(bindPos) != size + 1) {
+						throw new AssertionError("第二条消息后历史应 +1，实际 "
+								+ AiCompanionService.historySize(bindPos));
+					}
+				})
+				.thenWaitUntil(() -> {
+					if (AiCompanionService.historySize(bindPos) < 4) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("等待第二条回复写入历史…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 4) 别人对已占用方块聊天 → 被拒绝：历史不变、原助手仍在
+					ServerPlayer other = helper.makeMockServerPlayerInLevel();
+					other.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+					int size = AiCompanionService.historySize(bindPos);
+					AiConfigHandler.chatWithBlock(other, absPos, dimension, "我能和你聊聊吗");
+					if (AiCompanionService.historySize(bindPos) != size) {
+						throw new AssertionError("他人聊天被拒后历史不应增长，实际 "
+								+ AiCompanionService.historySize(bindPos));
+					}
+					if (ModEntities.findAssistantBoundTo(level, bindPos) == null) {
+						throw new AssertionError("他人聊天被拒不应影响原助手");
+					}
+					// 5) 历史 JSON 快照可解析
+					String json = AiCompanionService.historyJson(bindPos);
+					if (json == null || !json.startsWith("[") || !json.contains("\"role\"")) {
+						throw new AssertionError("历史 JSON 快照格式不正确: " + json);
+					}
+					// 6) sendChatHistory 不崩溃（mock 连接发送失败被 try/catch 吞掉）
+					AiConfigHandler.sendChatHistory(player, absPos, dimension);
+					// 清理
 					AiCompanionService.dismissAllFor(player);
 					AiCompanionService.resetAllHistory(player);
 					helper.succeed();

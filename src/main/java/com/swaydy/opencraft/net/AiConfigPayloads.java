@@ -4,6 +4,8 @@ import com.swaydy.opencraft.OpenCraftMod;
 import io.netty.buffer.ByteBuf;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.ComponentSerialization;
 import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
@@ -94,6 +96,70 @@ public final class AiConfigPayloads {
 						BlockPos.STREAM_CODEC, AiConfigDismissPayload::pos,
 						DIMENSION_CODEC, AiConfigDismissPayload::dimension,
 						AiConfigDismissPayload::new);
+
+		@Override
+		public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
+	/** 客户端 → 服务器：从配置界面的聊天窗口向本方块的助手发送一条消息。 */
+	public record AiConfigChatPayload(String message, BlockPos pos, ResourceKey<Level> dimension)
+			implements CustomPacketPayload {
+		public static final CustomPacketPayload.Type<AiConfigChatPayload> TYPE =
+				new CustomPacketPayload.Type<>(OpenCraftMod.id("ai_config_chat"));
+		public static final StreamCodec<ByteBuf, AiConfigChatPayload> STREAM_CODEC =
+				StreamCodec.composite(
+						ByteBufCodecs.STRING_UTF8, AiConfigChatPayload::message,
+						BlockPos.STREAM_CODEC, AiConfigChatPayload::pos,
+						DIMENSION_CODEC, AiConfigChatPayload::dimension,
+						AiConfigChatPayload::new);
+
+		@Override
+		public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
+	/** 客户端 → 服务器：请求本方块助手的对话历史（聊天窗口打开时填充）。 */
+	public record AiConfigChatHistoryPayload(BlockPos pos, ResourceKey<Level> dimension)
+			implements CustomPacketPayload {
+		public static final CustomPacketPayload.Type<AiConfigChatHistoryPayload> TYPE =
+				new CustomPacketPayload.Type<>(OpenCraftMod.id("ai_config_chat_history"));
+		public static final StreamCodec<ByteBuf, AiConfigChatHistoryPayload> STREAM_CODEC =
+				StreamCodec.composite(
+						BlockPos.STREAM_CODEC, AiConfigChatHistoryPayload::pos,
+						DIMENSION_CODEC, AiConfigChatHistoryPayload::dimension,
+						AiConfigChatHistoryPayload::new);
+
+		@Override
+		public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
+	/**
+	 * 服务器 → 客户端：配置界面聊天窗口的事件。
+	 * kind 取值：
+	 * - "history"  —— 对话历史快照（text 为 JSON 数组 [{"role","content"},...]，客户端替换整个窗口）；
+	 * - "thinking" —— 助手开始思考（客户端显示“正在思考…”占位）；
+	 * - "delta"    —— 流式回复增量（客户端追加到当前助手气泡）；
+	 * - "reply"    —— 流式结束的完整回复（客户端用其替换/收尾当前气泡）；
+	 * - "error"    —— 出错（text 为可直接渲染的 Component JSON，含翻译）。
+	 */
+	public record AiConfigChatEventPayload(String kind, Component text,
+	                                       BlockPos pos, ResourceKey<Level> dimension)
+			implements CustomPacketPayload {
+		public static final CustomPacketPayload.Type<AiConfigChatEventPayload> TYPE =
+				new CustomPacketPayload.Type<>(OpenCraftMod.id("ai_config_chat_event"));
+		public static final StreamCodec<ByteBuf, AiConfigChatEventPayload> STREAM_CODEC =
+				StreamCodec.composite(
+						ByteBufCodecs.STRING_UTF8, AiConfigChatEventPayload::kind,
+						ComponentSerialization.TRUSTED_CONTEXT_FREE_STREAM_CODEC,
+						AiConfigChatEventPayload::text,
+						BlockPos.STREAM_CODEC, AiConfigChatEventPayload::pos,
+						DIMENSION_CODEC, AiConfigChatEventPayload::dimension,
+						AiConfigChatEventPayload::new);
 
 		@Override
 		public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {

@@ -6,11 +6,13 @@ import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.ai.AiConfigHandler;
 import com.swaydy.opencraft.block.AiLogoBlockEntity;
 import com.swaydy.opencraft.block.ModBlocks;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
@@ -208,23 +210,48 @@ public class AiAssistantEntity extends PathfinderMob {
 		}
 		UUID ownerUuid = getOwnerUuid();
 		if (ownerUuid == null) {
+			// 第一次右键：绑定主人
 			setOwner(player);
 			player.displayClientMessage(Component.translatable("entity.opencraft.ai_assistant.bind"),
 					true);
 			OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 绑定了 AI 助手", player.getName().getString());
 		} else if (ownerUuid.equals(player.getUUID())) {
-			boolean following = !isFollowing();
-			setFollowing(following);
-			player.displayClientMessage(
-					Component.translatable(following
-							? "entity.opencraft.ai_assistant.following"
-							: "entity.opencraft.ai_assistant.staying"),
-					true);
+			if (player.isShiftKeyDown()) {
+				// 潜行右键：快速切换跟随/待命（保留原有快捷操作）
+				boolean following = !isFollowing();
+				setFollowing(following);
+				player.displayClientMessage(
+						Component.translatable(following
+								? "entity.opencraft.ai_assistant.following"
+								: "entity.opencraft.ai_assistant.staying"),
+						true);
+			} else {
+				// 普通右键：给主人打开“互动界面”（和这个助手聊天 / 跟随待命 / 送走）
+				openInteractScreen((ServerPlayer) player);
+			}
 		} else {
 			player.displayClientMessage(Component.translatable("entity.opencraft.ai_assistant.not_owner"),
 					true);
 		}
 		return InteractionResult.SUCCESS;
+	}
+
+	/** 给主人发送互动界面数据（打开/刷新右键互动 GUI）。 */
+	private void openInteractScreen(ServerPlayer player) {
+		String model = getConfig().model == null ? "" : getConfig().model;
+		// 聊天回复的 S2C 事件按“绑定方块坐标”路由回互动界面，因此把方块坐标一起下发
+		GlobalPos block = getConfigBlock();
+		BlockPos blockPos = block == null ? this.blockPosition() : block.pos();
+		ResourceKey<Level> dimension = block == null ? this.level().dimension() : block.dimension();
+		try {
+			net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player,
+					new com.swaydy.opencraft.net.AssistantPayloads.AssistantInteractPayload(
+							this.getId(), getDisplayName().getString(), isFollowing(), true, model,
+							blockPos, dimension));
+		} catch (Exception e) {
+			// 模拟连接等场景发送失败：静默忽略（与配置界面一致）
+			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送互动界面数据失败（可能是模拟连接）: {}", e.toString());
+		}
 	}
 
 	// ------------------------------------------------------------------

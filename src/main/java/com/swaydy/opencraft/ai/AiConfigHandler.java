@@ -136,6 +136,76 @@ public final class AiConfigHandler {
 	}
 
 	/**
+	 * 配置界面聊天窗口：向本方块的助手发送一条消息（异步）。
+	 * - 本方块已绑定自己的助手 → 直接与它对话；
+	 * - 已绑定别人的助手 → 拒绝（一方块一助手）；
+	 * - 尚未绑定任何助手 → 自动用本方块召唤并绑定一个，再开始对话（与命令 ask 的便利一致）。
+	 * 回复以 S2C 事件回传窗口（不广播世界聊天）。
+	 */
+	public static void chatWithBlock(ServerPlayer player, BlockPos pos, ResourceKey<Level> dimension,
+	                                 String message) {
+		String text = message == null ? "" : message.trim();
+		if (text.isEmpty()) {
+			return;
+		}
+		AiLogoBlockEntity blockEntity = findBlock(player, pos, dimension);
+		if (blockEntity == null) {
+			sendChatError(player, pos, dimension, "command.opencraft.config.no_block");
+			return;
+		}
+		ServerLevel level = player.level().getServer().getLevel(dimension);
+		GlobalPos bindPos = GlobalPos.of(dimension, pos);
+		AiAssistantEntity assistant = level == null ? null : ModEntities.findAssistantBoundTo(level, bindPos);
+		if (assistant == null) {
+			// 便利：还没有助手时自动用本方块召唤一个（绑定本方块）
+			assistant = AiCompanionService.summonFor(player, bindPos);
+			if (assistant == null) {
+				sendChatError(player, pos, dimension, "command.opencraft.summon.failed");
+				return;
+			}
+			syncBoundBlockPoweredState(level, bindPos);
+		} else if (assistant.getOwnerUuid() == null || !assistant.getOwnerUuid().equals(player.getUUID())) {
+			sendChatError(player, pos, dimension, "command.opencraft.summon.block_occupied");
+			return;
+		}
+		AiCompanionService.askGui(player, assistant, text, pos, dimension);
+	}
+
+	/** 配置界面聊天窗口：把本方块助手的对话历史以 "history" 事件回传（用于打开时填充）。 */
+	public static void sendChatHistory(ServerPlayer player, BlockPos pos, ResourceKey<Level> dimension) {
+		AiLogoBlockEntity blockEntity = findBlock(player, pos, dimension);
+		if (blockEntity == null) {
+			return;
+		}
+		ServerLevel level = player.level().getServer().getLevel(dimension);
+		GlobalPos bindPos = GlobalPos.of(dimension, pos);
+		AiAssistantEntity assistant = level == null ? null : ModEntities.findAssistantBoundTo(level, bindPos);
+		// 只把自己的助手历史发给本人；没绑定/别人的 → 空历史
+		boolean own = assistant != null && assistant.getOwnerUuid() != null
+				&& assistant.getOwnerUuid().equals(player.getUUID());
+		String json = own ? AiCompanionService.historyJson(bindPos) : "[]";
+		try {
+			ServerPlayNetworking.send(player,
+					new AiConfigPayloads.AiConfigChatEventPayload(
+							"history", Component.literal(json), pos, dimension));
+		} catch (Exception e) {
+			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送聊天历史失败（可能是模拟连接）: {}", e.toString());
+		}
+	}
+
+	/** 给配置界面聊天窗口回传一个错误事件（Component 用翻译 key 构造，客户端本地化）。 */
+	private static void sendChatError(ServerPlayer player, BlockPos pos, ResourceKey<Level> dimension,
+	                                  String translationKey) {
+		try {
+			ServerPlayNetworking.send(player,
+					new AiConfigPayloads.AiConfigChatEventPayload(
+							"error", Component.translatable(translationKey), pos, dimension));
+		} catch (Exception e) {
+			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送聊天窗口错误事件失败（可能是模拟连接）: {}", e.toString());
+		}
+	}
+
+	/**
 	 * 让指定 AI 徽标方块的 powered 状态自动反映“是否有助手绑定它”：
 	 * 有任一助手绑定 → 亮起（powered=true）；无人绑定 → 熄灭（powered=false）。
 	 */

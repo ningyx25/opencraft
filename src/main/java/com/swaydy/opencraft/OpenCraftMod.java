@@ -5,11 +5,15 @@ import com.swaydy.opencraft.ai.AiConfigHandler;
 import com.swaydy.opencraft.block.ModBlockEntities;
 import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.command.ModCommands;
+import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.ModEntities;
 import com.swaydy.opencraft.net.AiConfigPayloads;
+import com.swaydy.opencraft.net.AssistantPayloads;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.core.GlobalPos;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 
 import net.minecraft.resources.Identifier;
@@ -82,6 +86,98 @@ public class OpenCraftMod implements ModInitializer {
 					context.server().execute(() -> AiConfigHandler.dismissWithBlock(
 							player, payload.pos(), payload.dimension()));
 				});
+		// 配置界面聊天窗口：注册类型 + 发消息/取历史接收器 + 事件下发
+		PayloadTypeRegistry.playC2S().register(
+				AiConfigPayloads.AiConfigChatPayload.TYPE,
+				AiConfigPayloads.AiConfigChatPayload.STREAM_CODEC);
+		PayloadTypeRegistry.playC2S().register(
+				AiConfigPayloads.AiConfigChatHistoryPayload.TYPE,
+				AiConfigPayloads.AiConfigChatHistoryPayload.STREAM_CODEC);
+		PayloadTypeRegistry.playS2C().register(
+				AiConfigPayloads.AiConfigChatEventPayload.TYPE,
+				AiConfigPayloads.AiConfigChatEventPayload.STREAM_CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(
+				AiConfigPayloads.AiConfigChatPayload.TYPE,
+				(payload, context) -> {
+					ServerPlayer player = context.player();
+					context.server().execute(() -> AiConfigHandler.chatWithBlock(
+							player, payload.pos(), payload.dimension(), payload.message()));
+				});
+		ServerPlayNetworking.registerGlobalReceiver(
+				AiConfigPayloads.AiConfigChatHistoryPayload.TYPE,
+				(payload, context) -> {
+					ServerPlayer player = context.player();
+					context.server().execute(() -> AiConfigHandler.sendChatHistory(
+							player, payload.pos(), payload.dimension()));
+				});
+
+		// 右键 AI 助手互动网络包：注册类型 + 聊天/跟随/送走接收器
+		PayloadTypeRegistry.playC2S().register(
+				AssistantPayloads.AssistantChatPayload.TYPE,
+				AssistantPayloads.AssistantChatPayload.STREAM_CODEC);
+		PayloadTypeRegistry.playC2S().register(
+				AssistantPayloads.AssistantToggleFollowPayload.TYPE,
+				AssistantPayloads.AssistantToggleFollowPayload.STREAM_CODEC);
+		PayloadTypeRegistry.playC2S().register(
+				AssistantPayloads.AssistantDismissPayload.TYPE,
+				AssistantPayloads.AssistantDismissPayload.STREAM_CODEC);
+		PayloadTypeRegistry.playS2C().register(
+				AssistantPayloads.AssistantInteractPayload.TYPE,
+				AssistantPayloads.AssistantInteractPayload.STREAM_CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(
+				AssistantPayloads.AssistantChatPayload.TYPE,
+				(payload, context) -> context.server().execute(() -> {
+					ServerPlayer player = context.player();
+					AiAssistantEntity assistant =
+							AiCompanionService.resolveOwnedAssistant(player, payload.entityId());
+					if (assistant == null) {
+						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
+						return;
+					}
+					String message = payload.message().trim();
+					if (message.isEmpty()) {
+						player.sendSystemMessage(Component.translatable("command.opencraft.ask.blank"));
+						return;
+					}
+					GlobalPos block = assistant.getConfigBlock();
+					if (block == null) {
+						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
+						return;
+					}
+					// GUI 模式：回复以流式增量/完整回复事件回传互动界面（私人会话，不广播世界聊天）
+					AiCompanionService.askGui(player, assistant, message,
+							block.pos(), block.dimension());
+				}));
+		ServerPlayNetworking.registerGlobalReceiver(
+				AssistantPayloads.AssistantToggleFollowPayload.TYPE,
+				(payload, context) -> context.server().execute(() -> {
+					ServerPlayer player = context.player();
+					AiAssistantEntity assistant =
+							AiCompanionService.resolveOwnedAssistant(player, payload.entityId());
+					if (assistant == null) {
+						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
+						return;
+					}
+					boolean following = !assistant.isFollowing();
+					assistant.setFollowing(following);
+					player.displayClientMessage(Component.translatable(following
+							? "entity.opencraft.ai_assistant.following"
+							: "entity.opencraft.ai_assistant.staying"), true);
+				}));
+		ServerPlayNetworking.registerGlobalReceiver(
+				AssistantPayloads.AssistantDismissPayload.TYPE,
+				(payload, context) -> context.server().execute(() -> {
+					ServerPlayer player = context.player();
+					AiAssistantEntity assistant =
+							AiCompanionService.resolveOwnedAssistant(player, payload.entityId());
+					if (assistant == null) {
+						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
+						return;
+					}
+					if (AiCompanionService.dismissAssistantEntity(assistant)) {
+						player.sendSystemMessage(Component.translatable("command.opencraft.dismiss.success"));
+					}
+				}));
 	}
 
 	public static Identifier id(String path) {

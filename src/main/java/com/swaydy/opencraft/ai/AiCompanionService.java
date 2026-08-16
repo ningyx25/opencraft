@@ -1,22 +1,27 @@
 package com.swaydy.opencraft.ai;
 
+import com.google.gson.Gson;
 import com.swaydy.opencraft.OpenCraftMod;
 import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.ModEntities;
+import com.swaydy.opencraft.net.AiConfigPayloads;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -24,6 +29,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -50,11 +56,24 @@ public final class AiCompanionService {
 	});
 
 	/**
-	 * 流式回复刷新到玩家 action bar 的最小间隔（毫秒）。
-	 * SSE 增量通常很小且很密集，按时间节流合并后再上屏，
-	 * 避免每个 token 都向玩家推送一次网络包。
+	 * 流式回复每次“上屏”的最小间隔（毫秒）。
+	 * SSE 增量可能极不均匀（端点先长时间 prefill、随后一次性爆发），
+	 * 因此显示侧按“打字机”节奏逐步 reveal（见 {@link #LIVE_REVEAL_CHARS}），
+	 * 保证无论端点如何突发，玩家都能肉眼看到回复逐字出现。
 	 */
-	private static final long FLUSH_INTERVAL_MS = 150L;
+	private static final long FLUSH_INTERVAL_MS = 80L;
+
+	/** 流式进行中每次最多新显示的字符数（打字机步长，80ms 一次 ≈ 100 字符/秒，接近阅读速度）。 */
+	private static final int LIVE_REVEAL_CHARS = 8;
+
+	/**
+	 * 收尾阶段最多再刷新的次数：流结束后剩余文本按自适应步长推完，
+	 * 保证长回复也只在 FLUSH_INTERVAL_MS * MAX_REVEAL_FLUSHES（约 5 秒）内显示完。
+	 */
+	private static final int MAX_REVEAL_FLUSHES = 60;
+
+	/** 序列化对话历史 JSON（配置界面聊天窗口用）。 */
+	private static final Gson GSON = new Gson();
 
 	/**
 	 * 对话历史，按“助手绑定的 AI 徽标方块”键控（每个方块至多一个助手，
@@ -109,13 +128,37 @@ public final class AiCompanionService {
 	 * 回复会以该助手自己的名字广播到聊天。
 	 */
 	public static void ask(ServerPlayer player, AiAssistantEntity assistant, String question) {
+		askInternal(player, assistant, question, null, null);
+	}
+
+	/**
+	 * 配置界面聊天窗口：向【指定】助手提问（异步），回复通过 S2C 事件回传窗口，
+	 * 不广播到世界聊天（私人会话）。与 {@link #ask(ServerPlayer, AiAssistantEntity, String)}
+	 * 共享同一份对话历史与动作执行逻辑。
+	 *
+	 * @param guiBlockPos / guiDimension 非空时表示 GUI 模式：流式增量以 "delta" 事件
+	 *                     推送到客户端窗口，结束时以 "reply" 事件回传完整回复；
+	 *                     为 null 时保持原有 action bar + 广播行为。
+	 */
+	public static void askGui(ServerPlayer player, AiAssistantEntity assistant, String question,
+	                          BlockPos guiBlockPos, ResourceKey<Level> guiDimension) {
+		askInternal(player, assistant, question, guiBlockPos, guiDimension);
+	}
+
+	private static void askInternal(ServerPlayer player, AiAssistantEntity assistant, String question,
+	                                BlockPos guiBlockPos, ResourceKey<Level> guiDimension) {
 		if (assistant == null) {
 			player.sendSystemMessage(Component.translatable("command.opencraft.ask.no_assistant"));
 			return;
 		}
 		AiBlockConfig config = assistant.getConfig();
 		if (!config.isUsable()) {
-			player.sendSystemMessage(Component.translatable("command.opencraft.ask.no_config"));
+			if (guiBlockPos != null && guiDimension != null) {
+				sendGuiEvent(player, guiBlockPos, guiDimension, "error",
+						Component.translatable("command.opencraft.ask.no_config"));
+			} else {
+				player.sendSystemMessage(Component.translatable("command.opencraft.ask.no_config"));
+			}
 			return;
 		}
 		GlobalPos historyKey = historyKeyFor(assistant);
@@ -140,11 +183,15 @@ public final class AiCompanionService {
 				messages,
 				config.timeoutSeconds);
 
-		// 提示玩家助手正在思考（流式回复会逐步覆盖这行提示）
-		player.displayClientMessage(Component.translatable("command.opencraft.ask.thinking"), true);
-
-		// 流式回复：增量文本实时显示在玩家的 action bar，结束后广播完整回复
-		streamReply(player, assistant, request, historyKey);
+		if (guiBlockPos != null && guiDimension != null) {
+			// GUI 模式：先告诉窗口“正在思考”，增量与最终回复都走 S2C 事件
+			sendGuiEvent(player, guiBlockPos, guiDimension, "thinking", Component.empty());
+			streamReply(player, assistant, request, historyKey, guiBlockPos, guiDimension);
+		} else {
+			// 提示玩家助手正在思考（流式回复会逐步覆盖这行提示）
+			player.displayClientMessage(Component.translatable("command.opencraft.ask.thinking"), true);
+			streamReply(player, assistant, request, historyKey, null, null);
+		}
 	}
 
 	/** 召唤（或找到）玩家最近的助手：自动绑定最近的、尚未被绑定的 AI 徽标方块。 */
@@ -293,6 +340,38 @@ public final class AiCompanionService {
 		return true;
 	}
 
+	/**
+	 * 送走【指定】助手实体（右键互动界面的“送走”按钮）。
+	 * 只送走仍然存活、仍绑定配置方块的助手；已消失/已送走则返回 false（幂等）。
+	 */
+	public static boolean dismissAssistantEntity(AiAssistantEntity assistant) {
+		if (assistant == null || assistant.isRemoved() || !assistant.isAlive()) {
+			return false;
+		}
+		dismissAssistant(assistant);
+		return true;
+	}
+
+	/**
+	 * 按实体 ID 解析“属于该玩家的助手”，用于右键互动界面发来的请求：
+	 * 实体必须存在于玩家当前维度、是 AI 助手、且主人是该玩家，否则返回 null
+	 * （服务端每次请求都重新校验，不信任客户端）。
+	 */
+	public static AiAssistantEntity resolveOwnedAssistant(ServerPlayer player, int entityId) {
+		if (player == null) {
+			return null;
+		}
+		net.minecraft.world.entity.Entity entity = player.level().getEntity(entityId);
+		if (!(entity instanceof AiAssistantEntity assistant)) {
+			return null;
+		}
+		UUID ownerUuid = assistant.getOwnerUuid();
+		if (ownerUuid == null || !ownerUuid.equals(player.getUUID())) {
+			return null;
+		}
+		return assistant;
+	}
+
 	private static void dismissAssistant(AiAssistantEntity assistant) {
 		GlobalPos configBlock = assistant.getConfigBlock();
 		assistant.discard();
@@ -342,10 +421,35 @@ public final class AiCompanionService {
 	 */
 	private static void streamReply(ServerPlayer player, AiAssistantEntity assistant,
 	                                LlmClient.Request request, GlobalPos historyKey) {
+		streamReply(player, assistant, request, historyKey, null, null);
+	}
+
+	/**
+	 * 发起一次流式对话并处理回调：
+	 * - 增量文本按 {@link #FLUSH_INTERVAL_MS} 节流后实时显示在提问玩家的
+	 *   action bar（“流式”效果：回复一个字一个字地出现）；
+	 * - 流结束后回到服务端线程收尾（{@link #finishStreamReply}）：执行动作标记、
+	 *   写入对话历史（historyKey 非空时）、以助手名义把完整回复广播到聊天；
+	 * - 失败时向提问玩家发送错误提示。
+	 *
+	 * guiBlockPos/guiDimension 非空时为【GUI 模式】（配置界面聊天窗口）：
+	 * - 增量以 "delta" 事件推送给窗口，结束以 "reply" 事件回传完整回复（不广播世界聊天）；
+	 * - 否则为命令/action bar 模式（原有行为）。
+	 *
+	 * 端点不支持流式（忽略 stream 参数）时，LlmClient 会退化为一次性收到
+	 * 完整回复（一次 onDelta + onDone），本方法无需区分两种模式。
+	 * 所有 HTTP/流解析都在工作线程进行，绝不阻塞服务端主线程。
+	 */
+	private static void streamReply(ServerPlayer player, AiAssistantEntity assistant,
+	                                LlmClient.Request request, GlobalPos historyKey,
+	                                BlockPos guiBlockPos, ResourceKey<Level> guiDimension) {
+		boolean gui = guiBlockPos != null && guiDimension != null;
 		MinecraftServer server = player.level().getServer();
 		StringBuilder buffer = new StringBuilder();
 		// 仅在 LlmClient 的工作线程上读写（回调串行），无需加锁
 		long[] lastFlushAt = {0L};
+		// 已“reveal”（上屏）到 buffer 的哪个位置；流式进行中按打字机步长推进
+		int[] revealed = {0};
 
 		LlmClient.StreamListener listener = new LlmClient.StreamListener() {
 			@Override
@@ -354,25 +458,83 @@ public final class AiCompanionService {
 					return;
 				}
 				buffer.append(delta);
-				String snapshot = buffer.toString();
-				long now = System.currentTimeMillis();
-				if (now - lastFlushAt[0] >= FLUSH_INTERVAL_MS) {
-					lastFlushAt[0] = now;
-					runOnServer(server, () -> showStreamingText(player, snapshot));
-				}
+				maybeReveal(false);
 			}
 
 			@Override
 			public void onDone() {
 				String full = buffer.toString();
-				runOnServer(server, () -> finishStreamReply(player, assistant, historyKey, full));
+				// 1) 先落账（服务端线程）：执行动作 + 写入历史——与上屏显示无关，立即完成
+				runOnServer(server, () -> recordAssistantReply(player, assistant, historyKey, full));
+				// 2) 剩余文本的“打字机”reveal 与最终收尾交给【独立异步任务】：
+				//    端点即使一次性爆发（如 winclaw 先 6 秒 prefill 再 100ms 内吐完），
+				//    回复也逐段上屏；同时本回调立即返回，SSE 读取线程马上关闭连接，
+				//    不阻塞端点/本地 mock（单线程服务器）的后续请求。
+				CompletableFuture.runAsync(() -> {
+					while (revealed[0] < buffer.length()) {
+						maybeReveal(true);
+						if (revealed[0] >= buffer.length()) {
+							break;
+						}
+						try {
+							Thread.sleep(FLUSH_INTERVAL_MS);
+						} catch (InterruptedException e) {
+							Thread.currentThread().interrupt();
+							break;
+						}
+					}
+					// 3) 显示完成后收尾（服务端线程）：GUI 回传 "reply" / 命令模式广播完整回复
+					if (gui) {
+						runOnServer(server, () -> finishGuiReply(player, assistant,
+								guiBlockPos, guiDimension, full));
+					} else {
+						runOnServer(server, () -> finishStreamReply(player, assistant, full));
+					}
+				}, EXECUTOR);
 			}
 
 			@Override
 			public void onError(String error) {
 				String reason = error == null || error.isBlank() ? "未知错误" : error;
-				runOnServer(server, () -> player.sendSystemMessage(
-						Component.translatable("command.opencraft.ask.error", reason)));
+				runOnServer(server, () -> {
+					if (gui) {
+						sendGuiEvent(player, guiBlockPos, guiDimension, "error",
+								Component.translatable("command.opencraft.ask.error", reason));
+					} else {
+						player.sendSystemMessage(
+								Component.translatable("command.opencraft.ask.error", reason));
+					}
+				});
+			}
+
+			/**
+			 * 按节流节奏推进“已显示”位置并推送快照（action bar 或 GUI "delta" 事件）。
+			 * finalizing=true（收尾阶段）时不受时间节流限制，但按剩余量自适应步长，
+			 * 保证长回复也只在 {@link #MAX_REVEAL_FLUSHES} 次内显示完。
+			 */
+			private void maybeReveal(boolean finalizing) {
+				long now = System.currentTimeMillis();
+				if (!finalizing && now - lastFlushAt[0] < FLUSH_INTERVAL_MS) {
+					return; // 时间未到：等下一个 delta 或收尾阶段再推
+				}
+				int len = buffer.length();
+				if (revealed[0] >= len) {
+					return;
+				}
+				int step = finalizing
+						? Math.max(LIVE_REVEAL_CHARS,
+								(len - revealed[0] + MAX_REVEAL_FLUSHES - 1) / MAX_REVEAL_FLUSHES)
+						: LIVE_REVEAL_CHARS;
+				int target = Math.min(len, revealed[0] + step);
+				revealed[0] = target;
+				lastFlushAt[0] = now;
+				String snapshot = buffer.substring(0, target);
+				if (gui) {
+					runOnServer(server, () -> sendGuiEvent(player, guiBlockPos, guiDimension,
+							"delta", Component.literal(snapshot)));
+				} else {
+					runOnServer(server, () -> showStreamingText(player, snapshot));
+				}
 			}
 		};
 		CompletableFuture.runAsync(() -> LlmClient.stream(request, listener), EXECUTOR);
@@ -380,39 +542,84 @@ public final class AiCompanionService {
 
 	/** 把流式回复的当前进度显示到玩家的 action bar（overlay，可被下一次更新覆盖）。 */
 	private static void showStreamingText(ServerPlayer player, String text) {
-		// action bar 是单行渲染：把换行/连续空白折叠成单个空格，避免排版错乱
+		// action bar 是单行渲染：把换行/连续空白折叠成单个空格，避免排版错乱；
+		// 末尾加 ▍ 光标提示“正在生成中”
 		String preview = text.replaceAll("\\s+", " ").trim();
-		player.displayClientMessage(Component.literal(preview), true);
+		player.displayClientMessage(Component.literal(preview + "▍"), true);
 	}
 
 	/**
-	 * 流式结束后（服务端线程）收尾：
-	 * 1) 清掉 action bar 上的流式残留；
-	 * 2) 解析并执行动作标记（可选，由方块配置控制）；
-	 * 3) 把完整回复（含动作标记原文）写入该助手的历史（historyKey 非空时）；
-	 * 4) 以助手名义把去掉动作标记的文本广播到聊天。
+	 * 立即落账（服务端线程）：解析/执行动作标记（若 allowActions）、
+	 * 把完整回复（含动作标记原文）写入该助手的历史（historyKey 非空时）。
+	 * 与上屏显示无关，不等打字机 reveal——保证动作/记忆第一时间生效。
 	 */
-	private static void finishStreamReply(ServerPlayer player, AiAssistantEntity assistant,
-	                                      GlobalPos historyKey, String full) {
-		player.displayClientMessage(Component.empty(), true);
+	private static void recordAssistantReply(ServerPlayer player, AiAssistantEntity assistant,
+	                                         GlobalPos historyKey, String full) {
 		if (full == null || full.isBlank()) {
-			return; // 空回复：不广播也不报错（与旧行为一致）
+			return; // 空回复：不落账（与旧行为一致）
 		}
-		String content = full;
 		if (assistant.getConfig().allowActions) {
 			List<AiAction> actions = AiActionParser.parse(full);
 			if (!actions.isEmpty()) {
 				executeActions(player, assistant, actions);
 			}
-			content = AiActionParser.stripActions(full);
 		}
 		if (historyKey != null) {
 			HISTORY.computeIfAbsent(historyKey, k -> new ArrayList<>())
 					.add(LlmClient.Message.assistant(full));
 		}
-		if (!content.isBlank()) {
+	}
+
+	/**
+	 * 流式显示结束后（服务端线程）收尾（命令模式）：
+	 * 清掉 action bar 上的流式残留，以助手名义把去掉动作标记的完整回复广播到聊天。
+	 */
+	private static void finishStreamReply(ServerPlayer player, AiAssistantEntity assistant, String full) {
+		player.displayClientMessage(Component.empty(), true);
+		if (full == null || full.isBlank()) {
+			return; // 空回复：不广播也不报错（与旧行为一致）
+		}
+		String content = assistant.getConfig().allowActions ? AiActionParser.stripActions(full) : full;
+		if (content != null && !content.isBlank()) {
 			speakAsAssistant((ServerLevel) player.level(), assistant, content);
 		}
+	}
+
+	/**
+	 * 流式显示结束后（服务端线程）收尾（GUI 模式）：
+	 * 回复只以 "reply" 事件回传窗口（去掉动作标记的文本），不广播到世界聊天（私人会话）。
+	 * 历史与动作已在 {@link #recordAssistantReply} 落账。
+	 */
+	private static void finishGuiReply(ServerPlayer player, AiAssistantEntity assistant,
+	                                   BlockPos guiBlockPos, ResourceKey<Level> guiDimension, String full) {
+		if (full == null || full.isBlank()) {
+			sendGuiEvent(player, guiBlockPos, guiDimension, "reply", Component.empty());
+			return; // 空回复：不回传文本
+		}
+		String content = assistant.getConfig().allowActions ? AiActionParser.stripActions(full) : full;
+		sendGuiEvent(player, guiBlockPos, guiDimension, "reply",
+				Component.literal(content == null ? "" : content));
+	}
+
+	/** 给配置界面聊天窗口发送一个 S2C 事件（模拟连接发送失败时静默忽略）。 */
+	private static void sendGuiEvent(ServerPlayer player, BlockPos guiBlockPos,
+	                                 ResourceKey<Level> guiDimension, String kind, Component text) {
+		try {
+			ServerPlayNetworking.send(player,
+					new AiConfigPayloads.AiConfigChatEventPayload(kind, text, guiBlockPos, guiDimension));
+		} catch (Exception e) {
+			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送聊天窗口事件({})失败（可能是模拟连接）: {}",
+					kind, e.toString());
+		}
+	}
+
+	/**
+	 * 某方块（即其绑定助手）对话历史的 JSON 快照（[{role, content}, ...]），
+	 * 供配置界面聊天窗口打开时填充；Gson 序列化 {@link LlmClient.Message}。
+	 */
+	public static String historyJson(GlobalPos block) {
+		List<LlmClient.Message> list = block == null ? null : HISTORY.get(block);
+		return GSON.toJson(list == null ? List.of() : list);
 	}
 
 	/** 把任务调度回服务端线程执行；服务器已停止时静默丢弃并记日志。 */
