@@ -123,6 +123,15 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// 纯 Java 单测（LlmClient SSE 工具调用分片合并、AgentRegistry 等，无 Minecraft 运行时依赖）
+	testImplementation "org.junit.jupiter:junit-jupiter-api:5.10.2"
+	testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:5.10.2"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher:1.10.2"
+}
+
+test {
+	useJUnitPlatform()
 }
 
 processResources {

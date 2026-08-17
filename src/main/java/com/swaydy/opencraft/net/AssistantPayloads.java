@@ -29,10 +29,11 @@ public final class AssistantPayloads {
 	 * 服务器 → 客户端：打开（或刷新）AI 助手互动界面。
 	 * displayName 为助手的显示名（名字 + 坐标）；following 为当前跟随状态；
 	 * isOwner 表示是否本玩家的助手（决定“送走”按钮）；model 为绑定方块配置的模型名；
+	 * agent 为绑定方块配置的 Agent 预设 id（只读展示）；
 	 * blockPos/dimension 为助手绑定方块的坐标（聊天回复的 S2C 事件按它路由回本界面）。
 	 */
 	public record AssistantInteractPayload(int entityId, String displayName, boolean following,
-	                                       boolean isOwner, String model,
+	                                       boolean isOwner, String model, String agent,
 	                                       BlockPos blockPos, ResourceKey<Level> dimension)
 			implements CustomPacketPayload {
 		public static final CustomPacketPayload.Type<AssistantInteractPayload> TYPE =
@@ -44,6 +45,7 @@ public final class AssistantPayloads {
 						ByteBufCodecs.BOOL, AssistantInteractPayload::following,
 						ByteBufCodecs.BOOL, AssistantInteractPayload::isOwner,
 						ByteBufCodecs.STRING_UTF8, AssistantInteractPayload::model,
+						ByteBufCodecs.STRING_UTF8, AssistantInteractPayload::agent,
 						BlockPos.STREAM_CODEC, AssistantInteractPayload::blockPos,
 						DIMENSION_CODEC, AssistantInteractPayload::dimension,
 						AssistantInteractPayload::new);

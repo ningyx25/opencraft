@@ -28,9 +28,11 @@ import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
 import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.item.ItemStack;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -58,6 +60,16 @@ public class AiAssistantEntity extends PathfinderMob {
 	/** 绑定的 AI 徽标方块位置（服务端专用，随存档持久化）。 */
 	private GlobalPos configBlock;
 
+	/**
+	 * 助手自己的 9 格背包（随存档持久化）。
+	 * 挖掘掉落物默认进这里；InventoryPlugin 据此清单/装备/递给主人。
+	 * 注意：registerGoals 在字段初始化前调用，背包不能在 registerGoals 里引用。
+	 */
+	private final SimpleContainer inventory = new SimpleContainer(9);
+
+	/** 当前正在执行的任务（服务端字段，不持久化；tick 驱动，见 {@link TaskHostGoal}）。 */
+	private AssistantTask currentTask;
+
 	/** 无主状态下的散步目标（有主人后停用）。 */
 
 	public AiAssistantEntity(EntityType<? extends AiAssistantEntity> type, Level level) {
@@ -77,8 +89,12 @@ public class AiAssistantEntity extends PathfinderMob {
 	protected void registerGoals() {
 		// 注意：Mob.<init> 会先于本实体的字段初始化调用 registerGoals，
 		// 所以这里不能引用任何实例字段，所有 Goal 都要在方法内 new。
+		// 优先级 0：任务宿主（代理当前任务，任务活跃时压制其他 Goal）
+		this.goalSelector.addGoal(0, new TaskHostGoal(this));
+		// 优先级 0：漂浮（防止溺水/坠落判定）
 		this.goalSelector.addGoal(0, new FloatGoal(this));
-		this.goalSelector.addGoal(1, new FollowAssistantOwnerGoal(this));
+		// 插件 Goal（如跟随）由当前 Agent 预设注册；getConfig 在字段初始化后才可用，
+		// 因此这里的插件注册放到首次 tick 时懒加载（见 ensureAgentGoals）
 		this.goalSelector.addGoal(2, new LookAtPlayerGoal(this, Player.class, 8.0F));
 		this.goalSelector.addGoal(3, new RandomLookAroundGoal(this));
 		// 无主人时才原地散步
@@ -88,6 +104,27 @@ public class AiAssistantEntity extends PathfinderMob {
 				return !AiAssistantEntity.this.hasOwner() && super.canUse();
 			}
 		});
+	}
+
+	/** 是否已按当前 Agent 预设注册过插件 Goal（懒加载一次）。 */
+	private boolean agentGoalsRegistered = false;
+
+	/**
+	 * 确保已按当前 Agent 预设注册插件 Goal（跟随等）。
+	 * registerGoals 在字段初始化前调用，无法读配置；因此延迟到第一次 tick 再注册。
+	 */
+	private void ensureAgentGoals() {
+		if (agentGoalsRegistered) {
+			return;
+		}
+		agentGoalsRegistered = true;
+		try {
+			com.swaydy.opencraft.agent.AgentDefinition agent =
+					com.swaydy.opencraft.agent.AgentRegistry.resolveAgent(getConfig());
+			agent.registerGoals(this);
+		} catch (Exception e) {
+			OpenCraftMod.LOGGER.warn("[OpenCraft] 注册插件 Goal 失败: {}", e.toString());
+		}
 	}
 
 	public static AttributeSupplier.Builder createAttributes() {
@@ -200,6 +237,72 @@ public class AiAssistantEntity extends PathfinderMob {
 	}
 
 	// ------------------------------------------------------------------
+	// 任务系统
+	// ------------------------------------------------------------------
+
+	/** 当前正在执行的任务（可能为 null）。 */
+	public AssistantTask getCurrentTask() {
+		return currentTask;
+	}
+
+	/**
+	 * 下达一个新任务：取消旧任务（停止导航），挂上新的。由插件（工具执行时）在服务端线程调用。
+	 */
+	public void setCurrentTask(AssistantTask task) {
+		if (currentTask != null && !currentTask.isFinished()) {
+			getNavigation().stop();
+		}
+		this.currentTask = task;
+	}
+
+	/** 任务终结时由 {@link TaskHostGoal} 调用：清空当前任务（不再驱动）。 */
+	public void completeCurrentTask() {
+		if (currentTask != null) {
+			getNavigation().stop();
+		}
+		this.currentTask = null;
+	}
+
+	/** 取消当前任务（如新任务到达、助手被送走）。 */
+	public void cancelCurrentTask() {
+		if (currentTask != null) {
+			getNavigation().stop();
+			this.currentTask = null;
+		}
+	}
+
+	/**
+	 * 供插件注册 AI Goal（插件在实体类外，无法访问 protected goalSelector）。
+	 * 插件应在 {@code ensureAgentGoals()}（首次 tick）被调用时通过本方法注册。
+	 */
+	public void addAssistantGoal(int priority, net.minecraft.world.entity.ai.goal.Goal goal) {
+		this.goalSelector.addGoal(priority, goal);
+	}
+
+	/** 供插件移除已注册的 Goal（如 Agent 预设切换时清理）。 */
+	public void removeAssistantGoal(net.minecraft.world.entity.ai.goal.Goal goal) {
+		this.goalSelector.removeGoal(goal);
+	}
+
+	// ------------------------------------------------------------------
+	// 背包
+	// ------------------------------------------------------------------
+
+	/** 助手自己的 9 格背包（挖掘掉落物、合成材料、递给主人的物品都放这里）。 */
+	public SimpleContainer getInventory() {
+		return inventory;
+	}
+
+	/**
+	 * 尝试把物品放入助手背包（能放则放满可容纳的量），返回放不下的剩余。
+	 * 背包满时剩余原样返回，调用方决定丢弃/递给主人。
+	 */
+	public ItemStack giveToInventory(ItemStack stack) {
+		ItemStack remaining = inventory.addItem(stack);
+		return remaining == null ? ItemStack.EMPTY : remaining;
+	}
+
+	// ------------------------------------------------------------------
 	// 交互
 	// ------------------------------------------------------------------
 
@@ -238,7 +341,9 @@ public class AiAssistantEntity extends PathfinderMob {
 
 	/** 给主人发送互动界面数据（打开/刷新右键互动 GUI）。 */
 	private void openInteractScreen(ServerPlayer player) {
-		String model = getConfig().model == null ? "" : getConfig().model;
+		com.swaydy.opencraft.ai.AiBlockConfig config = getConfig();
+		String model = config.model == null ? "" : config.model;
+		String agent = config.agent == null ? "general_agent" : config.agent;
 		// 聊天回复的 S2C 事件按“绑定方块坐标”路由回互动界面，因此把方块坐标一起下发
 		GlobalPos block = getConfigBlock();
 		BlockPos blockPos = block == null ? this.blockPosition() : block.pos();
@@ -247,7 +352,7 @@ public class AiAssistantEntity extends PathfinderMob {
 			net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player,
 					new com.swaydy.opencraft.net.AssistantPayloads.AssistantInteractPayload(
 							this.getId(), getDisplayName().getString(), isFollowing(), true, model,
-							blockPos, dimension));
+							agent, blockPos, dimension));
 		} catch (Exception e) {
 			// 模拟连接等场景发送失败：静默忽略（与配置界面一致）
 			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送互动界面数据失败（可能是模拟连接）: {}", e.toString());
@@ -261,6 +366,10 @@ public class AiAssistantEntity extends PathfinderMob {
 	@Override
 	public void tick() {
 		super.tick();
+		if (!this.level().isClientSide()) {
+			// 首次 tick：按当前 Agent 预设注册插件 Goal（registerGoals 在字段初始化前，无法读配置）
+			ensureAgentGoals();
+		}
 		if (!this.level().isClientSide() && this.tickCount % 40 == 0) {
 			// 共存性安全网：助手必须绑定一个 AI 徽标方块——
 			// 无绑定（configBlock 为空）或绑定方块已消失 → 助手随之消失。
@@ -334,6 +443,9 @@ public class AiAssistantEntity extends PathfinderMob {
 				.ifPresent(ref -> EntityReference.store(ref, output, "Owner"));
 		output.putBoolean("Following", isFollowing());
 		output.storeNullable("ConfigBlock", GlobalPos.CODEC, configBlock);
+		// 背包持久化：SimpleContainer 提供 storeAsItemList，用 ItemStack 列表写入
+		inventory.storeAsItemList(
+				output.list("Inventory", ItemStack.OPTIONAL_CODEC));
 	}
 
 	@Override
@@ -348,5 +460,8 @@ public class AiAssistantEntity extends PathfinderMob {
 		}
 		setFollowing(input.getBooleanOr("Following", true));
 		this.configBlock = input.read("ConfigBlock", GlobalPos.CODEC).orElse(null);
+		// 读回背包（缺省留空）
+		input.listOrEmpty("Inventory", ItemStack.OPTIONAL_CODEC)
+				.forEach(inventory::addItem);
 	}
 }

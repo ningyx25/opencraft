@@ -19,6 +19,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * 与 OpenAI 兼容的 Chat Completions 接口通信的纯 Java 客户端。
@@ -28,10 +30,13 @@ import java.util.List;
  *
  * 请求体：
  * <pre>
- * { "model": "...", "messages": [{"role":"system"|"user"|"assistant","content":"..."}], "temperature": 0.8 }
+ * { "model": "...", "messages": [{"role":"system"|"user"|"assistant"|"tool","content":"..."}],
+ *   "temperature": 0.8, "stream": true?,
+ *   "tools": [ { "type":"function", "function": {"name","description","parameters"} } ]? }
  * </pre>
- * 非流式 {@link #chat} 读取 choices[0].message.content；
- * 流式 {@link #stream} 发送 "stream": true 并按 SSE 逐段读取 choices[0].delta.content
+ * 非流式 {@link #chat} 读取 choices[0].message.content 与 message.tool_calls；
+ * 流式 {@link #stream} 发送 "stream": true 并按 SSE 逐段读取 choices[0].delta.content，
+ * 同时把分片的 delta.tool_calls 按 index 合并成完整的 tool_calls 列表交付
  * （端点忽略 stream 时自动退化为一次性完整回复）。
  */
 public final class LlmClient {
@@ -43,51 +48,93 @@ public final class LlmClient {
 	private LlmClient() {
 	}
 
+	/** 模型发起的一个工具调用（SSE 分片合并后的完整形态）。 */
+	public record ToolCall(String id, String name, String arguments) {
+	}
+
 	/** 一条对话消息。 */
-	public record Message(String role, String content) {
+	public record Message(String role, String content, String toolCallId, List<ToolCall> toolCalls) {
+		public Message {
+			toolCalls = toolCalls == null ? List.of() : List.copyOf(toolCalls);
+		}
+
 		public static Message system(String content) {
-			return new Message("system", content);
+			return new Message("system", content, null, List.of());
 		}
 
 		public static Message user(String content) {
-			return new Message("user", content);
+			return new Message("user", content, null, List.of());
 		}
 
 		public static Message assistant(String content) {
-			return new Message("assistant", content);
+			return new Message("assistant", content, null, List.of());
+		}
+
+		/** assistant 消息附带它发起的工具调用（OpenAI 要求 tool_calls 原文回传）。 */
+		public static Message assistant(String content, List<ToolCall> toolCalls) {
+			return new Message("assistant", content, null, toolCalls);
+		}
+
+		/** 工具执行结果消息（role "tool"，通过 tool_call_id 关联到模型的一次调用）。 */
+		public static Message tool(String toolCallId, String content) {
+			return new Message("tool", content, toolCallId, List.of());
+		}
+
+		public boolean hasToolCalls() {
+			return !toolCalls.isEmpty();
 		}
 	}
 
-	/** 一次请求所需的全部参数。 */
+	/**
+	 * 一次请求所需的全部参数。tools 为 OpenAI function calling 的工具 schema
+	 * 列表（可为 null = 请求体不带 tools 字段，纯聊天路径）。
+	 */
 	public record Request(String baseUrl, String apiKey, String model, double temperature,
-	                      List<Message> messages, int timeoutSeconds) {
+	                      List<Message> messages, int timeoutSeconds, List<JsonObject> tools) {
+
+		/** 不带 tools 的请求（纯聊天）。 */
+		public Request(String baseUrl, String apiKey, String model, double temperature,
+		               List<Message> messages, int timeoutSeconds) {
+			this(baseUrl, apiKey, model, temperature, messages, timeoutSeconds, null);
+		}
 	}
 
 	/** 请求结果：成功时 ok=true 且 content 为回复文本；失败时 ok=false 且 error 为原因。 */
-	public record Response(String content, boolean ok, String error) {
+	public record Response(String content, boolean ok, String error, List<ToolCall> toolCalls) {
+		public static Response success(String content, List<ToolCall> toolCalls) {
+			return new Response(content, true, null, toolCalls == null ? List.of() : toolCalls);
+		}
+
 		public static Response success(String content) {
-			return new Response(content, true, null);
+			return new Response(content, true, null, List.of());
 		}
 
 		public static Response failure(String error) {
-			return new Response(null, false, error);
+			return new Response(null, false, error, List.of());
 		}
 	}
 
 	/**
 	 * 流式对话回调。所有回调都在发起 {@link #stream} 的线程（工作线程）上
-	 * 按调用顺序串行执行：先收到若干次 {@link #onDelta}，最后恰好收到一次
-	 * {@link #onDone} 或 {@link #onError}（二选一，不会再收到其他回调）。
+	 * 按调用顺序串行执行。
 	 */
 	public interface StreamListener {
 		/** 收到一段增量文本（可能为空串）。 */
 		void onDelta(String delta);
 
-		/** 流正常结束（收到 [DONE] 或响应体读完）。 */
+		/** 流正常结束（收到 [DONE] 或响应体读完），且不会再收到其他回调。 */
 		void onDone();
 
 		/** 失败（HTTP 错误/IO 异常/无法解析），error 为原因。 */
 		void onError(String error);
+
+		/**
+		 * 流中检测到完整的工具调用（SSE 分片已按 index 合并）。在 {@link #onDone()}
+		 * 之前恰好回调一次（仅在确实有 tool_calls 时）；调用方以「回调过 onToolCalls
+		 * 与否」判断本轮是工具调用还是最终文本回复。
+		 */
+		default void onToolCalls(List<ToolCall> toolCalls) {
+		}
 	}
 
 	/**
@@ -117,11 +164,13 @@ public final class LlmClient {
 	 * 发送一次流式对话请求（SSE，{@code "stream": true}）。
 	 *
 	 * 增量文本通过 {@link StreamListener#onDelta} 逐段回调（每段可能只有几个字符，
-	 * 调用方应自行节流合并后再上屏）；流结束或出错后不会再收到更多回调。
+	 * 调用方应自行节流合并后再上屏）；工具调用经 {@link StreamListener#onToolCalls}
+	 * 在 onDone 之前恰好交付一次；流结束或出错后不会再收到更多回调。
 	 *
 	 * 兼容性：部分 OpenAI 兼容端点（或本地 mock）会忽略 {@code stream} 参数、
 	 * 直接返回完整 JSON 响应。此时自动退化为一次性收到
-	 * {@code onDelta(完整内容)} + {@code onDone()}，调用方无需区分两种模式。
+	 * {@code onToolCalls?} + {@code onDelta(完整内容)} + {@code onDone()}，
+	 * 调用方无需区分两种模式。
 	 */
 	public static void stream(Request request, StreamListener listener) {
 		if (request.messages() == null || request.messages().isEmpty()) {
@@ -156,7 +205,12 @@ public final class LlmClient {
 					}
 					Response parsed = parseContent(sb.toString());
 					if (parsed.ok()) {
-						listener.onDelta(parsed.content());
+						if (!parsed.toolCalls().isEmpty()) {
+							listener.onToolCalls(parsed.toolCalls());
+						}
+						if (parsed.content() != null && !parsed.content().isEmpty()) {
+							listener.onDelta(parsed.content());
+						}
 						listener.onDone();
 					} else {
 						listener.onError(parsed.error());
@@ -179,10 +233,11 @@ public final class LlmClient {
 		return null;
 	}
 
-	/** 逐行解析 SSE 流，把增量内容回调出去；以 [DONE] 或流结束收尾（回调 onDone）。 */
+	/** 逐行解析 SSE 流，把增量内容/工具调用回调出去；以 [DONE] 或流结束收尾（回调 onDone）。 */
 	private static void readSse(BufferedReader reader, String firstLine, StreamListener listener)
 			throws IOException {
-		emitSseData(firstLine.substring("data:".length()).trim(), listener);
+		ToolCallAccumulator accumulator = new ToolCallAccumulator();
+		emitSseData(firstLine.substring("data:".length()).trim(), listener, accumulator);
 		String line;
 		while ((line = reader.readLine()) != null) {
 			if (line.isBlank()) {
@@ -191,18 +246,20 @@ public final class LlmClient {
 			if (line.startsWith("data:")) {
 				String data = line.substring("data:".length()).trim();
 				if (data.equals("[DONE]")) {
+					accumulator.emit(listener);
 					listener.onDone();
 					return;
 				}
-				emitSseData(data, listener);
+				emitSseData(data, listener, accumulator);
 			}
 			// 其他行（注释/心跳等）忽略
 		}
+		accumulator.emit(listener);
 		listener.onDone();
 	}
 
-	/** 解析一条 SSE data 的 JSON，把增量内容（若有）回调出去。 */
-	private static void emitSseData(String data, StreamListener listener) {
+	/** 解析一条 SSE data 的 JSON，把增量内容/tool_calls 累积并回调出去。 */
+	private static void emitSseData(String data, StreamListener listener, ToolCallAccumulator accumulator) {
 		if (data.isEmpty() || data.equals("[DONE]")) {
 			return;
 		}
@@ -213,15 +270,25 @@ public final class LlmClient {
 				return;
 			}
 			JsonObject first = choices.get(0).getAsJsonObject();
+			// 记录 finish_reason：某些端点用它标识“工具调用结束”
+			if (first.has("finish_reason") && !first.get("finish_reason").isJsonNull()) {
+				accumulator.finishReason = first.get("finish_reason").getAsString();
+			}
 			String content = null;
 			if (first.has("delta") && first.get("delta").isJsonObject()) {
 				JsonObject delta = first.getAsJsonObject("delta");
+				if (delta.has("tool_calls") && delta.get("tool_calls").isJsonArray()) {
+					accumulator.mergeToolCalls(delta.getAsJsonArray("tool_calls"));
+				}
 				if (delta.has("content") && !delta.get("content").isJsonNull()) {
 					content = delta.get("content").getAsString();
 				}
 			} else if (first.has("message") && first.get("message").isJsonObject()) {
 				// 部分实现把完整 message 放进 SSE data
 				JsonObject message = first.getAsJsonObject("message");
+				if (message.has("tool_calls") && message.get("tool_calls").isJsonArray()) {
+					accumulator.mergeToolCalls(message.getAsJsonArray("tool_calls"));
+				}
 				if (message.has("content") && !message.get("content").isJsonNull()) {
 					content = message.get("content").getAsString();
 				}
@@ -229,8 +296,61 @@ public final class LlmClient {
 			if (content != null && !content.isEmpty()) {
 				listener.onDelta(content);
 			}
+			// finish_reason == "tool_calls"：工具调用已完整，提前交付（后面仍会 onDone）
+			if ("tool_calls".equals(accumulator.finishReason)) {
+				accumulator.emit(listener);
+			}
 		} catch (JsonSyntaxException | IllegalStateException e) {
 			// 无法解析的 data 行（心跳/注释等）忽略
+		}
+	}
+
+	/**
+	 * SSE 工具调用分片合并器：按 index 把分片的 id/name/arguments 拼成完整 ToolCall。
+	 * 工作线程内串行读写，无需加锁。
+	 */
+	private static final class ToolCallAccumulator {
+		private final Map<Integer, ToolCall> byIndex = new TreeMap<>();
+		private boolean emitted = false;
+		private String finishReason = null;
+
+		void mergeToolCalls(JsonArray calls) {
+			for (JsonElement el : calls) {
+				if (!el.isJsonObject()) {
+					continue;
+				}
+				JsonObject obj = el.getAsJsonObject();
+				int index = obj.has("index") ? obj.get("index").getAsInt() : 0;
+				JsonObject fn = (obj.has("function") && obj.get("function").isJsonObject())
+						? obj.getAsJsonObject("function") : null;
+				String id = (obj.has("id") && !obj.get("id").isJsonNull())
+						? obj.get("id").getAsString() : null;
+				String name = (fn != null && fn.has("name") && !fn.get("name").isJsonNull())
+						? fn.get("name").getAsString() : null;
+				String args = (fn != null && fn.has("arguments") && !fn.get("arguments").isJsonNull())
+						? fn.get("arguments").getAsString() : null;
+
+				ToolCall existing = byIndex.get(index);
+				if (existing == null) {
+					byIndex.put(index, new ToolCall(id == null ? "" : id,
+							name == null ? "" : name, args == null ? "" : args));
+				} else {
+					// arguments 分片是字符串增量，必须拼接；id/name 只在首个分片出现
+					byIndex.put(index, new ToolCall(
+							id != null ? id : existing.id(),
+							name != null ? name : existing.name(),
+							args != null ? existing.arguments() + args : existing.arguments()));
+				}
+			}
+		}
+
+		/** 恰好交付一次完整列表（onDone 之前）。 */
+		void emit(StreamListener listener) {
+			if (emitted || byIndex.isEmpty()) {
+				return;
+			}
+			emitted = true;
+			listener.onToolCalls(List.copyOf(byIndex.values()));
 		}
 	}
 
@@ -242,11 +362,47 @@ public final class LlmClient {
 		for (Message m : request.messages()) {
 			JsonObject msg = new JsonObject();
 			msg.addProperty("role", m.role());
-			msg.addProperty("content", m.content());
+			switch (m.role()) {
+				case "tool" -> {
+					msg.addProperty("content", m.content());
+					if (m.toolCallId() != null) {
+						msg.addProperty("tool_call_id", m.toolCallId());
+					}
+				}
+				case "assistant" -> {
+					if (m.hasToolCalls()) {
+						JsonArray calls = new JsonArray();
+						for (ToolCall c : m.toolCalls()) {
+							JsonObject call = new JsonObject();
+							call.addProperty("id", c.id());
+							call.addProperty("type", "function");
+							JsonObject fn = new JsonObject();
+							fn.addProperty("name", c.name());
+							fn.addProperty("arguments", c.arguments());
+							call.add("function", fn);
+							calls.add(call);
+						}
+						msg.add("tool_calls", calls);
+						if (m.content() != null && !m.content().isEmpty()) {
+							msg.addProperty("content", m.content());
+						}
+					} else {
+						msg.addProperty("content", m.content());
+					}
+				}
+				default -> msg.addProperty("content", m.content());
+			}
 			messages.add(msg);
 		}
 		body.add("messages", messages);
 		body.addProperty("temperature", request.temperature());
+		if (request.tools() != null && !request.tools().isEmpty()) {
+			JsonArray tools = new JsonArray();
+			for (JsonObject tool : request.tools()) {
+				tools.add(tool);
+			}
+			body.add("tools", tools);
+		}
 		if (stream) {
 			body.addProperty("stream", true);
 		}
@@ -280,7 +436,7 @@ public final class LlmClient {
 		}
 	}
 
-	/** 从成功响应里解析 choices[0].message.content。 */
+	/** 解析完整的（非流式）成功响应：content + tool_calls。 */
 	private static Response parseContent(String responseBody) {
 		try {
 			JsonObject root = JsonParser.parseString(responseBody).getAsJsonObject();
@@ -288,11 +444,30 @@ public final class LlmClient {
 			if (choices != null && !choices.isEmpty()) {
 				JsonObject first = choices.get(0).getAsJsonObject();
 				JsonObject message = first.has("message") ? first.getAsJsonObject("message") : null;
-				if (message != null && message.has("content")) {
-					JsonElement content = message.get("content");
-					if (!content.isJsonNull()) {
-						return Response.success(content.getAsString());
+				String content = null;
+				if (message != null && message.has("content") && !message.get("content").isJsonNull()) {
+					content = message.get("content").getAsString();
+				}
+				List<ToolCall> toolCalls = new ArrayList<>();
+				if (message != null && message.has("tool_calls") && message.get("tool_calls").isJsonArray()) {
+					for (JsonElement el : message.getAsJsonArray("tool_calls")) {
+						if (!el.isJsonObject()) {
+							continue;
+						}
+						JsonObject call = el.getAsJsonObject();
+						JsonObject fn = (call.has("function") && call.get("function").isJsonObject())
+								? call.getAsJsonObject("function") : null;
+						toolCalls.add(new ToolCall(
+								call.has("id") && !call.get("id").isJsonNull() ? call.get("id").getAsString() : "",
+								fn != null && fn.has("name") ? fn.get("name").getAsString() : "",
+								fn != null && fn.has("arguments") ? fn.get("arguments").getAsString() : "{}"));
 					}
+				}
+				if (!toolCalls.isEmpty()) {
+					return Response.success(content, toolCalls);
+				}
+				if (content != null) {
+					return Response.success(content, List.of());
 				}
 			}
 			return Response.failure("响应中没有找到 choices[0].message.content: " + truncate(responseBody));

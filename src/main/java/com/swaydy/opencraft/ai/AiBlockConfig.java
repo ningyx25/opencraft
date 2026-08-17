@@ -21,18 +21,6 @@ public final class AiBlockConfig {
 			- 可以给玩家提供合成配方、游戏机制、红石技巧、建筑建议、生存策略等帮助。
 			- 玩家可能会把坐标、维度、时间、生命值等游戏状态告诉你，请结合这些信息给出贴心的建议。
 			- 保持积极、友善的语气，适当使用少量 emoji 或颜文字增加亲和力。
-
-			【能力：游戏内动作】当玩家明确请求时，你可以在回复中附加动作标记来真正改变游戏。
-			动作标记格式为 [ACTION: ...]，放在回复末尾或单独一行，可以多个；不要编造标记中没有的参数。
-			- [ACTION: give <物品ID> <数量>]  给予玩家物品，例如 [ACTION: give minecraft:dirt 64]；数量 1~640
-			- [ACTION: time day|night|noon|sunset|midnight]  设置游戏时间
-			- [ACTION: heal]  治疗玩家
-			- [ACTION: feed]  恢复饥饿值
-			- [ACTION: xp <等级数>]  给予玩家经验等级
-			- [ACTION: mode follow|stay]  切换助手跟随/待命
-			- [ACTION: tp]  让助手瞬移到玩家身边（可跨维度）
-			- [ACTION: weather clear|rain|thunder]  设置天气
-			只有玩家明确要求时才使用动作标记；使用了动作标记后，用一句话告诉玩家你做了什么。
 			""";
 
 	// AI 接口配置
@@ -57,8 +45,9 @@ public final class AiBlockConfig {
 	public double temperature = 0.8;
 	public int maxHistoryMessages = 20;
 	public int timeoutSeconds = 60;
-	public boolean allowActions = true;
 	public String language = "zh-CN";
+	/** Agent 预设 id（如 "chat_agent" / "general_agent"）；空或未知时用默认预设。 */
+	public String agent = "general_agent";
 
 	// 助手行为参数
 	public double followDistance = 3.0;
@@ -220,9 +209,9 @@ public final class AiBlockConfig {
 		return new AiConfigData(
 				baseUrl, "", false, !apiKey.isEmpty(),
 				model, systemPrompt,
-				temperature, maxHistoryMessages, timeoutSeconds, allowActions, language,
+				temperature, maxHistoryMessages, timeoutSeconds, language,
 				followDistance, stopDistance, teleportDistance, maxDistance, speed,
-				name);
+				name, agent);
 	}
 
 	/** 用编辑器传来的数据覆盖本配置（apiKey 仅在 apiKeyChanged 时更新）。 */
@@ -238,8 +227,8 @@ public final class AiBlockConfig {
 		temperature = clamp(data.temperature(), 0.0, 2.0, 0.8);
 		maxHistoryMessages = (int) clamp(data.maxHistoryMessages(), 2, 200, 20);
 		timeoutSeconds = (int) clamp(data.timeoutSeconds(), 5, 300, 60);
-		allowActions = data.allowActions();
 		language = data.language() == null || data.language().isBlank() ? "zh-CN" : data.language();
+		agent = data.agent() == null || data.agent().isBlank() ? "general_agent" : data.agent().trim();
 
 		followDistance = clamp(data.followDistance(), 0.5, 64.0, 3.0);
 		stopDistance = clamp(data.stopDistance(), 0.5, 64.0, 2.0);
@@ -267,8 +256,8 @@ public final class AiBlockConfig {
 		output.putDouble("Temperature", temperature);
 		output.putInt("MaxHistory", maxHistoryMessages);
 		output.putInt("Timeout", timeoutSeconds);
-		output.putBoolean("AllowActions", allowActions);
 		output.putString("Language", language);
+		output.putString("Agent", agent);
 		output.putDouble("FollowDistance", followDistance);
 		output.putDouble("StopDistance", stopDistance);
 		output.putDouble("TeleportDistance", teleportDistance);
@@ -286,8 +275,9 @@ public final class AiBlockConfig {
 		temperature = input.getDoubleOr("Temperature", 0.8);
 		maxHistoryMessages = input.getIntOr("MaxHistory", 20);
 		timeoutSeconds = input.getIntOr("Timeout", 60);
-		allowActions = input.getBooleanOr("AllowActions", true);
 		language = input.getStringOr("Language", "zh-CN");
+		// 旧存档的 "AllowActions" 标签已废弃（动作能力改由 Agent 预设的插件决定）
+		agent = input.getStringOr("Agent", "general_agent");
 		followDistance = input.getDoubleOr("FollowDistance", 3.0);
 		stopDistance = input.getDoubleOr("StopDistance", 2.0);
 		teleportDistance = input.getDoubleOr("TeleportDistance", 24.0);

@@ -23,14 +23,14 @@ public record AiConfigData(
 		double temperature,
 		int maxHistoryMessages,
 		int timeoutSeconds,
-		boolean allowActions,
 		String language,
 		double followDistance,
 		double stopDistance,
 		double teleportDistance,
 		double maxDistance,
 		double speed,
-		String name) {
+		String name,
+		String agent) {
 
 	private static final Gson GSON = new GsonBuilder().create();
 

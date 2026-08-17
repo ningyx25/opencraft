@@ -36,6 +36,7 @@ public class AiAssistantInteractScreen extends Screen {
 	private boolean following;
 	private boolean isOwner;
 	private String model;
+	private String agent;
 
 	private EditBox chatBox;
 	private Button sendButton;
@@ -51,7 +52,7 @@ public class AiAssistantInteractScreen extends Screen {
 	private static final int MAX_LOG_ENTRIES = 60;
 
 	public AiAssistantInteractScreen(int entityId, String displayName, boolean following,
-	                                 boolean isOwner, String model,
+	                                 boolean isOwner, String model, String agent,
 	                                 BlockPos blockPos, ResourceKey<Level> dimension) {
 		super(Component.literal(displayName));
 		this.entityId = entityId;
@@ -59,6 +60,7 @@ public class AiAssistantInteractScreen extends Screen {
 		this.following = following;
 		this.isOwner = isOwner;
 		this.model = model;
+		this.agent = agent;
 		this.blockPos = blockPos;
 		this.dimension = dimension;
 	}
@@ -74,10 +76,11 @@ public class AiAssistantInteractScreen extends Screen {
 	}
 
 	/** 服务器重新下发状态时刷新（当前用于打开/重建时的兜底）。 */
-	public void updateData(boolean following, boolean isOwner, String model) {
+	public void updateData(boolean following, boolean isOwner, String model, String agent) {
 		this.following = following;
 		this.isOwner = isOwner;
 		this.model = model;
+		this.agent = agent;
 		this.rebuildWidgets();
 	}
 
@@ -182,14 +185,19 @@ public class AiAssistantInteractScreen extends Screen {
 		this.renderTransparentBackground(graphics);
 		super.render(graphics, mouseX, mouseY, partialTick);
 		renderConversation(graphics);
-		// 输入框下方一行小字：模型 + 操作提示
+		// 输入框下方一行小字：模型 + Agent 预设 + 操作提示
 		String modelText = this.model == null || this.model.isBlank()
 				? Component.translatable("screen.opencraft.interact.no_model").getString()
 				: Component.translatable("screen.opencraft.interact.model", this.model).getString();
+		String agentText = Component.translatable("screen.opencraft.interact.agent",
+				displayAgent(this.agent)).getString();
 		String hintText = Component.translatable("screen.opencraft.interact.hint").getString();
 		graphics.drawString(this.font, Component.literal(modelText), 12,
 				this.height - this.layout.getFooterHeight() - 12, 0xFF9A9A9A);
-		graphics.drawString(this.font, Component.literal(hintText), 12 + this.font.width(modelText) + 16,
+		graphics.drawString(this.font, Component.literal(agentText), 12 + this.font.width(modelText) + 14,
+				this.height - this.layout.getFooterHeight() - 12, 0xFF9A9A9A);
+		graphics.drawString(this.font, Component.literal(hintText),
+				12 + this.font.width(modelText) + 14 + this.font.width(agentText) + 14,
 				this.height - this.layout.getFooterHeight() - 12, 0xFF6A6A6A);
 	}
 
@@ -265,5 +273,17 @@ public class AiAssistantInteractScreen extends Screen {
 		return Component.translatable(this.following
 				? "screen.opencraft.interact.following"
 				: "screen.opencraft.interact.staying");
+	}
+
+	/** Agent 预设 id → 友好显示名。 */
+	private static String displayAgent(String agentId) {
+		if (agentId == null || agentId.isBlank()) {
+			return Component.translatable("agent.opencraft.general").getString();
+		}
+		return switch (agentId) {
+			case "chat_agent" -> Component.translatable("agent.opencraft.chat").getString();
+			case "general_agent" -> Component.translatable("agent.opencraft.general").getString();
+			default -> agentId;
+		};
 	}
 }

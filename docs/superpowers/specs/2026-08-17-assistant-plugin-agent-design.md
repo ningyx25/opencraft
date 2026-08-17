@@ -1,7 +1,18 @@
 # AI 助手插件系统 + Agent 预设 设计文档
 
 日期：2026-08-17
-状态：已与用户确认（方案 A：原生 tool calling + agentic loop；彻底替换旧 ACTION 系统；Agent 预设在方块配置里选；首批 chat_agent / general_agent；旧管理员动作 give/time/heal/feed/xp/weather 移除）
+状态：已实现（2026-08-18）。落地情况见下方「实现备注」；接口与行为与本文一致，少数细节做了简化。
+
+> 实现备注（2026-08-18）：
+> - 全部按本文落地：`agent/` 框架核心（AssistantPlugin / ToolDefinition / ToolContext / ToolResult /
+>   AgentDefinition / AgentRegistry / AgentRuntime）+ `plugins/` 7 个插件 + `presets/` chat_agent /
+>   general_agent；`AiAssistantEntity` 增加 9 格背包与任务系统（AssistantTask + MoveToBlockTask /
+>   MineBlockTask / AttackTask + TaskHostGoal）；`AiCompanionService.ask*` 委托 AgentRuntime。
+> - LlmClient 原生 function calling（tools + SSE tool_calls 分片合并 + 非流式退化）已有 JUnit 单测
+>   `src/test/.../LlmClientToolCallsTest`（5 个用例，`./gradlew test` 通过）。
+> - 简化点：Agent 预设下拉在客户端直接列出内置两个预设（chat_agent / general_agent），
+>   AiConfigData 未额外携带可用预设列表（避免加重保存往返）；互动界面只读显示当前预设名。
+> - 权限：工具仅约束“只为主人服务”，不再需要旧 allowActions 开关；挖掘/合成等世界操作不要求 op。
 
 ## 1. 目标与背景
 

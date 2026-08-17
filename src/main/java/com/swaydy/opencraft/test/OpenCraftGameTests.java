@@ -20,7 +20,6 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.item.crafting.Recipe;
 import net.minecraft.world.level.block.Blocks;
 
@@ -166,17 +165,22 @@ public class OpenCraftGameTests {
 					}
 				})
 				.thenExecute(() -> {
-					// 5) 第二条消息：让 mock LLM 返回 [ACTION: give minecraft:dirt 5]
-					AiCompanionService.ask(player, "GIVE_ME_DIRT 请给我一些泥土");
+					// 5) 第二条消息（回复仍走 agentic loop，但 mock 端点不回工具调用，最终给纯文本回复）
+					AiCompanionService.ask(player, "谢谢，再介绍一下怎么挖矿吧。");
 				})
 				.thenWaitUntil(() -> {
-					// 6) 等动作真的执行（动作在流式回复收尾时解析执行）：背包里出现泥土
-					int dirt = countItem(player, Items.DIRT);
-					if (dirt < 5) {
+					// 6) 等第二条回复写入该助手的历史（agentic loop 无工具调用时的收尾）
+					AiAssistantEntity a2 = ModEntities.findNearestAssistantFor(player);
+					if (a2 == null) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("对话后助手实体不存在"),
+								(int) helper.getTick());
+					}
+					if (AiCompanionService.historySize(a2.getConfigBlock()) < 4) {
 						throw new net.minecraft.gametest.framework.GameTestAssertException(
 								net.minecraft.network.chat.Component.literal(
-										"期望背包中至少有 5 个泥土，实际 " + dirt
-												+ "（动作未执行或 mock 未返回动作标记）"),
+										"期望历史至少 4 条（两次对话的 user+assistant），实际 "
+												+ AiCompanionService.historySize(a2.getConfigBlock())),
 								(int) helper.getTick());
 					}
 				})
@@ -267,17 +271,7 @@ public class OpenCraftGameTests {
 				.thenSucceed();
 	}
 
-	private static int countItem(ServerPlayer player, net.minecraft.world.item.Item item) {
-		int count = 0;
-		for (int i = 0; i < 36; i++) {
-			ItemStack stack = player.getInventory().getItem(i);
-			if (stack.is(item)) {
-				count += stack.getCount();
-			}
-		}
-		return count;
-	}
-
+	
 	/**
 	 * 验证 AI 徽标方块作为“配置载体”（配置只保存在方块里，无外部文件）：
 	 * 1. 放置方块并右键（useBlock）触发 openFor（不崩溃）；
@@ -361,16 +355,16 @@ public class OpenCraftGameTests {
 							sent.baseUrl(), "new-secret-key-456", true, true,
 							"in-game-edited-model", sent.systemPrompt(),
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
-							false, sent.language(),
+							sent.language(),
 							sent.followDistance(), sent.stopDistance(),
 							sent.teleportDistance(), sent.maxDistance(), sent.speed(),
-							"改名小智");
+							"改名小智", "general_agent");
 					AiConfigHandler.save(player, absPos, dimension, edited.toJson());
 					if (!"in-game-edited-model".equals(blockEntity.getConfig().model)) {
 						throw new AssertionError("保存后方块配置未即时生效");
 					}
-					if (blockEntity.getConfig().allowActions) {
-						throw new AssertionError("保存后 allowActions 应为 false");
+					if (!"general_agent".equals(blockEntity.getConfig().agent)) {
+						throw new AssertionError("保存后 agent 预设应生效");
 					}
 					if (!"new-secret-key-456".equals(blockEntity.getConfig().apiKey)) {
 						throw new AssertionError("更换密钥未生效");
@@ -383,10 +377,10 @@ public class OpenCraftGameTests {
 							sent.baseUrl(), "", false, true,
 							"model-keep-key", sent.systemPrompt(),
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
-							true, sent.language(),
+							sent.language(),
 							sent.followDistance(), sent.stopDistance(),
 							sent.teleportDistance(), sent.maxDistance(), sent.speed(),
-							"keep-key-name");
+							"keep-key-name", "general_agent");
 					AiConfigHandler.save(player, absPos, dimension, keepKey.toJson());
 					if (!"new-secret-key-456".equals(blockEntity.getConfig().apiKey)) {
 						throw new AssertionError("未更换密钥时不应覆盖旧密钥");
@@ -402,7 +396,7 @@ public class OpenCraftGameTests {
 					original.baseUrl = "http://127.0.0.1:18923/v1";
 					original.apiKey = "test-key-123";
 					original.model = "mock-model";
-					original.allowActions = true;
+					original.agent = "general_agent";
 					blockEntity.markConfigChanged();
 				})
 				.thenSucceed();

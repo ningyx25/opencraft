@@ -46,6 +46,9 @@ public class OpenCraftMod implements ModInitializer {
 		// AI 助手实体 + 刷怪蛋 + 属性注册
 		ModEntities.register();
 
+		// AI 插件系统 + Agent 预设注册表（插件、预设、agentic loop）
+		com.swaydy.opencraft.agent.AgentRegistry.init();
+
 		// /opencraft 指令
 		ModCommands.register();
 

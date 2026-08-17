@@ -85,12 +85,12 @@ public class AiConfigScreen extends Screen {
 	private boolean changeKey;
 	private String newApiKey = "";
 
-	private boolean allowActions;
 	private double temperature;
 	private int timeoutSeconds;
 	private int maxHistoryMessages;
 	private String systemPrompt;
 	private String name;
+	private String agent;
 
 	private double followDistance;
 	private double stopDistance;
@@ -144,18 +144,31 @@ public class AiConfigScreen extends Screen {
 		this.changeKey = !data.apiKeySet();
 		this.newApiKey = "";
 
-		this.allowActions = data.allowActions();
 		this.temperature = data.temperature();
 		this.timeoutSeconds = data.timeoutSeconds();
 		this.maxHistoryMessages = data.maxHistoryMessages();
 		this.systemPrompt = data.systemPrompt();
 		this.name = data.name() == null ? "" : data.name();
+		this.agent = data.agent() == null || data.agent().isBlank()
+				? "general_agent" : data.agent();
 
 		this.followDistance = data.followDistance();
 		this.stopDistance = data.stopDistance();
 		this.teleportDistance = data.teleportDistance();
 		this.maxDistance = data.maxDistance();
 		this.speed = data.speed();
+	}
+
+	/** Agent 预设的显示名（翻译键 → 友好文本）。 */
+	private static String displayAgent(String agentId) {
+		if (agentId == null || agentId.isBlank()) {
+			return Component.translatable("agent.opencraft.general").getString();
+		}
+		return switch (agentId) {
+			case "chat_agent" -> Component.translatable("agent.opencraft.chat").getString();
+			case "general_agent" -> Component.translatable("agent.opencraft.general").getString();
+			default -> agentId;
+		};
 	}
 
 	/** 服务器返回新数据时刷新界面 */
@@ -338,14 +351,14 @@ public class AiConfigScreen extends Screen {
 				this.temperature,
 				this.maxHistoryMessages,
 				this.timeoutSeconds,
-				this.allowActions,
 				this.language,
 				this.followDistance,
 				this.stopDistance,
 				this.teleportDistance,
 				this.maxDistance,
 				this.speed,
-				this.name
+				this.name,
+				this.agent
 		);
 		ClientPlayNetworking.send(new AiConfigPayloads.AiConfigSavePayload(
 				configToSave.toJson(), this.blockPos, this.dimension));
@@ -615,14 +628,17 @@ public class AiConfigScreen extends Screen {
 			rows.addChild(CommonLayouts.labeledElement(font, nameBox,
 					Component.translatable("screen.opencraft.config.name")));
 
-			// 允许动作开关
-			CycleButton<Boolean> actionSwitch = CycleButton.onOffBuilder(AiConfigScreen.this.allowActions)
-					.withTooltip(val -> Tooltip.create(Component.translatable("screen.opencraft.config.allow_actions.tooltip")))
+			// Agent 预设下拉（决定助手能力 = 哪些插件）
+			CycleButton<String> agentPicker = CycleButton.<String>builder(
+							val -> Component.literal(displayAgent(val)), AiConfigScreen.this.agent)
+					.withValues(List.of("chat_agent", "general_agent"))
+					.withTooltip(val -> Tooltip.create(Component.translatable("screen.opencraft.config.agent.tooltip")))
 					.create(0, 0, CONTROL_WIDTH, ROW_HEIGHT,
-							Component.translatable("screen.opencraft.config.allow_actions"),
-							(btn, val) -> AiConfigScreen.this.allowActions = val);
-			actionSwitch.active = AiConfigScreen.this.canEdit;
-			rows.addChild(actionSwitch);
+							Component.translatable("screen.opencraft.config.agent"),
+							(btn, val) -> AiConfigScreen.this.agent = val);
+			agentPicker.active = AiConfigScreen.this.canEdit;
+			rows.addChild(CommonLayouts.labeledElement(font, agentPicker,
+					Component.translatable("screen.opencraft.config.agent")));
 
 			// 温度滑块 (0.0 ~ 2.0)
 			NumericSliderButton tempSlider = new NumericSliderButton(

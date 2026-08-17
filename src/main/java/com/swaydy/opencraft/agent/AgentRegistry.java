@@ -1,0 +1,112 @@
+package com.swaydy.opencraft.agent;
+
+import com.swaydy.opencraft.OpenCraftMod;
+import com.swaydy.opencraft.ai.AiBlockConfig;
+import com.swaydy.opencraft.presets.ChatAgent;
+import com.swaydy.opencraft.presets.GeneralAgent;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 插件 + Agent 预设的静态注册表（在 {@link OpenCraftMod#onInitialize()} 时初始化）。
+ *
+ * 插件是代码内注册的一等公民（第三方/脚本加载暂不支持）。Agent 预设供配置界面下拉选择，
+ * 助手能力 = 其选中预设装配的插件之和。
+ */
+public final class AgentRegistry {
+	private static final Map<String, AssistantPlugin> PLUGINS = new LinkedHashMap<>();
+	private static final Map<String, AgentDefinition> AGENTS = new LinkedHashMap<>();
+	private static boolean initialized = false;
+
+	private AgentRegistry() {
+	}
+
+	/** 注册内置插件与 Agent 预设（幂等，只在首次调用时初始化）。 */
+	public static void init() {
+		if (initialized) {
+			return;
+		}
+		initialized = true;
+		registerPlugin(new com.swaydy.opencraft.plugins.AssistantControlPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.MovementPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.PerceptionPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.MiningPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.InventoryPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.CraftingPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.CombatPlugin());
+
+		registerAgent(ChatAgent.create());
+		registerAgent(GeneralAgent.create());
+	}
+
+	// ------------------------------------------------------------------
+	// 插件
+	// ------------------------------------------------------------------
+
+	public static void registerPlugin(AssistantPlugin plugin) {
+		if (plugin == null || plugin.id() == null) {
+			return;
+		}
+		if (PLUGINS.containsKey(plugin.id())) {
+			OpenCraftMod.LOGGER.warn("[OpenCraft] 插件 {} 重复注册，已忽略", plugin.id());
+			return;
+		}
+		PLUGINS.put(plugin.id(), plugin);
+	}
+
+	public static AssistantPlugin plugin(String id) {
+		return PLUGINS.get(id);
+	}
+
+	public static List<AssistantPlugin> plugins() {
+		return new ArrayList<>(PLUGINS.values());
+	}
+
+	// ------------------------------------------------------------------
+	// Agent 预设
+	// ------------------------------------------------------------------
+
+	public static void registerAgent(AgentDefinition agent) {
+		if (agent == null || agent.id() == null) {
+			return;
+		}
+		if (AGENTS.containsKey(agent.id())) {
+			OpenCraftMod.LOGGER.warn("[OpenCraft] Agent 预设 {} 重复注册，已忽略", agent.id());
+			return;
+		}
+		AGENTS.put(agent.id(), agent);
+	}
+
+	public static AgentDefinition agent(String id) {
+		return AGENTS.get(id);
+	}
+
+	/** 全部预设（有序，供配置界面下拉渲染）。 */
+	public static List<AgentDefinition> agents() {
+		return new ArrayList<>(AGENTS.values());
+	}
+
+	/**
+	 * 从方块配置解析当前应使用的 Agent 预设：
+	 * config.agent 为空或未知 → 回退到默认预设 {@value #DEFAULT_AGENT_ID} 并记日志。
+	 */
+	public static AgentDefinition resolveAgent(AiBlockConfig config) {
+		String id = config == null ? null : config.agent;
+		if (id != null && !id.isBlank()) {
+			AgentDefinition def = AGENTS.get(id);
+			if (def != null) {
+				return def;
+			}
+			OpenCraftMod.LOGGER.warn("[OpenCraft] 配置指定了未知的 Agent 预设 \"{}\"，回退到默认",
+					id);
+		}
+		AgentDefinition def = AGENTS.get(DEFAULT_AGENT_ID);
+		return def != null ? def : GeneralAgent.create();
+	}
+
+	/** 默认 Agent 预设 id（无配置/未知时使用）。 */
+	public static final String DEFAULT_AGENT_ID = "general_agent";
+}
