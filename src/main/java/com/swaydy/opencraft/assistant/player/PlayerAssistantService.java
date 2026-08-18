@@ -41,6 +41,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * 配置方块存在时助手留在世界；方块被拆 → 送走并清空该方块记忆。
  */
 public final class PlayerAssistantService {
+	/**
+	 * 玩家形态助手**进服的系统玩家名**（GameProfile name）：加入消息 / Tab 列表 / /list
+	 * 里显示的这个固定名字。与方块配置的显示名（聊天里的「小智 (x,y,z)」）解耦——
+	 * 改此常量即可整体改名 bot，无需逐方块改配置。
+	 */
+	public static final String SYSTEM_NAME = "IAISwayDy";
+
 	/** 按绑定方块键控的活动假玩家。 */
 	private static final Map<GlobalPos, AiAssistantPlayer> ACTIVE = new ConcurrentHashMap<>();
 	/** 按 UUID 反查绑定方块（供幂等/清理）。 */
@@ -152,7 +159,8 @@ public final class PlayerAssistantService {
 		AiLogoBlockEntity blockEntity =
 				(AiLogoBlockEntity) blockLevel.getBlockEntity(block.pos());
 		AiBlockConfig cfg = blockEntity == null ? new AiBlockConfig() : blockEntity.getConfig();
-		GameProfile profile = new GameProfile(assistantUuidFor(block), cfg.effectiveName());
+		// 进服系统名固定为 SYSTEM_NAME（GameProfile name，与方块配置显示名解耦）
+		GameProfile profile = new GameProfile(assistantUuidFor(block), SYSTEM_NAME);
 
 		// 旧存档重入：PlayerList 里可能还留着上次进服的同一 bot
 		AiAssistantPlayer inList = findInPlayerList(server, profile.id());

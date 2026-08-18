@@ -136,7 +136,8 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				+ "装备栏与玩家式动作。player_goto/player_stop 移动，player_mine/player_place 用玩家方式破坏/放置方块"
 				+ "（掉落物自动进背包），player_craft 用背包材料合成（规则与玩家一致，3×3 需工作台），"
 				+ "player_hand_to_player 把物品递给主人，player_inventory/player_look 观察状态与环境。"
-				+ "行动前先观察、行动后再观察确认；不要假设工具一定成功。";
+				+ "行动前先观察、行动后再观察确认；工具结果以 [工具名 成功/失败] 开头，先读标记再读内容；"
+				+ "不要假设工具一定成功，失败时换方法而不是原样重试。";
 	}
 
 	@Override

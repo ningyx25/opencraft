@@ -5,6 +5,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import com.swaydy.opencraft.agent.AgentRuntime;
 import com.swaydy.opencraft.ai.AiBlockConfig;
 import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.assistant.AiAssistant;
@@ -62,6 +63,10 @@ public final class ModCommands {
 						.executes(ctx -> resetHistory(ctx.getSource()))
 						.then(Commands.literal("all")
 								.executes(ctx -> resetAllHistory(ctx.getSource()))))
+				.then(Commands.literal("answer")
+						.then(Commands.argument("message", StringArgumentType.greedyString())
+								.executes(ctx -> answer(ctx.getSource(),
+										StringArgumentType.getString(ctx, "message")))))
 				.then(Commands.literal("debug")
 						.executes(ctx -> debugStatus(ctx.getSource()))
 						.then(Commands.literal("on")
@@ -164,6 +169,27 @@ public final class ModCommands {
 			// 非玩家源（控制台）没有可补全的助手
 		}
 		return builder.buildFuture();
+	}
+
+	/**
+	 * /opencraft answer <回答>：回答「最近的」助手（即正在等待的那个）的 ask_player 提问，
+	 * 恢复被暂停的循环。非原提问者或无待回答的提问时失败。
+	 */
+	private static int answer(CommandSourceStack source, String text) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+		ServerPlayer player = source.getPlayerOrException();
+		String t = text.trim();
+		if (t.isEmpty()) {
+			source.sendFailure(Component.translatable("command.opencraft.answer.blank"));
+			return 0;
+		}
+		AiAssistant target = AssistantFacade.findNearestFor(player);
+		GlobalPos key = target == null ? null : target.getConfigBlock();
+		if (key == null || !AgentRuntime.answer(player, key, t)) {
+			source.sendFailure(Component.translatable("command.opencraft.answer.none"));
+			return 0;
+		}
+		source.sendSuccess(() -> Component.translatable("command.opencraft.answer.ok"), false);
+		return 1;
 	}
 
 	private static int summon(CommandSourceStack source) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
