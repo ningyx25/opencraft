@@ -625,7 +625,8 @@ public class AiConfigScreen extends Screen {
 			rows.addChild(CommonLayouts.labeledElement(font, nameBox,
 					Component.translatable("screen.opencraft.config.name")));
 
-			// Agent 预设下拉（决定助手能力 = 哪些插件）
+			// Agent 预设下拉（只决定 LLM 行为 = 人设/工具/轮数；身体形态与预设无关——
+			// 助手一律是真正的 ServerPlayer bot，像客户端一样进服）
 			CycleButton<String> agentPicker = CycleButton.<String>builder(
 							val -> Component.literal(displayAgent(val)), AiConfigScreen.this.agent)
 					.withValues(List.of("chat_agent", "general_agent"))

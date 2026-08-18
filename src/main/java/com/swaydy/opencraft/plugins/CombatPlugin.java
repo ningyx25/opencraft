@@ -5,6 +5,7 @@ import com.swaydy.opencraft.agent.AssistantPlugin;
 import com.swaydy.opencraft.agent.ToolContext;
 import com.swaydy.opencraft.agent.ToolDefinition;
 import com.swaydy.opencraft.agent.ToolResult;
+import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.AttackTask;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -47,27 +48,31 @@ public class CombatPlugin implements AssistantPlugin {
 	}
 
 	private ToolResult attack(ToolContext ctx, JsonObject args) {
+		AiAssistantEntity assistant = ctx.assistantEntity();
+		if (assistant == null) {
+			return ToolResult.error("attack 只对实体形态助手可用。");
+		}
 		ToolArgs a = new ToolArgs(args);
 		String targetDesc = a.strOf("target", "").toLowerCase(java.util.Locale.ROOT);
 		ServerLevel level = ctx.level();
-		LivingEntity target = findTarget(ctx, targetDesc);
+		LivingEntity target = findTarget(ctx, assistant, targetDesc);
 		if (target == null) {
 			if (targetDesc.isEmpty()) {
 				return ToolResult.error("附近 16 格内没有可攻击的怪物。");
 			}
 			return ToolResult.error("附近 16 格内没有名为 \"" + targetDesc + "\" 的怪物。先 look_around 看看有哪些。");
 		}
-		ctx.assistant().setCurrentTask(new AttackTask(ctx.assistant(), level, target));
+		assistant.setCurrentTask(new AttackTask(assistant, level, target));
 		return ToolResult.ok("正在攻击 " + target.getName().getString() + "。");
 	}
 
 	/** 按名字/类型找最近的匹配目标（非玩家活体）；留空 = 最近的怪物。 */
-	private LivingEntity findTarget(ToolContext ctx, String desc) {
+	private LivingEntity findTarget(ToolContext ctx, AiAssistantEntity assistant, String desc) {
 		ServerLevel level = ctx.level();
-		BlockPos pos = ctx.assistant().blockPosition();
+		BlockPos pos = assistant.blockPosition();
 		AABB box = new AABB(pos).inflate(16);
 		List<Entity> entities = level.getEntities((Entity) null, box,
-				e -> e != ctx.assistant() && e.isAlive() && e instanceof LivingEntity
+				e -> e != assistant && e.isAlive() && e instanceof LivingEntity
 						&& !(e instanceof Player));
 		LivingEntity best = null;
 		double bestDist = Double.MAX_VALUE;
@@ -83,7 +88,7 @@ public class CombatPlugin implements AssistantPlugin {
 			if (!nameMatch) {
 				continue;
 			}
-			double d = ctx.assistant().distanceToSqr(le);
+			double d = assistant.distanceToSqr(le);
 			if (d < bestDist) {
 				bestDist = d;
 				best = le;

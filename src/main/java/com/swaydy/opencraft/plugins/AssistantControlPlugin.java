@@ -16,7 +16,11 @@ import java.util.List;
  *
  * - set_mode：切换跟随/待命；
  * - teleport_to_player：瞬移到主人身边（跨维度）；
- * - registerGoals：注册跟随主人的 Goal。
+ * - registerGoals：给【实体形态】注册跟随主人的 Goal（玩家形态的跟随由
+ *   PlayerAssistantService 每 tick 驱动，不需要 Goal）。
+ *
+ * 工具实现全部经 {@link com.swaydy.opencraft.assistant.AiAssistant} 接口，
+ * 实体形态与玩家形态通用（身体形态与预设解耦后，本插件必须双形态可用）。
  */
 public class AssistantControlPlugin implements AssistantPlugin {
 	@Override
@@ -47,7 +51,7 @@ public class AssistantControlPlugin implements AssistantPlugin {
 
 	@Override
 	public void registerGoals(AiAssistantEntity assistant) {
-		// 优先级 1：跟随主人（仅 general 类预设通过本插件启用）
+		// 实体形态：优先级 1 的跟随 Goal（玩家形态由 PlayerAssistantService 每 tick 驱动）
 		assistant.addAssistantGoal(1, new FollowAssistantOwnerGoal(assistant));
 	}
 
@@ -58,6 +62,7 @@ public class AssistantControlPlugin implements AssistantPlugin {
 			return ToolResult.error("mode 参数必须是 \"follow\" 或 \"stay\"，收到: \"" + mode + "\"。");
 		}
 		boolean following = mode.equals("follow");
+		// 双形态通用：AiAssistant.setFollowing
 		ctx.assistant().setFollowing(following);
 		return ToolResult.ok(following ? "已切换为跟随模式，我会一直跟着你。" : "已切换为待命模式，我在这里等你。");
 	}

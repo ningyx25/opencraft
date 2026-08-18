@@ -15,6 +15,10 @@ import java.util.Map;
  *
  * 插件是代码内注册的一等公民（第三方/脚本加载暂不支持）。Agent 预设供配置界面下拉选择，
  * 助手能力 = 其选中预设装配的插件之和。
+ *
+ * <p><b>与身体形态解耦</b>：预设只决定 LLM 行为（人设/工具/轮数）。助手本身一律是
+ * 真正的 ServerPlayer bot（{@link com.swaydy.opencraft.assistant.player.AiAssistantPlayer}，
+ * 像客户端一样进服），不因预设而改变形态。
  */
 public final class AgentRegistry {
 	private static final Map<String, AssistantPlugin> PLUGINS = new LinkedHashMap<>();
@@ -37,6 +41,10 @@ public final class AgentRegistry {
 		registerPlugin(new com.swaydy.opencraft.plugins.InventoryPlugin());
 		registerPlugin(new com.swaydy.opencraft.plugins.CraftingPlugin());
 		registerPlugin(new com.swaydy.opencraft.plugins.CombatPlugin());
+		// 玩家形态插件：假玩家（ServerPlayer 客户端形态）的真实玩家动作。
+		// 注意：插件只是“能力单元”；身体形态（玩家 bot）不由预设决定——
+		// 助手一律以真正的 ServerPlayer 身份进服，预设只装配 LLM 可调用的工具。
+		registerPlugin(new com.swaydy.opencraft.plugins.PlayerActionsPlugin());
 
 		registerAgent(ChatAgent.create());
 		registerAgent(GeneralAgent.create());

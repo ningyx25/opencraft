@@ -18,7 +18,8 @@ import java.util.List;
 /**
  * 挖掘插件：让助手像普通玩家一样挖方块。
  *
- * mine 只【下达指令】——助手走过去持续挥动并破坏方块；掉落物交给主人。
+ * mine 只【下达指令】——助手走过去持续挥动并破坏方块；掉落物进**助手自己的背包**
+ * （像玩家挖矿一样；背包满则掉助手脚边），之后可 hand_to_player 递给主人。
  * 安全约束：
  * - 只能挖掘主人所在维度、与主人距离 ≤ maxDistance 的方块；
  * - 不破坏容器/带方块实体的功能方块（避免吞数据）；基岩/空气直接拒绝。
@@ -37,7 +38,8 @@ public class MiningPlugin implements AssistantPlugin {
 		props.add("z", ToolSchema.prop("integer", "方块 Z 坐标"));
 		return List.of(new ToolDefinition("mine",
 				"让助手挖掘指定坐标的方块。挖掘是异步的：调用后立即返回，助手会走过去挖；"
-						+ "掉落的物品会自动进入主人背包（背包满则掉落主人脚边）。"
+						+ "掉落物像玩家挖矿一样进助手自己的背包（满则掉助手脚边），"
+						+ "之后需要时用 hand_to_player 递给主人，或用 list_inventory 查看挖到了什么。"
 						+ "不能挖掘空气、基岩、容器（箱子/熔炉等）。挖完后用 look_around 确认。",
 				ToolSchema.object(props, "x", "y", "z"),
 				this::mine));
@@ -45,11 +47,16 @@ public class MiningPlugin implements AssistantPlugin {
 
 	@Override
 	public String systemPromptFragment() {
-		return "【挖掘】你有 mine 工具挖指定坐标的方块（异步：下达后助手自己走过去挖，掉落物归主人）。"
+		return "【挖掘】你有 mine 工具挖指定坐标的方块（异步：下达后助手自己走过去挖，"
+				+ "掉落物进自己的背包，可以用 list_inventory 看挖到了什么、hand_to_player 递给玩家）。"
 				+ "只挖能挖的：先 inspect_block 看是否空气/基岩/容器；挖完用 look_around 确认。";
 	}
 
 	private ToolResult mine(ToolContext ctx, JsonObject args) {
+		AiAssistantEntity assistant = ctx.assistantEntity();
+		if (assistant == null) {
+			return ToolResult.error("mine 只对实体形态助手可用（玩家形态用 player_mine）。");
+		}
 		ToolArgs a = new ToolArgs(args);
 		int x = a.intOf("x", Integer.MIN_VALUE);
 		int y = a.intOf("y", Integer.MIN_VALUE);
@@ -58,7 +65,6 @@ public class MiningPlugin implements AssistantPlugin {
 			return ToolResult.error("mine 需要整数参数 x、y、z。");
 		}
 		ServerLevel level = ctx.level();
-		AiAssistantEntity assistant = ctx.assistant();
 		BlockPos pos = new BlockPos(x, y, z);
 
 		// 维度校验：只能挖主人所在维度
@@ -91,7 +97,7 @@ public class MiningPlugin implements AssistantPlugin {
 				&& cfgBlock.pos().equals(pos)) {
 			return ToolResult.error("那是我的配置方块（AI 徽标方块），不能挖。");
 		}
-		assistant.setCurrentTask(new MineBlockTask(assistant, level, pos, ctx.owner()));
-		return ToolResult.ok("正在挖掘 (" + x + "," + y + "," + z + ")。挖完掉落物会自动给你。");
+		assistant.setCurrentTask(new MineBlockTask(assistant, level, pos));
+		return ToolResult.ok("正在挖掘 (" + x + "," + y + "," + z + ")。挖到的物品会进我的背包，需要时递给你。");
 	}
 }

@@ -7,8 +7,8 @@ import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import com.swaydy.opencraft.ai.AiBlockConfig;
 import com.swaydy.opencraft.ai.AiCompanionService;
-import com.swaydy.opencraft.entity.AiAssistantEntity;
-import com.swaydy.opencraft.entity.ModEntities;
+import com.swaydy.opencraft.assistant.AiAssistant;
+import com.swaydy.opencraft.assistant.AssistantFacade;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -24,14 +24,14 @@ import java.util.concurrent.CompletableFuture;
  *   /opencraft ask <消息...>        —— 让“最近的”AI 助手回答你（配置来自其绑定的 AI 徽标方块）
  *   /opencraft ask <名字> <消息...> —— 和【指定名字】的助手对话（多助手时精确指定；Tab 可补全名字，
  *                                     同名助手用 名字(坐标) 消歧；名字不存在时回退到最近的助手）
- *   /opencraft summon               —— 召唤一个助手（自动绑定最近的、未绑定的 AI 徽标方块）
+ *   /opencraft summon               —— 召唤一个助手（自动绑定最近的、未绑定的 AI 徽标方块，按形态路由）
  *   /opencraft dismiss [all]        —— 送走最近的助手；加 all 送走全部助手
  *   /opencraft status               —— 列出你的全部助手与各自的配置状态
  *   /opencraft reset [all]          —— 清空最近助手的记忆；加 all 清空全部
  *   /opencraft help                 —— 显示帮助
  *
- * 多助手规则：每个 AI 徽标方块最多绑定一个助手，一个玩家可以同时拥有多个助手
- * （各绑定不同的方块）。配置只保存在游戏内的 AI 徽标方块里，没有 reload 指令。
+ * 多助手规则：每个 AI 徽标方块最多绑定一个助手（实体形态或玩家形态，见 AssistantFacade），
+ * 一个玩家可以同时拥有多个助手（各绑定不同的方块）。配置只保存在游戏内的 AI 徽标方块里。
  */
 public final class ModCommands {
 	private ModCommands() {
@@ -46,11 +46,6 @@ public final class ModCommands {
 	                                     net.minecraft.commands.Commands.CommandSelection environment) {
 		dispatcher.register(Commands.literal("opencraft")
 				.then(Commands.literal("ask")
-						// /opencraft ask <内容...> —— 单分支贪婪参数，避免两个“都能解析”的
-						// 分支在 Brigadier 里按注册顺序互相抢占（1.3.10 平局取先注册者）。
-						// “ask <名字> <消息>”的指定助手解析完全在 ask() 执行器里做：
-						// 开头是某个助手名字（或引号括起的“名字 (x,y,z)”）且后面还有消息时
-						// 就路由到该助手，否则整段作为普通消息问“最近的”助手（原行为）。
 						.then(Commands.argument("message", StringArgumentType.greedyString())
 								.suggests(ModCommands::suggestAskTargets)
 								.executes(ctx -> ask(ctx.getSource(),
@@ -67,6 +62,14 @@ public final class ModCommands {
 						.executes(ctx -> resetHistory(ctx.getSource()))
 						.then(Commands.literal("all")
 								.executes(ctx -> resetAllHistory(ctx.getSource()))))
+				.then(Commands.literal("debug")
+						.executes(ctx -> debugStatus(ctx.getSource()))
+						.then(Commands.literal("on")
+								.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+								.executes(ctx -> debugSet(ctx.getSource(), true)))
+						.then(Commands.literal("off")
+								.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+								.executes(ctx -> debugSet(ctx.getSource(), false))))
 				.then(Commands.literal("help")
 						.executes(ctx -> help(ctx.getSource()))));
 	}
@@ -75,7 +78,7 @@ public final class ModCommands {
 	 * /opencraft ask <内容...>：默认问“最近的”助手（原行为）。
 	 * 多助手时可以在开头指定助手名字：当内容的开头是“名字”（或引号括起的
 	 * “名字 (x,y,z)”/“名字(x,y,z)”/“名字@x,y,z”，匹配规则见
-	 * {@link ModEntities#findAssistantsBySelector}）且后面还有消息时，就精确路由到
+	 * {@link AssistantFacade#findAssistantsBySelector}）且后面还有消息时，就精确路由到
 	 * 该助手：
 	 * - 匹配到 1 个 → 问它（先提示一句“正在询问谁”）；
 	 * - 匹配到多个（同名）→ 报错并列出来，要求带坐标消歧；
@@ -106,9 +109,9 @@ public final class ModCommands {
 			}
 		}
 		if (selector != null && !rest.isEmpty()) {
-			List<AiAssistantEntity> matches = ModEntities.findAssistantsBySelector(player, selector);
+			List<AiAssistant> matches = AssistantFacade.findAssistantsBySelector(player, selector);
 			if (matches.size() == 1) {
-				AiAssistantEntity target = matches.get(0);
+				AiAssistant target = matches.get(0);
 				source.sendSuccess(() -> Component.translatable(
 						"command.opencraft.ask.target", target.getDisplayName()), false);
 				AiCompanionService.ask(player, target, rest);
@@ -116,7 +119,7 @@ public final class ModCommands {
 			}
 			if (matches.size() > 1) {
 				StringBuilder list = new StringBuilder();
-				for (AiAssistantEntity assistant : matches) {
+				for (AiAssistant assistant : matches) {
 					if (list.length() > 0) {
 						list.append("，");
 					}
@@ -143,7 +146,7 @@ public final class ModCommands {
 		try {
 			ServerPlayer player = ctx.getSource().getPlayerOrException();
 			String typed = builder.getRemaining();
-			for (AiAssistantEntity assistant : ModEntities.findAssistantsFor(player)) {
+			for (AiAssistant assistant : AssistantFacade.findAssistantsFor(player)) {
 				AiBlockConfig config = assistant.getConfig();
 				String name = config == null ? "" : config.effectiveName();
 				if (!name.isBlank() && name.startsWith(typed) && !name.equals(typed)) {
@@ -165,7 +168,7 @@ public final class ModCommands {
 
 	private static int summon(CommandSourceStack source) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
 		ServerPlayer player = source.getPlayerOrException();
-		if (AiCompanionService.summonFor(player) != null) {
+		if (AssistantFacade.summonNearest(player) != null) {
 			source.sendSuccess(() -> Component.translatable("command.opencraft.summon.success"), false);
 		} else {
 			source.sendFailure(Component.translatable("command.opencraft.summon.failed"));
@@ -175,7 +178,7 @@ public final class ModCommands {
 
 	private static int dismiss(CommandSourceStack source) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
 		ServerPlayer player = source.getPlayerOrException();
-		if (AiCompanionService.dismissFor(player)) {
+		if (AssistantFacade.dismissFor(player)) {
 			source.sendSuccess(() -> Component.translatable("command.opencraft.dismiss.success"), false);
 		} else {
 			source.sendFailure(Component.translatable("command.opencraft.dismiss.failed"));
@@ -185,7 +188,7 @@ public final class ModCommands {
 
 	private static int dismissAll(CommandSourceStack source) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
 		ServerPlayer player = source.getPlayerOrException();
-		if (AiCompanionService.dismissAllFor(player)) {
+		if (AssistantFacade.dismissAllFor(player)) {
 			source.sendSuccess(() -> Component.translatable("command.opencraft.dismiss.all.success"), false);
 		} else {
 			source.sendFailure(Component.translatable("command.opencraft.dismiss.failed"));
@@ -195,21 +198,22 @@ public final class ModCommands {
 
 	private static int status(CommandSourceStack source) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
 		ServerPlayer player = source.getPlayerOrException();
-		List<AiAssistantEntity> assistants = ModEntities.findAssistantsFor(player);
+		List<AiAssistant> assistants = AssistantFacade.findAssistantsFor(player);
 		if (assistants.isEmpty()) {
 			source.sendSuccess(() -> Component.translatable("command.opencraft.status.no_block"), false);
 			return 1;
 		}
 		source.sendSuccess(() -> Component.translatable(
 				"command.opencraft.status.header", assistants.size()), false);
-		for (AiAssistantEntity assistant : assistants) {
+		for (AiAssistant assistant : assistants) {
 			AiBlockConfig config = assistant.getConfig();
 			GlobalPos block = assistant.getConfigBlock();
 			String blockLabel = block == null ? config.effectiveName()
 					: config.effectiveName() + " (" + block.pos().toShortString() + ")";
 			String status = String.format(
-					"  [%s] 模型: %s | API Key: %s | 记忆: %d 条",
+					"  [%s] 形态: %s | 模型: %s | API Key: %s | 记忆: %d 条",
 					blockLabel,
+					assistant.formId(),
 					config.model,
 					config.apiKey.isEmpty() ? "未设置" : "已设置",
 					AiCompanionService.historySize(block));
@@ -220,7 +224,7 @@ public final class ModCommands {
 
 	private static int resetHistory(CommandSourceStack source) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
 		ServerPlayer player = source.getPlayerOrException();
-		AiAssistantEntity assistant = ModEntities.findNearestAssistantFor(player);
+		AiAssistant assistant = AssistantFacade.findNearestFor(player);
 		if (assistant == null) {
 			source.sendFailure(Component.translatable("command.opencraft.reset.failed"));
 			return 0;
@@ -234,6 +238,25 @@ public final class ModCommands {
 		ServerPlayer player = source.getPlayerOrException();
 		AiCompanionService.resetAllHistory(player);
 		source.sendSuccess(() -> Component.translatable("command.opencraft.reset.all.success"), false);
+		return 1;
+	}
+
+	private static int debugStatus(CommandSourceStack source) {
+		source.sendSuccess(() -> Component.literal(
+				"调试模式: " + (com.swaydy.opencraft.debug.DebugLog.isEnabled() ? "开" : "关")
+						+ " | 日志文件: " + com.swaydy.opencraft.debug.DebugLog.logFilePath()), false);
+		return 1;
+	}
+
+	private static int debugSet(CommandSourceStack source, boolean on) {
+		if (on) {
+			com.swaydy.opencraft.debug.DebugLog.enable();
+		} else {
+			com.swaydy.opencraft.debug.DebugLog.disable();
+		}
+		source.sendSuccess(() -> Component.literal(
+				"调试模式已" + (on ? "开启" : "关闭")
+						+ (on ? "，日志写入: " + com.swaydy.opencraft.debug.DebugLog.logFilePath() : "")), false);
 		return 1;
 	}
 

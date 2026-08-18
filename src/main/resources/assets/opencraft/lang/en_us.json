@@ -87,7 +87,7 @@
   "screen.opencraft.config.language_hint": "e.g. zh-CN / en-US",
   "screen.opencraft.config.language.tooltip": "Preferred reply language.",
   "screen.opencraft.config.agent": "Agent Preset",
-  "screen.opencraft.config.agent.tooltip": "Determines the assistant's abilities from assembled plugins. chat_agent = pure chat; general_agent = move/mine/craft/fight.",
+  "screen.opencraft.config.agent.tooltip": "Determines the assistant's AI behavior: chat_agent = pure chat (follow/stay only); general_agent = act like a real player: walk/mine/place/craft/give items. The assistant body is always a real player that joins the server like a client.",
   "agent.opencraft.chat": "Chat Assistant (chat_agent)",
   "agent.opencraft.general": "General Assistant (general_agent)",
   "screen.opencraft.config.name": "Assistant Name",

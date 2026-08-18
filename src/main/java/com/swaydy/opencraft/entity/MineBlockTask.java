@@ -1,14 +1,11 @@
 package com.swaydy.opencraft.entity;
 
-import com.swaydy.opencraft.ai.AiCompanionService;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -16,7 +13,8 @@ import net.minecraft.world.level.block.state.BlockState;
  * 挖掘指定方块的任务。
  *
  * 助手先寻路到目标旁，然后持续挥动手臂并调用 {@code level.destroyBlock} 破坏方块；
- * 掉落物直接交给主人（进入主人背包，背包满则掉落到主人脚边）。
+ * 掉落物像玩家挖矿一样进入**助手自己的背包**（背包满则掉落到助手脚边），
+ * 之后助手可用 hand_to_player 把物品递给主人。
  *
  * 由挖掘插件先在服务端线程校验安全性（距离、可破坏性、功能方块），
  * 再下达本任务；任务自身只负责执行与判定。
@@ -28,7 +26,6 @@ public class MineBlockTask extends AssistantTask {
 
 	private final ServerLevel level;
 	private final BlockPos target;
-	private final ServerPlayer owner;
 	private final long deadlineTick;
 
 	private boolean arrived = false;
@@ -37,12 +34,10 @@ public class MineBlockTask extends AssistantTask {
 	private int pathRecalc = 0;
 	private int swingTimer = 0;
 
-	public MineBlockTask(AiAssistantEntity assistant, ServerLevel level, BlockPos target,
-	                     ServerPlayer owner) {
+	public MineBlockTask(AiAssistantEntity assistant, ServerLevel level, BlockPos target) {
 		super(assistant);
 		this.level = level;
 		this.target = target.immutable();
-		this.owner = owner;
 		this.deadlineTick = assistant.tickCount + TIMEOUT_TICKS;
 	}
 
@@ -50,6 +45,8 @@ public class MineBlockTask extends AssistantTask {
 	public void start() {
 		this.pathRecalc = 0;
 		this.swingTimer = 0;
+		// 玩家式自动换镐：从背包里挑一把对这个方块最快的工具
+		assistant.autoSelectMiningTool(level.getBlockState(target));
 	}
 
 	@Override
@@ -102,8 +99,9 @@ public class MineBlockTask extends AssistantTask {
 	}
 
 	/**
-	 * 破坏目标方块并把掉落物交给主人。破坏走 {@code level.destroyBlock}（与
-	 * ServerPlayerGameMode.destroyBlock 同款逻辑，由服务端执行）。
+	 * 破坏目标方块并把掉落物收进助手背包。破坏走 {@code level.destroyBlock}（与
+	 * ServerPlayerGameMode.destroyBlock 同款逻辑，由服务端执行）；战利品表按
+	 * 主手工具计算（时运/精准采集等附魔生效）。
 	 */
 	private void destroyTarget() {
 		BlockState state = level.getBlockState(target);
@@ -113,9 +111,10 @@ public class MineBlockTask extends AssistantTask {
 		// 播放破坏音效与粒子（服务端广播）
 		level.playSound(null, target, SoundEvents.STONE_BREAK, SoundSource.BLOCKS, 0.8F, 1.0F);
 		level.levelEvent(assistant, 2001, target, Block.getId(state));
-		// 收集掉落物再破坏（避免破坏后 getDrops 取不到状态）
+		// 收集掉落物再破坏（避免破坏后 getDrops 取不到状态）；按主手工具计算战利品
+		ItemStack tool = assistant.getMainHandItem();
 		java.util.List<ItemStack> drops = Block.getDrops(state, level, target,
-				level.getBlockEntity(target), assistant, ItemStack.EMPTY);
+				level.getBlockEntity(target), assistant, tool);
 		boolean broken = level.destroyBlock(target, false, assistant, 3);
 		if (!broken) {
 			// 破坏失败（如基岩）：标记失败，停止尝试
@@ -125,26 +124,23 @@ public class MineBlockTask extends AssistantTask {
 		}
 		for (ItemStack stack : drops) {
 			if (!stack.isEmpty()) {
-				giveToOwner(stack);
+				giveToAssistant(stack);
 			}
 		}
 		done = true;
 		assistant.getNavigation().stop();
 	}
 
-	/** 掉落物进主人背包；背包满则掉落到主人脚边。 */
-	private void giveToOwner(ItemStack stack) {
-		if (owner == null) {
-			// 主人不可用：掉落到挖掘点附近
-			level.addFreshEntity(new net.minecraft.world.entity.item.ItemEntity(level,
-					target.getX() + 0.5, target.getY() + 0.5, target.getZ() + 0.5, stack));
-			return;
-		}
-		if (owner.getInventory().add(stack)) {
-			AiCompanionService.notifyInventoryGain(owner, stack);
-		} else {
-			owner.drop(stack, false);
-		}
+	/**
+	 * 掉落物像玩家破坏方块一样在挖掘点生成物品实体（10 tick 掉落保护，与
+	 * vanilla 方块破坏掉落一致），助手自己的拾取逻辑会在保护期结束后自动吸进
+	 * 36 格背包；背包满的物品会留在原地，玩家/助手之后都能捡。
+	 */
+	private void giveToAssistant(ItemStack stack) {
+		net.minecraft.world.entity.item.ItemEntity item = new net.minecraft.world.entity.item.ItemEntity(level,
+				target.getX() + 0.5, target.getY() + 0.5, target.getZ() + 0.5, stack);
+		item.setPickUpDelay(10);
+		level.addFreshEntity(item);
 	}
 
 	@Override

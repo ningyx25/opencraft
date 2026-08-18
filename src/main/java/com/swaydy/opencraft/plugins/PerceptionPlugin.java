@@ -64,7 +64,10 @@ public class PerceptionPlugin implements AssistantPlugin {
 
 	@Override
 	public String gameContextFragment(ToolContext ctx) {
-		AiAssistantEntity assistant = ctx.assistant();
+		AiAssistantEntity assistant = ctx.assistantEntity();
+		if (assistant == null) {
+			return null;
+		}
 		AssistantTask task = assistant.getCurrentTask();
 		String taskDesc = task == null ? "空闲" : task.describe();
 		return "【助手当前状态】坐标: x=" + Math.round(assistant.getX())
@@ -74,10 +77,13 @@ public class PerceptionPlugin implements AssistantPlugin {
 	}
 
 	private ToolResult lookAround(ToolContext ctx, JsonObject args) {
+		AiAssistantEntity assistant = ctx.assistantEntity();
+		if (assistant == null) {
+			return ToolResult.error("look_around 只对实体形态助手可用（玩家形态用 player_look）。");
+		}
 		ToolArgs a = new ToolArgs(args);
 		int radius = Math.max(1, Math.min(16, a.intOf("radius", 8)));
 		ServerLevel level = ctx.level();
-		AiAssistantEntity assistant = ctx.assistant();
 		BlockPos pos = assistant.blockPosition();
 
 		StringBuilder sb = new StringBuilder();

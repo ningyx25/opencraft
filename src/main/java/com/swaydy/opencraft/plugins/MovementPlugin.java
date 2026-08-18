@@ -5,6 +5,7 @@ import com.swaydy.opencraft.agent.AssistantPlugin;
 import com.swaydy.opencraft.agent.ToolContext;
 import com.swaydy.opencraft.agent.ToolDefinition;
 import com.swaydy.opencraft.agent.ToolResult;
+import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.MoveToBlockTask;
 
 import java.util.List;
@@ -50,11 +51,19 @@ public class MovementPlugin implements AssistantPlugin {
 
 	@Override
 	public String gameContextFragment(ToolContext ctx) {
-		var task = ctx.assistant().getCurrentTask();
+		AiAssistantEntity assistant = ctx.assistantEntity();
+		if (assistant == null) {
+			return null;
+		}
+		var task = assistant.getCurrentTask();
 		return task == null ? null : "当前任务：" + task.describe();
 	}
 
 	private ToolResult gotoTool(ToolContext ctx, JsonObject args) {
+		AiAssistantEntity assistant = ctx.assistantEntity();
+		if (assistant == null) {
+			return ToolResult.error("goto 只对实体形态助手可用（玩家形态用 player_goto）。");
+		}
 		ToolArgs a = new ToolArgs(args);
 		int x = a.intOf("x", Integer.MIN_VALUE);
 		int y = a.intOf("y", Integer.MIN_VALUE);
@@ -63,18 +72,22 @@ public class MovementPlugin implements AssistantPlugin {
 			return ToolResult.error("goto 需要整数参数 x、y、z（绝对坐标）。");
 		}
 		// 距离安全检查（不超出主人 maxDistance 配置太远）
-		double maxDist = ctx.assistant().getConfig().maxDistance;
-		double distSq = ctx.assistant().distanceToSqr(x + 0.5, y + 0.5, z + 0.5);
+		double maxDist = assistant.getConfig().maxDistance;
+		double distSq = assistant.distanceToSqr(x + 0.5, y + 0.5, z + 0.5);
 		if (distSq > maxDist * maxDist) {
 			return ToolResult.error("目标离主人超过 " + (int) maxDist + " 格，太远了；请分步走或选更近的目标。");
 		}
-		ctx.assistant().setCurrentTask(new MoveToBlockTask(ctx.assistant(),
+		assistant.setCurrentTask(new MoveToBlockTask(assistant,
 				new net.minecraft.core.BlockPos(x, y, z)));
 		return ToolResult.ok("正在前往 (" + x + "," + y + "," + z + ")。到达后请用 look_around 确认。");
 	}
 
 	private ToolResult stopTool(ToolContext ctx, JsonObject args) {
-		ctx.assistant().cancelCurrentTask();
+		AiAssistantEntity assistant = ctx.assistantEntity();
+		if (assistant == null) {
+			return ToolResult.error("stop 只对实体形态助手可用（玩家形态用 player_stop）。");
+		}
+		assistant.cancelCurrentTask();
 		return ToolResult.ok("已停止当前任务。");
 	}
 }

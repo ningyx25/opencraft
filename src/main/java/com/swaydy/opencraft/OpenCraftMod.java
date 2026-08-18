@@ -2,10 +2,11 @@ package com.swaydy.opencraft;
 
 import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.ai.AiConfigHandler;
+import com.swaydy.opencraft.assistant.AiAssistant;
+import com.swaydy.opencraft.assistant.AssistantFacade;
 import com.swaydy.opencraft.block.ModBlockEntities;
 import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.command.ModCommands;
-import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.ModEntities;
 import com.swaydy.opencraft.net.AiConfigPayloads;
 import com.swaydy.opencraft.net.AssistantPayloads;
@@ -37,6 +38,16 @@ public class OpenCraftMod implements ModInitializer {
 
 		LOGGER.info("OpenCraft 启动！AI 游戏助手已就绪。");
 
+		// 调试模式：-Dopencraft.debug=true / OPEN_CRAFT_DEBUG=true 默认开启；
+		// 游戏内可用 /opencraft debug on|off 动态切换（详见 DebugLog）
+		if (com.swaydy.opencraft.debug.DebugLog.isEnabled()) {
+			com.swaydy.opencraft.debug.DebugLog.log("debug",
+					"OpenCraft 启动，调试模式已由启动参数开启（日志文件: {}）",
+					com.swaydy.opencraft.debug.DebugLog.logFilePath());
+			LOGGER.info("[OpenCraft] 调试模式已开启，日志写入 {}",
+					com.swaydy.opencraft.debug.DebugLog.logFilePath());
+		}
+
 		// 方块 / BlockItem 注册 + 加入创造标签页
 		ModBlocks.register();
 
@@ -54,6 +65,9 @@ public class OpenCraftMod implements ModInitializer {
 
 		// AI 服务（对话历史、线程池、服务器生命周期）
 		AiCompanionService.init();
+
+		// 玩家形态助手（假玩家/客户端形态）注册表与生命周期
+		com.swaydy.opencraft.assistant.player.PlayerAssistantService.init();
 
 		// AI 配置编辑器网络包：注册类型 + 保存/召唤/送走接收器
 		PayloadTypeRegistry.playC2S().register(
@@ -131,8 +145,8 @@ public class OpenCraftMod implements ModInitializer {
 				AssistantPayloads.AssistantChatPayload.TYPE,
 				(payload, context) -> context.server().execute(() -> {
 					ServerPlayer player = context.player();
-					AiAssistantEntity assistant =
-							AiCompanionService.resolveOwnedAssistant(player, payload.entityId());
+					AiAssistant assistant =
+							AssistantFacade.resolveOwned(player, payload.entityId());
 					if (assistant == null) {
 						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
 						return;
@@ -155,8 +169,8 @@ public class OpenCraftMod implements ModInitializer {
 				AssistantPayloads.AssistantToggleFollowPayload.TYPE,
 				(payload, context) -> context.server().execute(() -> {
 					ServerPlayer player = context.player();
-					AiAssistantEntity assistant =
-							AiCompanionService.resolveOwnedAssistant(player, payload.entityId());
+					AiAssistant assistant =
+							AssistantFacade.resolveOwned(player, payload.entityId());
 					if (assistant == null) {
 						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
 						return;
@@ -171,13 +185,13 @@ public class OpenCraftMod implements ModInitializer {
 				AssistantPayloads.AssistantDismissPayload.TYPE,
 				(payload, context) -> context.server().execute(() -> {
 					ServerPlayer player = context.player();
-					AiAssistantEntity assistant =
-							AiCompanionService.resolveOwnedAssistant(player, payload.entityId());
+					AiAssistant assistant =
+							AssistantFacade.resolveOwned(player, payload.entityId());
 					if (assistant == null) {
 						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
 						return;
 					}
-					if (AiCompanionService.dismissAssistantEntity(assistant)) {
+					if (AssistantFacade.dismiss(assistant)) {
 						player.sendSystemMessage(Component.translatable("command.opencraft.dismiss.success"));
 					}
 				}));

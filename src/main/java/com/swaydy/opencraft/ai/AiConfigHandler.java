@@ -1,9 +1,9 @@
 package com.swaydy.opencraft.ai;
 
 import com.swaydy.opencraft.OpenCraftMod;
+import com.swaydy.opencraft.assistant.AiAssistant;
+import com.swaydy.opencraft.assistant.AssistantFacade;
 import com.swaydy.opencraft.block.AiLogoBlockEntity;
-import com.swaydy.opencraft.entity.AiAssistantEntity;
-import com.swaydy.opencraft.entity.ModEntities;
 import com.swaydy.opencraft.net.AiConfigPayloads;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.core.BlockPos;
@@ -68,6 +68,11 @@ public final class AiConfigHandler {
 		blockEntity.applyData(data);
 		OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 更新了方块({})的 AI 配置",
 				player.getName().getString(), pos.toShortString());
+		com.swaydy.opencraft.debug.DebugLog.log("config",
+				"玩家 {} 保存了方块 {} 的配置（模型={}，名字={}，agent={}，baseUrl={}）",
+				player.getName().getString(), pos.toShortString(),
+				blockEntity.getConfig().model, blockEntity.getConfig().effectiveName(),
+				blockEntity.getConfig().agent, blockEntity.getConfig().baseUrl);
 		player.sendSystemMessage(Component.translatable("command.opencraft.config.saved"));
 		sendData(player, blockEntity.getConfig().toData(), true, pos, dimension);
 	}
@@ -80,8 +85,8 @@ public final class AiConfigHandler {
 			return;
 		}
 		GlobalPos bindPos = GlobalPos.of(dimension, pos);
-		// 该方块已绑定助手：是自己的 → 视为成功（幂等）；是别人的 → 拒绝（一方块一助手）
-		AiAssistantEntity existing = ModEntities.findAssistantBoundTo(
+		// 该方块已绑定助手（任何形态）：是自己的 → 视为成功（幂等）；是别人的 → 拒绝（一方块一助手）
+		AiAssistant existing = AssistantFacade.findBoundTo(
 				player.level().getServer().getLevel(dimension), bindPos);
 		if (existing != null) {
 			if (existing.getOwnerUuid() != null && existing.getOwnerUuid().equals(player.getUUID())) {
@@ -93,11 +98,16 @@ public final class AiConfigHandler {
 			sendData(player, blockEntity.getConfig().toData(), canEdit(player), pos, dimension);
 			return;
 		}
-		AiAssistantEntity assistant = AiCompanionService.summonFor(player, bindPos);
+		AiAssistant assistant = AssistantFacade.summon(player, bindPos);
 		if (assistant == null) {
 			player.sendSystemMessage(Component.translatable("command.opencraft.summon.failed"));
+			com.swaydy.opencraft.debug.DebugLog.log("summon",
+					"配置界面召唤失败（方块 {}）", pos.toShortString());
 			return;
 		}
+		com.swaydy.opencraft.debug.DebugLog.log("summon",
+				"配置界面：玩家 {} 用方块 {} 召唤了助手", player.getName().getString(),
+				pos.toShortString());
 		// 新绑定方块亮起（若有其他助手仍绑定旧方块，由实体 remove 兜底熄灭）
 		syncBoundBlockPoweredState(player.level().getServer().getLevel(dimension), bindPos);
 		player.sendSystemMessage(Component.translatable("command.opencraft.summon.success"));
@@ -117,7 +127,7 @@ public final class AiConfigHandler {
 		}
 		ServerLevel level = player.level().getServer().getLevel(dimension);
 		GlobalPos bindPos = GlobalPos.of(dimension, pos);
-		AiAssistantEntity existing = level == null ? null : ModEntities.findAssistantBoundTo(level, bindPos);
+		AiAssistant existing = level == null ? null : AssistantFacade.findBoundTo(level, bindPos);
 		if (existing == null) {
 			// 本来就没有助手绑定：幂等视为成功，刷新界面即可
 			sendData(player, blockEntity.getConfig().toData(), canEdit(player), pos, dimension);
@@ -128,8 +138,11 @@ public final class AiConfigHandler {
 			sendData(player, blockEntity.getConfig().toData(), canEdit(player), pos, dimension);
 			return;
 		}
-		if (AiCompanionService.dismissBoundTo(level, bindPos)) {
+		if (AssistantFacade.dismiss(existing)) {
 			player.sendSystemMessage(Component.translatable("command.opencraft.dismiss.success"));
+			com.swaydy.opencraft.debug.DebugLog.log("summon",
+					"配置界面：玩家 {} 送走了方块 {} 绑定的助手", player.getName().getString(),
+					pos.toShortString());
 		}
 		// 送走后刷新界面（按钮回到“召唤”状态）
 		sendData(player, blockEntity.getConfig().toData(), canEdit(player), pos, dimension);
@@ -155,10 +168,10 @@ public final class AiConfigHandler {
 		}
 		ServerLevel level = player.level().getServer().getLevel(dimension);
 		GlobalPos bindPos = GlobalPos.of(dimension, pos);
-		AiAssistantEntity assistant = level == null ? null : ModEntities.findAssistantBoundTo(level, bindPos);
+		AiAssistant assistant = level == null ? null : AssistantFacade.findBoundTo(level, bindPos);
 		if (assistant == null) {
-			// 便利：还没有助手时自动用本方块召唤一个（绑定本方块）
-			assistant = AiCompanionService.summonFor(player, bindPos);
+			// 便利：还没有助手时自动用本方块召唤一个（按形态路由，绑定本方块）
+			assistant = AssistantFacade.summon(player, bindPos);
 			if (assistant == null) {
 				sendChatError(player, pos, dimension, "command.opencraft.summon.failed");
 				return;
@@ -179,7 +192,7 @@ public final class AiConfigHandler {
 		}
 		ServerLevel level = player.level().getServer().getLevel(dimension);
 		GlobalPos bindPos = GlobalPos.of(dimension, pos);
-		AiAssistantEntity assistant = level == null ? null : ModEntities.findAssistantBoundTo(level, bindPos);
+		AiAssistant assistant = level == null ? null : AssistantFacade.findBoundTo(level, bindPos);
 		// 只把自己的助手历史发给本人；没绑定/别人的 → 空历史
 		boolean own = assistant != null && assistant.getOwnerUuid() != null
 				&& assistant.getOwnerUuid().equals(player.getUUID());
@@ -218,7 +231,7 @@ public final class AiConfigHandler {
 		if (!(state.getBlock() instanceof com.swaydy.opencraft.block.AiLogoBlock)) {
 			return;
 		}
-		boolean anyBound = ModEntities.isConfigBlockBound(level, blockPos);
+		boolean anyBound = AssistantFacade.isConfigBlockBound(level, blockPos);
 		boolean powered = state.getValue(com.swaydy.opencraft.block.AiLogoBlock.POWERED);
 		if (powered != anyBound) {
 			level.setBlock(blockPos.pos(), state.setValue(
@@ -268,7 +281,8 @@ public final class AiConfigHandler {
 					if (blockEntity instanceof AiLogoBlockEntity aiBlockEntity) {
 						BlockPos pos = blockEntity.getBlockPos();
 						if (unboundOnly
-								&& ModEntities.isConfigBlockBound(level, GlobalPos.of(level.dimension(), pos))) {
+								&& AssistantFacade.isConfigBlockBound(level,
+										GlobalPos.of(level.dimension(), pos))) {
 							continue;
 						}
 						int dist = Math.abs(pos.getX() - center.getX())
@@ -298,8 +312,8 @@ public final class AiConfigHandler {
 		boolean bound = false;
 		boolean boundByMe = false;
 		if (level != null) {
-			AiAssistantEntity boundAssistant =
-					ModEntities.findAssistantBoundTo(level, GlobalPos.of(dimension, pos));
+			AiAssistant boundAssistant =
+					AssistantFacade.findBoundTo(level, GlobalPos.of(dimension, pos));
 			bound = boundAssistant != null;
 			boundByMe = bound && boundAssistant.getOwnerUuid() != null
 					&& boundAssistant.getOwnerUuid().equals(player.getUUID());

@@ -4,6 +4,9 @@ import com.google.gson.Gson;
 import com.swaydy.opencraft.OpenCraftMod;
 import com.swaydy.opencraft.agent.AgentRegistry;
 import com.swaydy.opencraft.agent.AgentRuntime;
+import com.swaydy.opencraft.assistant.AiAssistant;
+import com.swaydy.opencraft.assistant.AssistantFacade;
+import com.swaydy.opencraft.assistant.player.PlayerAssistantService;
 import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.ModEntities;
@@ -92,14 +95,14 @@ public final class AiCompanionService {
 	// ------------------------------------------------------------------
 
 	/**
-	 * 让玩家问助手一个问题（异步）。目标是玩家“最近”的助手（按绑定方块距离）；
-	 * 还没有任何助手时自动召唤一个（绑定最近的未绑定方块）。每个助手有独立记忆。
+	 * 让玩家问助手一个问题（异步）。目标是玩家“最近”的助手（按绑定方块距离，实体/玩家形态都算）；
+	 * 还没有任何助手时自动召唤一个（按形态路由，绑定最近的未绑定方块）。每个助手有独立记忆。
 	 */
 	public static void ask(ServerPlayer player, String question) {
-		AiAssistantEntity target = ModEntities.findNearestAssistantFor(player);
+		AiAssistant target = AssistantFacade.findNearestFor(player);
 		if (target == null) {
-			// 便利：还没有助手时自动召唤一个
-			target = summonFor(player);
+			// 便利：还没有助手时自动召唤一个（按方块配置的形态路由）
+			target = AssistantFacade.summonNearest(player);
 			if (target == null) {
 				player.sendSystemMessage(Component.translatable("command.opencraft.ask.no_assistant"));
 				return;
@@ -113,8 +116,12 @@ public final class AiCompanionService {
 	 * /opencraft ask <名字> <消息> 精确指定和哪个助手对话；每个助手有独立记忆，
 	 * 回复会以该助手自己的名字广播到聊天。
 	 */
-	public static void ask(ServerPlayer player, AiAssistantEntity assistant, String question) {
+	public static void ask(ServerPlayer player, AiAssistant assistant, String question) {
 		GlobalPos historyKey = historyKeyFor(assistant);
+		com.swaydy.opencraft.debug.DebugLog.log("chat",
+				"玩家 {} 问助手 {}（方块 {}）: {}", player.getName().getString(),
+				assistant.getConfig().effectiveName(),
+				historyKey == null ? "?" : historyKey.pos().toShortString(), question);
 		AgentRuntime.runAsync(player, assistant, question, historyKey, null, null);
 	}
 
@@ -126,26 +133,64 @@ public final class AiCompanionService {
 	 * @param guiBlockPos / guiDimension 非空时表示 GUI 模式：流式增量以 "delta" 事件
 	 *                     推送到客户端窗口，结束时以 "reply" 事件回传完整回复。
 	 */
-	public static void askGui(ServerPlayer player, AiAssistantEntity assistant, String question,
+	public static void askGui(ServerPlayer player, AiAssistant assistant, String question,
 	                          BlockPos guiBlockPos, ResourceKey<Level> guiDimension) {
 		GlobalPos historyKey = historyKeyFor(assistant);
+		com.swaydy.opencraft.debug.DebugLog.log("chat",
+				"玩家 {} 通过界面问助手 {}（方块 {}）: {}", player.getName().getString(),
+				assistant.getConfig().effectiveName(),
+				historyKey == null ? "?" : historyKey.pos().toShortString(), question);
 		AgentRuntime.runAsync(player, assistant, question, historyKey, guiBlockPos, guiDimension);
 	}
 
-	/** 召唤（或找到）玩家最近的助手：自动绑定最近的、尚未被绑定的 AI 徽标方块。 */
-	public static AiAssistantEntity summonFor(ServerPlayer player) {
-		return summonFor(player, null);
+	/**
+	 * 召唤（或找到）玩家最近的助手：自动绑定最近的、尚未被绑定的 AI 徽标方块。
+	 *
+	 * <p>**设计约定**：AI 助手本身就是“像多人联机客户端一样加入游戏”的真玩家
+	 * （{@link com.swaydy.opencraft.assistant.player.AiAssistantPlayer}，经
+	 * PlayerList.placeNewPlayer 正式进服）——召唤一律走玩家形态，与 Agent 预设无关
+	 * （预设只决定 LLM 行为）。旧存档遗留的实体形态助手由 {@link AssistantFacade#summon} 迁移。
+	 */
+	public static AiAssistant summonFor(ServerPlayer player) {
+		GlobalPos block = AiConfigHandler.findNearestConfigBlock(
+				(ServerLevel) player.level(), player.blockPosition(), 48, true);
+		if (block == null) {
+			return null;
+		}
+		return summonFor(player, block);
 	}
 
 	/**
-	 * 召唤（或找到）绑定到指定 AI 徽标方块的助手。
+	 * 召唤（或找到）绑定到指定 AI 徽标方块的助手：**一律玩家形态**（真正的 ServerPlayer bot，
+	 * 像客户端一样进服），与方块配置的 Agent 预设无关（预设只决定 LLM 行为）。
 	 *
-	 * 多助手规则（每个 AI 徽标方块至多绑定一个助手）：
-	 * - 目标方块已有助手绑定：是该玩家的 → 直接返回（幂等）；是别人的 → 返回 null（拒绝）；
-	 * - 目标方块未被绑定 → 新建一个绑定该方块的助手，归召唤者所有。
-	 * - explicitConfigBlock 为 null 时：自动找最近的未绑定方块，找不到则返回 null（拒绝召唤）。
+	 * 多助手规则（每个 AI 徽标方块至多绑定一个助手，跨形态统一判定）：
+	 * - 目标方块已有玩家形态助手绑定：是该玩家的 → 直接返回（幂等）；是别人的 → 返回 null（拒绝）；
+	 * - 目标方块未被绑定 → 新建一个绑定该方块的玩家形态助手，归召唤者所有。
 	 */
-	public static AiAssistantEntity summonFor(ServerPlayer player, GlobalPos explicitConfigBlock) {
+	public static AiAssistant summonFor(ServerPlayer player, GlobalPos explicitConfigBlock) {
+		return AssistantFacade.summon(player, explicitConfigBlock);
+	}
+
+	/**
+	 * 【遗留】实体形态召唤（PathfinderMob 底座）：旧实现，仅用于兼容旧存档/回归测试。
+	 * 新设计下助手一律是玩家形态（见 {@link #summonFor(ServerPlayer, GlobalPos)}）；
+	 * 本方法不再被任何用户路径调用。
+	 */
+	public static AiAssistantEntity summonLegacyEntityFor(ServerPlayer player) {
+		return summonEntityFor(player, null);
+	}
+
+	/** 【遗留】同 {@link #summonLegacyEntityFor(ServerPlayer)}，显式指定绑定方块。 */
+	public static AiAssistantEntity summonLegacyEntityFor(ServerPlayer player, GlobalPos explicitConfigBlock) {
+		return summonEntityFor(player, explicitConfigBlock);
+	}
+
+	/**
+	 * 实体形态召唤（PathfinderMob 底座）的实现。
+	 * explicitConfigBlock 为 null 时自动找最近的未绑定方块。
+	 */
+	private static AiAssistantEntity summonEntityFor(ServerPlayer player, GlobalPos explicitConfigBlock) {
 		ServerLevel level = (ServerLevel) player.level();
 		GlobalPos configBlock;
 		if (explicitConfigBlock != null) {
@@ -153,6 +198,9 @@ public final class AiCompanionService {
 			if (blkLevel == null
 					|| !blkLevel.getBlockState(explicitConfigBlock.pos()).is(ModBlocks.AI_LOGO_BLOCK)) {
 				OpenCraftMod.LOGGER.info("[OpenCraft] 拒绝召唤：指定的 AI 徽标方块不存在或已被移除");
+				com.swaydy.opencraft.debug.DebugLog.log("summon",
+						"拒绝召唤：玩家 {} 指定的 AI 徽标方块不存在（{}）",
+						player.getName().getString(), explicitConfigBlock.pos().toShortString());
 				return null;
 			}
 			// 该方块已绑定助手：是自己的 → 幂等返回；是别人的 → 拒绝（一方块一助手）
@@ -163,6 +211,8 @@ public final class AiCompanionService {
 				}
 				OpenCraftMod.LOGGER.info("[OpenCraft] 拒绝召唤：AI 徽标方块({})已被另一个助手绑定",
 						explicitConfigBlock.pos().toShortString());
+				com.swaydy.opencraft.debug.DebugLog.log("summon",
+						"拒绝召唤：方块 {} 已被其他玩家的助手绑定", explicitConfigBlock.pos().toShortString());
 				return null;
 			}
 			configBlock = explicitConfigBlock;
@@ -170,6 +220,9 @@ public final class AiCompanionService {
 			configBlock = AiConfigHandler.findNearestConfigBlock(level, player.blockPosition(), 48, true);
 			if (configBlock == null) {
 				OpenCraftMod.LOGGER.info("[OpenCraft] 拒绝召唤：附近 48 格内没有未绑定的 AI 徽标方块");
+				com.swaydy.opencraft.debug.DebugLog.log("summon",
+						"拒绝召唤：玩家 {} 附近 48 格内没有未绑定的 AI 徽标方块",
+						player.getName().getString());
 				return null;
 			}
 		}
@@ -199,6 +252,11 @@ public final class AiCompanionService {
 					SoundSource.AMBIENT, 0.6F, 1.1F);
 			OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 召唤了绑定方块({})的 AI 助手",
 					player.getName().getString(), configBlock.pos().toShortString());
+			com.swaydy.opencraft.debug.DebugLog.log("summon",
+					"玩家 {} 召唤了助手（名字 {}，绑定方块 {}，出生点 ({},{},{})）",
+					player.getName().getString(), assistant.getConfig().effectiveName(),
+					configBlock.pos().toShortString(),
+					(int) spawnPos.x, (int) spawnPos.y, (int) spawnPos.z);
 			// 新助手第一次出现：让它打个招呼
 			greetNewAssistant(player, assistant);
 			return assistant;
@@ -207,7 +265,7 @@ public final class AiCompanionService {
 	}
 
 	/** 对话历史的键：助手绑定的方块（每个方块一个助手、一份记忆）。 */
-	private static GlobalPos historyKeyFor(AiAssistantEntity assistant) {
+	private static GlobalPos historyKeyFor(AiAssistant assistant) {
 		GlobalPos block = assistant.getConfigBlock();
 		if (block != null) {
 			return block;
@@ -216,7 +274,7 @@ public final class AiCompanionService {
 	}
 
 	/** 新助手被召唤时打个招呼（方块配置可用则用大模型生成，否则用预设欢迎语）。 */
-	private static void greetNewAssistant(ServerPlayer player, AiAssistantEntity assistant) {
+	private static void greetNewAssistant(ServerPlayer player, AiAssistant assistant) {
 		AiBlockConfig config = assistant.getConfig();
 		ServerLevel level = (ServerLevel) player.level();
 		if (!config.isUsable()) {
@@ -315,6 +373,10 @@ public final class AiCompanionService {
 		assistant.cancelCurrentTask();
 		GlobalPos configBlock = assistant.getConfigBlock();
 		assistant.discard();
+		com.swaydy.opencraft.debug.DebugLog.log("summon",
+				"送走助手（名字 {}，绑定方块 {}）",
+				assistant.getConfig().effectiveName(),
+				configBlock == null ? "?" : configBlock.pos().toShortString());
 		// AiAssistantEntity.remove 会兜底熄灭绑定方块（若没有其他助手仍绑定它）
 		if (configBlock != null) {
 			RECENT_SUMMONS.remove(configBlock);
@@ -325,6 +387,8 @@ public final class AiCompanionService {
 	public static void resetHistory(GlobalPos block) {
 		if (block != null) {
 			HISTORY.remove(block);
+			com.swaydy.opencraft.debug.DebugLog.log("history", "清空了方块 {} 的对话历史",
+					block.pos().toShortString());
 		}
 	}
 
@@ -384,11 +448,16 @@ public final class AiCompanionService {
 	 * 流式显示结束后（服务端线程）收尾（命令模式）：
 	 * 清掉 action bar 上的流式残留，以助手名义把完整回复广播到聊天。
 	 */
-	public static void finishStreamReply(ServerPlayer player, AiAssistantEntity assistant, String full) {
+	public static void finishStreamReply(ServerPlayer player, AiAssistant assistant, String full) {
 		player.displayClientMessage(Component.empty(), true);
 		if (full == null || full.isBlank()) {
+			com.swaydy.opencraft.debug.DebugLog.log("chat",
+					"助手 {} 回复为空（未广播）", assistant.getConfig().effectiveName());
 			return; // 空回复：不广播也不报错
 		}
+		com.swaydy.opencraft.debug.DebugLog.log("chat",
+				"助手 {} 回复玩家 {}: {}", assistant.getConfig().effectiveName(),
+				player.getName().getString(), full);
 		speakAsAssistant((ServerLevel) player.level(), assistant, full);
 	}
 
@@ -434,7 +503,7 @@ public final class AiCompanionService {
 	private static final int MAX_REVEAL_FLUSHES = 60;
 
 	/** 一次性纯文本流式回复（用于打招呼，不涉及工具循环）。 */
-	private static void streamPlain(ServerPlayer player, AiAssistantEntity assistant,
+	private static void streamPlain(ServerPlayer player, AiAssistant assistant,
 	                                LlmClient.Request request) {
 		MinecraftServer server = player.level().getServer();
 		StringBuilder buffer = new StringBuilder();
@@ -511,20 +580,24 @@ public final class AiCompanionService {
 		}
 	}
 
-	/** 让助手瞬移到玩家身边（支持跨维度）。 */
-	public static void teleportAssistantToPlayer(ServerPlayer player, AiAssistantEntity assistant) {
+	/** 让助手瞬移到玩家身边（支持跨维度，两种形态通用）。 */
+	public static void teleportAssistantToPlayer(ServerPlayer player, AiAssistant assistant) {
 		ServerLevel target = (ServerLevel) player.level();
 		Vec3 safe = findSafeSpawnPos(target,
 				new Vec3(player.getX() + 1.5, player.getY(), player.getZ() + 1.5));
-		assistant.teleportTo(target, safe.x, safe.y, safe.z,
+		((net.minecraft.world.entity.Entity) assistant).teleportTo(
+				target, safe.x, safe.y, safe.z,
 				Set.of(), player.getYRot(), player.getXRot(), true);
 		target.playSound(null, assistant.blockPosition(), SoundEvents.ALLAY_AMBIENT_WITH_ITEM,
 				SoundSource.AMBIENT, 0.5F, 1.2F);
+		com.swaydy.opencraft.debug.DebugLog.log("teleport",
+				"助手 {} 传送到玩家 {} 身边（{}, {}, {}）", assistant.getConfig().effectiveName(),
+				player.getName().getString(), (int) safe.x, (int) safe.y, (int) safe.z);
 		player.sendSystemMessage(Component.translatable("command.opencraft.action.tp.ok"));
 	}
 
 	/** 让助手“开口说话”：播放提示音 + 以 [助手名] 前缀广播到聊天。 */
-	public static void speakAsAssistant(ServerLevel level, AiAssistantEntity assistant, String text) {
+	public static void speakAsAssistant(ServerLevel level, AiAssistant assistant, String text) {
 		Component name = assistant.getDisplayName();
 		Component message = Component.literal("[").append(name).append("] ")
 				.append(Component.literal(text));
@@ -595,17 +668,55 @@ public final class AiCompanionService {
 				&& !level.getBlockState(pos.below()).isAir();
 	}
 
-	/** 将物品 ID 解析为 Item 的 Holder（供 Inventory/Hand 工具用）；不存在返回 null。 */
+	/**
+	 * 将物品 ID 解析为 Item 的 Holder（供 Inventory/Hand/Craft 工具用）；不存在返回 null。
+	 *
+	 * <p><b>容错解析</b>（工具给大模型的物品清单是“短名”，模型会照抄回填参数，必须能对上）：
+	 * - 完整 ID（含命名空间）：{@code minecraft:stone} / {@code opencraft:ai_logo_block}；
+	 * - 裸名/短名：{@code stone} → {@code minecraft:stone}，{@code ai_logo_block} →
+	 *   {@code opencraft:ai_logo_block}（先试 minecraft 命名空间，再试本模组命名空间）；
+	 * - 描述名兜底：{@code block.opencraft.ai_logo_block} / {@code item.minecraft.stick}
+	 *   → 取最后一个点后的短名再按上一条解析。
+	 */
 	public static Holder<net.minecraft.world.item.Item> resolveItem(String itemId) {
 		if (itemId == null || itemId.isBlank()) {
 			return null;
 		}
-		try {
-			Identifier id = Identifier.parse(itemId.trim());
-			var opt = BuiltInRegistries.ITEM.get(id);
-			return opt.isEmpty() ? null : opt.get();
-		} catch (Exception e) {
+		String s = itemId.trim().toLowerCase(java.util.Locale.ROOT);
+		Holder<net.minecraft.world.item.Item> resolved = tryResolveItem(s);
+		if (resolved != null) {
+			return resolved;
+		}
+		// 描述名兜底：block.opencraft.ai_logo_block / item.minecraft.stick → 取最后一段短名
+		int dot = s.lastIndexOf('.');
+		if (dot >= 0 && dot < s.length() - 1) {
+			resolved = tryResolveItem(s.substring(dot + 1));
+		}
+		return resolved;
+	}
+
+	/** 解析单个候选：裸名先原样试、再补 minecraft: / opencraft: 前缀；全部失败返回 null。 */
+	private static Holder<net.minecraft.world.item.Item> tryResolveItem(String id) {
+		if (id == null || id.isBlank()) {
 			return null;
 		}
+		java.util.List<String> candidates = new java.util.ArrayList<>(3);
+		candidates.add(id);
+		if (!id.contains(":")) {
+			candidates.add("minecraft:" + id);
+			candidates.add(OpenCraftMod.MOD_ID + ":" + id);
+		}
+		for (String candidate : candidates) {
+			try {
+				Identifier identifier = Identifier.parse(candidate);
+				var opt = BuiltInRegistries.ITEM.get(identifier);
+				if (!opt.isEmpty()) {
+					return opt.get();
+				}
+			} catch (Exception ignored) {
+				// 非法 ID 形状：试下一个候选
+			}
+		}
+		return null;
 	}
 }

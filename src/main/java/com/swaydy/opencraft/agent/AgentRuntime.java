@@ -2,10 +2,10 @@ package com.swaydy.opencraft.agent;
 
 import com.google.gson.JsonObject;
 import com.swaydy.opencraft.OpenCraftMod;
+import com.swaydy.opencraft.assistant.AiAssistant;
 import com.swaydy.opencraft.ai.AiBlockConfig;
 import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.ai.LlmClient;
-import com.swaydy.opencraft.entity.AiAssistantEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.network.chat.Component;
@@ -77,7 +77,7 @@ public final class AgentRuntime {
 	 * @param guiBlockPos / guiDimension 非空 = GUI 模式（增量 "delta" 事件、结束 "reply" 事件，
 	 *                    不广播世界聊天）；null = 命令模式（action bar + 世界聊天广播）
 	 */
-	public static void runAsync(ServerPlayer player, AiAssistantEntity assistant,
+	public static void runAsync(ServerPlayer player, AiAssistant assistant,
 	                            String question, GlobalPos historyKey,
 	                            BlockPos guiBlockPos, ResourceKey<Level> guiDimension) {
 		GlobalPos lockKey = historyKey != null ? historyKey : keyFor(assistant);
@@ -127,7 +127,7 @@ public final class AgentRuntime {
 	// 一轮循环
 	// ------------------------------------------------------------------
 
-	private static void runRound(ServerPlayer player, AiAssistantEntity assistant,
+	private static void runRound(ServerPlayer player, AiAssistant assistant,
 	                             AiBlockConfig config, AgentDefinition agent,
 	                             List<LlmClient.Message> messages, List<LlmClient.Message> history,
 	                             GlobalPos lockKey, GlobalPos historyKey,
@@ -142,6 +142,12 @@ public final class AgentRuntime {
 		LlmClient.Request request = new LlmClient.Request(
 				config.baseUrl, config.apiKey, config.model, config.temperature,
 				messages, config.timeoutSeconds, agent.toolsJson());
+		com.swaydy.opencraft.debug.DebugLog.log("llm",
+				"第 {} 轮请求 模型={} baseUrl={} 消息数={} 工具数={} 问题={}",
+				round + 1, config.model, config.baseUrl, messages.size(),
+				agent.toolMap().size(),
+				messages.get(messages.size() - 1).content() == null ? ""
+						: messages.get(messages.size() - 1).content());
 
 		LlmClient.StreamListener listener = new LlmClient.StreamListener() {
 			private final StringBuilder buffer = new StringBuilder();
@@ -252,6 +258,8 @@ public final class AgentRuntime {
 			@Override
 			public void onError(String error) {
 				String reason = error == null || error.isBlank() ? "未知错误" : error;
+				com.swaydy.opencraft.debug.DebugLog.log("llm",
+						"LLM 请求失败（模型 {}）: {}", config.model, reason);
 				runOnServer(server, () -> {
 					RUNNING.remove(lockKey);
 					if (gui) {
@@ -297,7 +305,7 @@ public final class AgentRuntime {
 
 	/** 有工具调用时的最终收尾：把剩余文本 reveal 完，然后以最终总结广播/GUI 收尾。 */
 	private static void finishWithoutTools(MinecraftServer server, ServerPlayer player,
-	                                        AiAssistantEntity assistant, List<LlmClient.Message> messages,
+	                                        AiAssistant assistant, List<LlmClient.Message> messages,
 	                                        AiBlockConfig config, AgentDefinition agent,
 	                                        GlobalPos lockKey, GlobalPos historyKey,
 	                                        BlockPos guiBlockPos, ResourceKey<Level> guiDimension,
@@ -355,7 +363,7 @@ public final class AgentRuntime {
 
 	/** 无本地 reveal 缓冲的收尾（仅用于轮数用尽后的最终总结）：小延迟后广播/GUI 收尾。 */
 	private static void revealAndFinish(MinecraftServer server, ServerPlayer player,
-	                                     AiAssistantEntity assistant, String full,
+	                                     AiAssistant assistant, String full,
 	                                     boolean gui, BlockPos guiBlockPos, ResourceKey<Level> guiDimension,
 	                                     GlobalPos lockKey) {
 		CompletableFuture.runAsync(() -> {
@@ -391,7 +399,7 @@ public final class AgentRuntime {
 
 	/** 在服务端线程执行每个工具，收集 tool 结果消息（异常捕获为 error 结果）。 */
 	private static List<LlmClient.Message> executeTools(ServerPlayer player,
-	                                                     AiAssistantEntity assistant,
+	                                                     AiAssistant assistant,
 	                                                     AiBlockConfig config, AgentDefinition agent,
 	                                                     List<LlmClient.ToolCall> calls) {
 		List<LlmClient.Message> results = new ArrayList<>();
@@ -415,6 +423,9 @@ public final class AgentRuntime {
 					result = ToolResult.error("内部错误: " + e.getClass().getSimpleName());
 				}
 			}
+			com.swaydy.opencraft.debug.DebugLog.log("tool",
+					"助手执行工具 {} 参数={} → 结果={}", toolName,
+					call.arguments() == null ? "{}" : call.arguments(), result.message());
 			results.add(LlmClient.Message.tool(call.id(), result.message()));
 			OpenCraftMod.LOGGER.info("[OpenCraft] 助手为 {} 执行工具 {} → {}",
 					player.getName().getString(), toolName, result.message());
@@ -440,7 +451,7 @@ public final class AgentRuntime {
 	// ------------------------------------------------------------------
 
 	private static LlmClient.Message buildSystem(AiBlockConfig config, AgentDefinition agent,
-	                                             ServerPlayer player, AiAssistantEntity assistant) {
+	                                             ServerPlayer player, AiAssistant assistant) {
 		// 单条 system：人设（基础 + 预设 persona + 名字） + 插件能力提示 + 游戏上下文 + 插件上下文
 		StringBuilder sb = new StringBuilder();
 		sb.append(buildPersona(config, agent));
@@ -489,12 +500,12 @@ public final class AgentRuntime {
 		}
 	}
 
-	private static boolean isAlive(AiAssistantEntity assistant) {
+	private static boolean isAlive(AiAssistant assistant) {
 		return assistant != null && !assistant.isRemoved() && assistant.isAlive()
 				&& assistant.getConfigBlock() != null;
 	}
 
-	private static GlobalPos keyFor(AiAssistantEntity assistant) {
+	private static GlobalPos keyFor(AiAssistant assistant) {
 		GlobalPos block = assistant.getConfigBlock();
 		return block != null ? block
 				: GlobalPos.of(assistant.level().dimension(), assistant.blockPosition());

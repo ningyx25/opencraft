@@ -36,7 +36,11 @@ public final class AiBlockConfig {
 	public int maxHistoryMessages = 20;
 	public int timeoutSeconds = 60;
 	public String language = "zh-CN";
-	/** Agent 预设 id（如 "chat_agent" / "general_agent"）；空或未知时用默认预设。 */
+	/**
+	 * Agent 预设 id（"chat_agent" / "general_agent"）：只决定助手的 LLM 行为
+	 * （人设、可用工具、最大行动轮数），**不决定身体形态**——助手一律是真正的
+	 * ServerPlayer bot（玩家形态，像客户端一样进服）。空或未知时用默认预设。
+	 */
 	public String agent = "general_agent";
 
 	// 助手行为参数
@@ -209,7 +213,11 @@ public final class AiBlockConfig {
 		maxHistoryMessages = (int) clamp(data.maxHistoryMessages(), 2, 200, 20);
 		timeoutSeconds = (int) clamp(data.timeoutSeconds(), 5, 300, 60);
 		language = data.language() == null || data.language().isBlank() ? "zh-CN" : data.language();
-		agent = data.agent() == null || data.agent().isBlank() ? "general_agent" : data.agent().trim();
+		// 预设只决定 LLM 行为；旧存档残留的 "player_agent"（旧形态选择器）在此归一为默认
+		String requestedAgent = data.agent() == null || data.agent().isBlank()
+				? "general_agent" : data.agent().trim();
+		agent = com.swaydy.opencraft.agent.AgentRegistry.agent(requestedAgent) != null
+				? requestedAgent : "general_agent";
 
 		followDistance = clamp(data.followDistance(), 0.5, 64.0, 3.0);
 		stopDistance = clamp(data.stopDistance(), 0.5, 64.0, 2.0);

@@ -87,7 +87,7 @@
   "screen.opencraft.config.language_hint": "例如 zh-CN / en-US",
   "screen.opencraft.config.language.tooltip": "助手回复的偏好语言。",
   "screen.opencraft.config.agent": "Agent 预设",
-  "screen.opencraft.config.agent.tooltip": "决定助手的能力：由哪些插件组装。chat_agent 纯聊天；general_agent 能移动/挖矿/合成/战斗。",
+  "screen.opencraft.config.agent.tooltip": "决定助手的 AI 行为：chat_agent 纯聊天（仅跟随/待命）；general_agent 像真玩家一样行动：走动/挖掘/放置/合成/递物。助手身体形态恒为真正的玩家（像客户端一样进服），与预设无关。",
   "agent.opencraft.chat": "聊天助手 (chat_agent)",
   "agent.opencraft.general": "全能助手 (general_agent)",
   "screen.opencraft.config.name": "助手名字",
