@@ -37,9 +37,10 @@ import java.util.UUID;
  *   （破坏/放置/交互/合成），掉落物自动拾取（玩家形态本身就是 Player）；
  * - 会出现在玩家列表 / Tab / 实体追踪中，对其他人就是一个“客户端玩家”。
  *
- * 绑定规则与实体版一致：绑定 AI 徽标方块（配置来源）与主人；跨维度跟随；
- * 配置方块被拆时由 {@link PlayerAssistantService} 清除。网络连接是“黑洞”
- * （{@link FakeConnection}），所有发包 no-op。
+ * 绑定规则与实体版一致：绑定 AI 徽标方块（配置来源）与主人；
+ * 配置方块被拆时由 {@link PlayerAssistantService} 清除。**不自动跟随主人**——
+ * 召唤后停留在原地，只受显式指令（player_goto/player_mine 等）驱动。
+ * 网络连接是“黑洞”（{@link FakeConnection}），所有发包 no-op。
  *
  * 生命形态：默认生存模式 + 无敌（不会因坠落/溺水/饥饿/怪物而死）+ 食物自动补满——
  * “可以不用，但不能没有”的完整玩家能力，但作为陪玩助手不会轻易死掉。
@@ -52,7 +53,6 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 	private GlobalPos configBlock;
 	/** 主人 UUID（随玩家存档持久化）。 */
 	private UUID ownerUuid;
-	private boolean following = true;
 
 	private final PlayerMovementController movement = new PlayerMovementController();
 
@@ -107,16 +107,6 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 		}
 		MinecraftServer server = this.level().getServer();
 		return server == null ? null : server.getPlayerList().getPlayer(ownerUuid);
-	}
-
-	@Override
-	public boolean isFollowing() {
-		return following;
-	}
-
-	@Override
-	public void setFollowing(boolean following) {
-		this.following = following;
 	}
 
 	/** 解析绑定的配置方块实体（跨维度）；方块被拆掉/不存在时返回 null。 */
@@ -183,16 +173,8 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 			return InteractionResult.SUCCESS;
 		}
 		if (ownerUuid.equals(player.getUUID())) {
-			if (player.isShiftKeyDown()) {
-				// 潜行右键：快速切换跟随/待命
-				boolean following = !isFollowing();
-				setFollowing(following);
-				player.displayClientMessage(
-						Component.translatable(following
-								? "entity.opencraft.ai_assistant.following"
-								: "entity.opencraft.ai_assistant.staying"), true);
-			} else if (player instanceof ServerPlayer serverPlayer) {
-				// 普通右键：给主人打开“互动界面”（和这个助手聊天 / 跟随待命 / 送走）
+			// 主人右键：打开“互动界面”（和这个助手聊天 / 送走）
+			if (player instanceof ServerPlayer serverPlayer) {
 				openInteractScreen(serverPlayer);
 			}
 			return InteractionResult.SUCCESS;
@@ -212,7 +194,7 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 		try {
 			net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player,
 					new com.swaydy.opencraft.net.AssistantPayloads.AssistantInteractPayload(
-							this.getId(), getDisplayName().getString(), isFollowing(), true, model,
+							this.getId(), getDisplayName().getString(), true, model,
 							agent, blockPos, dimension));
 		} catch (Exception e) {
 			// 模拟连接等场景发送失败：静默忽略（与配置界面一致）
@@ -229,7 +211,7 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 	public void tick() {
 		super.tick();
 		if (!this.level().isClientSide()) {
-			PlayerAssistantService.keepCompanionState(this);
+			PlayerAssistantService.keepSafeState(this);
 			movement.tick(this);
 			// 玩家形态助手自己是 Player，掉落物不会凭空自动进背包（服务器不重放玩家移动包），
 			// 因此像实体版一样主动拾取脚边物品（真实玩家式自动拾取）
@@ -295,7 +277,6 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 			output.putInt("OpenCraftY", configBlock.pos().getY());
 			output.putInt("OpenCraftZ", configBlock.pos().getZ());
 		}
-		output.putBoolean("OpenCraftFollowing", following);
 	}
 
 	@Override
@@ -322,7 +303,6 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 				this.configBlock = null;
 			}
 		}
-		this.following = input.getBooleanOr("OpenCraftFollowing", true);
 	}
 
 	/** 供 PlayerAssistantService / 插件判断绑定方块是否还在。 */

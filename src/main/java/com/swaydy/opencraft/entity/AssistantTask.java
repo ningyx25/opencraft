@@ -8,7 +8,7 @@ import java.util.EnumSet;
  * 助手可执行的异步任务基类。
  *
  * 任务以【高优先级 Goal】的形式挂到实体 goalSelector（优先级 0，与 FloatGoal 同级），
- * 任务活跃时压制优先级更低的跟随/散步 Goal；{@link #tick()} 由 goalSelector 每 tick 驱动。
+ * 任务活跃时压制优先级更低的散步 Goal；{@link #tick()} 由 goalSelector 每 tick 驱动。
  * 助手实体负责任务生命周期：收到新任务时取消旧任务，任务 isFinished 时从 selector 移除。
  *
  * 任务只【下达指令】（寻路/挥动/破坏），立即返回；模型通过后续 {@code look_around}

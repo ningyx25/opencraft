@@ -10,12 +10,11 @@ import java.util.List;
  * general_agent 预设：像普通玩家一样行动的助手（默认预设）。
  *
  * 助手本身就是一个真正的 ServerPlayer bot（像多人联机客户端一样进服），
- * 因此这里的“行动”全部用真实的玩家方式完成：player_goto/player_stop 移动、
- * player_mine/player_place 用 ServerPlayerGameMode 真实破坏/放置、
- * player_craft 用玩家背包材料合成、player_hand_to_player 递给主人、
+ * **召唤后停留在原地、不自动跟随**，行动全部用真实的玩家方式完成：
+ * player_goto/player_stop 移动、player_mine/player_place 用 ServerPlayerGameMode
+ * 真实破坏/放置、player_craft 用玩家背包材料合成、player_hand_to_player 递给主人、
  * player_inventory/player_look 观察状态与环境；外加基础控制
- * （set_mode 跟随/待命、teleport_to_player 传送到主人身边）。
- * maxToolRounds=8：多步任务预算。
+ * （teleport_to_player 传送到主人身边）。maxToolRounds=8：多步任务预算。
  */
 public final class GeneralAgent {
 	private GeneralAgent() {

@@ -8,7 +8,7 @@ import net.minecraft.world.level.storage.ValueOutput;
  *
  * 配置不再依赖任何外部文件，全部保存在游戏世界的方块实体里：
  * - 右键方块打开配置编辑器读写本配置；
- * - AI 助手的运行时行为（接口/模型/跟随距离等）都从这里读取。
+ * - AI 助手的运行时行为（接口/模型/行动参数等）都从这里读取。
  *
  * 安全约定：apiKey 只保存在服务端方块数据里，绝不发送给客户端；
  * AiConfigData 传输时 apiKey 恒为空串，仅以 apiKeySet 告知"已设置/未设置"。
@@ -43,10 +43,7 @@ public final class AiBlockConfig {
 	 */
 	public String agent = "general_agent";
 
-	// 助手行为参数
-	public double followDistance = 3.0;
-	public double stopDistance = 2.0;
-	public double teleportDistance = 24.0;
+	// 助手行为参数（跟随/待命模式已整体移除，不再有 followDistance/stopDistance/teleportDistance）
 	public double maxDistance = 64.0;
 	public double speed = 1.0;
 
@@ -197,7 +194,7 @@ public final class AiBlockConfig {
 				baseUrl, "", false, !apiKey.isEmpty(),
 				model,
 				temperature, maxHistoryMessages, timeoutSeconds, language,
-				followDistance, stopDistance, teleportDistance, maxDistance, speed,
+				maxDistance, speed,
 				name, agent);
 	}
 
@@ -219,21 +216,9 @@ public final class AiBlockConfig {
 		agent = com.swaydy.opencraft.agent.AgentRegistry.agent(requestedAgent) != null
 				? requestedAgent : "general_agent";
 
-		followDistance = clamp(data.followDistance(), 0.5, 64.0, 3.0);
-		stopDistance = clamp(data.stopDistance(), 0.5, 64.0, 2.0);
-		teleportDistance = clamp(data.teleportDistance(), 1.0, 256.0, 24.0);
+		// 跟随/待命模式已整体移除：followDistance/stopDistance/teleportDistance 不再使用
 		maxDistance = clamp(data.maxDistance(), 8.0, 512.0, 64.0);
 		speed = clamp(data.speed(), 0.1, 5.0, 1.0);
-		// 保证 stop < follow <= teleport <= max 的合理顺序
-		if (stopDistance >= followDistance) {
-			stopDistance = Math.max(0.5, followDistance - 1.0);
-		}
-		if (teleportDistance < followDistance) {
-			teleportDistance = followDistance;
-		}
-		if (maxDistance < teleportDistance) {
-			maxDistance = teleportDistance;
-		}
 	}
 
 	public void saveAdditional(ValueOutput output) {
@@ -246,9 +231,6 @@ public final class AiBlockConfig {
 		output.putInt("Timeout", timeoutSeconds);
 		output.putString("Language", language);
 		output.putString("Agent", agent);
-		output.putDouble("FollowDistance", followDistance);
-		output.putDouble("StopDistance", stopDistance);
-		output.putDouble("TeleportDistance", teleportDistance);
 		output.putDouble("MaxDistance", maxDistance);
 		output.putDouble("Speed", speed);
 	}
@@ -265,10 +247,8 @@ public final class AiBlockConfig {
 		timeoutSeconds = input.getIntOr("Timeout", 60);
 		language = input.getStringOr("Language", "zh-CN");
 		// 旧存档的 "AllowActions" 标签已废弃（动作能力改由 Agent 预设的插件决定）
+		// 旧存档的 FollowDistance/StopDistance/TeleportDistance 标签已废弃（跟随模式已移除）
 		agent = input.getStringOr("Agent", "general_agent");
-		followDistance = input.getDoubleOr("FollowDistance", 3.0);
-		stopDistance = input.getDoubleOr("StopDistance", 2.0);
-		teleportDistance = input.getDoubleOr("TeleportDistance", 24.0);
 		maxDistance = input.getDoubleOr("MaxDistance", 64.0);
 		speed = input.getDoubleOr("Speed", 1.0);
 	}

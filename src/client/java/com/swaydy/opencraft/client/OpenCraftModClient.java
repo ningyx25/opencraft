@@ -42,11 +42,11 @@ public class OpenCraftModClient implements ClientModInitializer {
 					Minecraft minecraft = context.client();
 					if (minecraft.screen instanceof AiAssistantInteractScreen screen
 							&& screen.getEntityId() == payload.entityId()) {
-						screen.updateData(payload.following(), payload.isOwner(), payload.model(),
+						screen.updateData(payload.isOwner(), payload.model(),
 								payload.agent());
 					} else {
 						minecraft.setScreen(new AiAssistantInteractScreen(
-								payload.entityId(), payload.displayName(), payload.following(),
+								payload.entityId(), payload.displayName(),
 								payload.isOwner(), payload.model(), payload.agent(),
 								payload.blockPos(), payload.dimension()));
 					}

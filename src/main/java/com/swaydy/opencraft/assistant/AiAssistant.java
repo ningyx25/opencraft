@@ -38,10 +38,6 @@ public interface AiAssistant {
 	/** 主人 UUID（无主时为 null）。 */
 	UUID getOwnerUuid();
 
-	boolean isFollowing();
-
-	void setFollowing(boolean following);
-
 	/** 助手所在维度/世界（委托实体实现，见类注释的重映射说明）。 */
 	default Level level() {
 		return ((Entity) this).level();

@@ -38,12 +38,12 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * AI 游戏助手实体：陪伴玩家、跟随玩家、通过聊天陪玩家玩游戏。
+ * AI 游戏助手实体（旧存档遗留形态）：通过聊天陪玩家玩游戏，**不自动跟随主人**——
+ * 召唤后停留在原地，只受显式指令（goto/挖掘任务等）驱动。
  *
  * - 被玩家右键绑定后成为该玩家的专属助手；
- * - 右键（绑定后）在“跟随”与“待命”两种模式间切换；
- * - 主人下线/走远时原地待命，不会自然消失；
- * - 主人、跟随状态、配置方块引用都会写入存档，重新进入世界后仍然有效；
+ * - 右键（绑定后）给主人打开互动界面（聊天 / 送走）；
+ * - 主人、配置方块引用都会写入存档，重新进入世界后仍然有效；
  * - **像普通生存玩家一样拥有完整背包与装备**：36 格背包（{@link #INVENTORY_SIZE}）
  *   自动拾取地上的物品/挖掘掉落物；头盔/胸甲/护腿/靴子/手/副手装备槽由
  *   LivingEntity 原生支持并持久化，装备护甲会如实增加护甲值（vanilla 每 tick
@@ -58,8 +58,6 @@ import java.util.UUID;
 public class AiAssistantEntity extends PathfinderMob implements com.swaydy.opencraft.assistant.AiAssistant {
 	private static final EntityDataAccessor<Optional<EntityReference<LivingEntity>>> DATA_OWNER =
 			SynchedEntityData.defineId(AiAssistantEntity.class, EntityDataSerializers.OPTIONAL_LIVING_ENTITY_REFERENCE);
-	private static final EntityDataAccessor<Boolean> DATA_FOLLOWING =
-			SynchedEntityData.defineId(AiAssistantEntity.class, EntityDataSerializers.BOOLEAN);
 
 	/** 形态 id：实体形态（PathfinderMob 底座）。 */
 	@Override
@@ -113,7 +111,6 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 	protected void defineSynchedData(SynchedEntityData.Builder builder) {
 		super.defineSynchedData(builder);
 		builder.define(DATA_OWNER, Optional.empty());
-		builder.define(DATA_FOLLOWING, true);
 	}
 
 	@Override
@@ -124,7 +121,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 		this.goalSelector.addGoal(0, new TaskHostGoal(this));
 		// 优先级 0：漂浮（防止溺水/坠落判定）
 		this.goalSelector.addGoal(0, new FloatGoal(this));
-		// 插件 Goal（如跟随）由当前 Agent 预设注册；getConfig 在字段初始化后才可用，
+		// 插件 Goal 由当前 Agent 预设注册；getConfig 在字段初始化后才可用，
 		// 因此这里的插件注册放到首次 tick 时懒加载（见 ensureAgentGoals）
 		this.goalSelector.addGoal(2, new LookAtPlayerGoal(this, Player.class, 8.0F));
 		this.goalSelector.addGoal(3, new RandomLookAroundGoal(this));
@@ -141,7 +138,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 	private boolean agentGoalsRegistered = false;
 
 	/**
-	 * 确保已按当前 Agent 预设注册插件 Goal（跟随等）。
+	 * 确保已按当前 Agent 预设注册插件 Goal（任务等）。
 	 * registerGoals 在字段初始化前调用，无法读配置；因此延迟到第一次 tick 再注册。
 	 */
 	private void ensureAgentGoals() {
@@ -201,14 +198,6 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 
 	public boolean hasOwner() {
 		return this.entityData.get(DATA_OWNER).isPresent();
-	}
-
-	public boolean isFollowing() {
-		return this.entityData.get(DATA_FOLLOWING);
-	}
-
-	public void setFollowing(boolean following) {
-		this.entityData.set(DATA_FOLLOWING, following);
 	}
 
 	// ------------------------------------------------------------------
@@ -452,19 +441,8 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 			com.swaydy.opencraft.debug.DebugLog.log("bind",
 					"玩家 {} 右键绑定了助手（实体 ID {}）", player.getName().getString(), getId());
 		} else if (ownerUuid.equals(player.getUUID())) {
-			if (player.isShiftKeyDown()) {
-				// 潜行右键：快速切换跟随/待命（保留原有快捷操作）
-				boolean following = !isFollowing();
-				setFollowing(following);
-				player.displayClientMessage(
-						Component.translatable(following
-								? "entity.opencraft.ai_assistant.following"
-								: "entity.opencraft.ai_assistant.staying"),
-						true);
-			} else {
-				// 普通右键：给主人打开“互动界面”（和这个助手聊天 / 跟随待命 / 送走）
-				openInteractScreen((ServerPlayer) player);
-			}
+			// 主人右键：打开“互动界面”（和这个助手聊天 / 送走）
+			openInteractScreen((ServerPlayer) player);
 		} else {
 			player.displayClientMessage(Component.translatable("entity.opencraft.ai_assistant.not_owner"),
 					true);
@@ -484,7 +462,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 		try {
 			net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player,
 					new com.swaydy.opencraft.net.AssistantPayloads.AssistantInteractPayload(
-							this.getId(), getDisplayName().getString(), isFollowing(), true, model,
+							this.getId(), getDisplayName().getString(), true, model,
 							agent, blockPos, dimension));
 		} catch (Exception e) {
 			// 模拟连接等场景发送失败：静默忽略（与配置界面一致）
@@ -520,12 +498,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 				ServerLevel target = level.getServer().getLevel(block.dimension());
 				if (target == null || !target.getBlockState(block.pos()).is(ModBlocks.AI_LOGO_BLOCK)) {
 					this.discard();
-					return;
 				}
-			}
-			// 跨维度跟随：主人换到别的维度时传送过去
-			if (isFollowing()) {
-				maybeFollowAcrossDimensions();
 			}
 		}
 	}
@@ -541,24 +514,6 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 						level.getServer().getLevel(block.dimension()), block);
 			}
 		}
-	}
-
-	/** 主人已在线但不在同一维度时，传送到主人身边（跟随模式下）。 */
-	private void maybeFollowAcrossDimensions() {
-		UUID ownerUuid = getOwnerUuid();
-		if (ownerUuid == null || !(this.level() instanceof ServerLevel level)) {
-			return;
-		}
-		ServerPlayer owner = level.getServer().getPlayerList().getPlayer(ownerUuid);
-		if (owner == null || owner.level() == this.level()) {
-			return;
-		}
-		AiCompanionService.teleportAssistantToPlayer(owner, this);
-		OpenCraftMod.LOGGER.info("[OpenCraft] 助手跟随主人 {} 跨维度传送到了 {}",
-				owner.getName().getString(), owner.level().dimension().identifier());
-		com.swaydy.opencraft.debug.DebugLog.log("teleport",
-				"助手跨维度跟随主人 {} 到 {}", owner.getName().getString(),
-				owner.level().dimension().identifier());
 	}
 
 	@Override
@@ -608,7 +563,6 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 		super.addAdditionalSaveData(output);
 		this.entityData.get(DATA_OWNER)
 				.ifPresent(ref -> EntityReference.store(ref, output, "Owner"));
-		output.putBoolean("Following", isFollowing());
 		output.storeNullable("ConfigBlock", GlobalPos.CODEC, configBlock);
 		// 背包持久化：SimpleContainer 提供 storeAsItemList，用 ItemStack 列表写入
 		inventory.storeAsItemList(
@@ -625,7 +579,6 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 		if (ref != null) {
 			setOwnerReference(ref);
 		}
-		setFollowing(input.getBooleanOr("Following", true));
 		this.configBlock = input.read("ConfigBlock", GlobalPos.CODEC).orElse(null);
 		// 读回背包（缺省留空）
 		input.listOrEmpty("Inventory", ItemStack.OPTIONAL_CODEC)

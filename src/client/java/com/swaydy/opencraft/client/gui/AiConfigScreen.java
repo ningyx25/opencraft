@@ -91,9 +91,6 @@ public class AiConfigScreen extends Screen {
 	private String name;
 	private String agent;
 
-	private double followDistance;
-	private double stopDistance;
-	private double teleportDistance;
 	private double maxDistance;
 	private double speed;
 
@@ -150,9 +147,6 @@ public class AiConfigScreen extends Screen {
 		this.agent = data.agent() == null || data.agent().isBlank()
 				? "general_agent" : data.agent();
 
-		this.followDistance = data.followDistance();
-		this.stopDistance = data.stopDistance();
-		this.teleportDistance = data.teleportDistance();
 		this.maxDistance = data.maxDistance();
 		this.speed = data.speed();
 	}
@@ -349,9 +343,6 @@ public class AiConfigScreen extends Screen {
 				this.maxHistoryMessages,
 				this.timeoutSeconds,
 				this.language,
-				this.followDistance,
-				this.stopDistance,
-				this.teleportDistance,
 				this.maxDistance,
 				this.speed,
 				this.name,
@@ -674,7 +665,7 @@ public class AiConfigScreen extends Screen {
 	}
 
 	// =========================================================================
-	// Tab 3: 伴侣行为
+	// Tab 3: 行动行为（跟随/待命模式已移除，仅剩行动范围与速度）
 	// =========================================================================
 	private class CompanionBehaviorTab extends GridLayoutTab {
 		public CompanionBehaviorTab() {
@@ -682,39 +673,7 @@ public class AiConfigScreen extends Screen {
 			GridLayout.RowHelper rows = this.layout.createRowHelper(1);
 			rows.defaultCellSetting().paddingVertical(2).alignHorizontallyCenter();
 
-			// 跟随触发距离 (1.0 ~ 30.0 格)
-			NumericSliderButton followSlider = new NumericSliderButton(
-					0, 0, CONTROL_WIDTH, ROW_HEIGHT,
-					Component.translatable("screen.opencraft.config.follow_distance"),
-					AiConfigScreen.this.followDistance, 1.0, 30.0, 0.5, 1, " 格",
-					val -> AiConfigScreen.this.followDistance = val
-			);
-			followSlider.setTooltip(Tooltip.create(Component.translatable("screen.opencraft.config.follow_distance.tooltip")));
-			followSlider.active = AiConfigScreen.this.canEdit;
-			rows.addChild(followSlider);
-
-			// 停止靠近距离 (0.5 ~ 10.0 格)
-			NumericSliderButton stopSlider = new NumericSliderButton(
-					0, 0, CONTROL_WIDTH, ROW_HEIGHT,
-					Component.translatable("screen.opencraft.config.stop_distance"),
-					AiConfigScreen.this.stopDistance, 0.5, 10.0, 0.5, 1, " 格",
-					val -> AiConfigScreen.this.stopDistance = val
-			);
-			stopSlider.setTooltip(Tooltip.create(Component.translatable("screen.opencraft.config.stop_distance.tooltip")));
-			stopSlider.active = AiConfigScreen.this.canEdit;
-			rows.addChild(stopSlider);
-
-			// 瞬移距离 (5.0 ~ 64.0 格)
-			NumericSliderButton tpSlider = new NumericSliderButton(
-					0, 0, CONTROL_WIDTH, ROW_HEIGHT,
-					Component.translatable("screen.opencraft.config.teleport_distance"),
-					AiConfigScreen.this.teleportDistance, 5.0, 64.0, 1.0, 1, " 格",
-					val -> AiConfigScreen.this.teleportDistance = val
-			);
-			tpSlider.setTooltip(Tooltip.create(Component.translatable("screen.opencraft.config.teleport_distance.tooltip")));
-			tpSlider.active = AiConfigScreen.this.canEdit;
-			rows.addChild(tpSlider);
-
+			// 跟随/待命模式已整体移除：不再有跟随/停止/瞬移距离滑块
 			// 走丢最大距离 (10.0 ~ 128.0 格)
 			NumericSliderButton maxSlider = new NumericSliderButton(
 					0, 0, CONTROL_WIDTH, ROW_HEIGHT,

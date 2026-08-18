@@ -33,11 +33,12 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 玩家形态助手（假玩家）的注册表与生命周期：召唤/送走/查找/每 tick 跟随/安全网。
+ * 玩家形态助手（假玩家）的注册表与生命周期：召唤/送走/查找/每 tick 安全状态/安全网。
  *
  * 与实体版（ModEntities + AiCompanionService）并行：每个 AI 徽标方块至多绑定一个助手
  * （跨形态统一判定，见 {@link com.swaydy.opencraft.assistant.AssistantFacade}）。
- * 配置方块存在、主人在线时助手留在世界；方块被拆 → 送走并清空该方块记忆。
+ * **不自动跟随主人**：召唤后停留在原地，只受显式指令（player_goto 等）驱动；
+ * 配置方块存在时助手留在世界；方块被拆 → 送走并清空该方块记忆。
  */
 public final class PlayerAssistantService {
 	/** 按绑定方块键控的活动假玩家。 */
@@ -168,7 +169,6 @@ public final class PlayerAssistantService {
 		AiAssistantPlayer player = new AiAssistantPlayer(server, ownerLevel, profile);
 		player.setOwner(owner);
 		player.setConfigBlock(block);
-		player.setFollowing(true);
 
 		// 载入旧存档（背包/装备/经验/绑定信息，best-effort）
 		try {
@@ -272,37 +272,22 @@ public final class PlayerAssistantService {
 	// 每 tick / 慢 tick（由 AiAssistantPlayer.tick 调用，服务端线程）
 	// ------------------------------------------------------------------
 
-	/** 每 tick：维持陪伴状态（无敌/食物满）与同维度跟随。 */
-	static void keepCompanionState(AiAssistantPlayer player) {
+	/**
+	 * 每 tick：维持安全状态——无敌 + 食物补满（拥有普通玩家的全部能力，
+	 * 但作为陪玩助手不会轻易死）。**不再有跟随逻辑**：助手召唤后停留在原地。
+	 */
+	static void keepSafeState(AiAssistantPlayer player) {
 		if (!player.getAbilities().invulnerable) {
 			player.getAbilities().invulnerable = true;
 		}
 		if (player.getFoodData().getFoodLevel() < 20) {
 			player.getFoodData().setFoodLevel(20);
 		}
-		if (!player.isFollowing()) {
-			return;
-		}
-		Player owner = player.getOwner();
-		if (owner instanceof ServerPlayer ownerSp && ownerSp.level() == player.level()) {
-			AiBlockConfig cfg = player.getConfig();
-			double dist = player.distanceTo(ownerSp);
-			if (dist > cfg.teleportDistance) {
-				// 太远：直接传送回主人身边（与实体版一致）
-				Vec3 safe = AiCompanionService.findSafeSpawnPos((ServerLevel) player.level(),
-						new Vec3(ownerSp.getX() + 1.5, ownerSp.getY(), ownerSp.getZ() + 1.5));
-				player.teleportTo(safe.x, safe.y, safe.z);
-			} else if (dist > cfg.followDistance && !player.movement().isManual()) {
-				player.movement().moveTo(
-						new Vec3(ownerSp.getX() + 1.5, ownerSp.getY(), ownerSp.getZ() + 1.5),
-						cfg.speed);
-			} else if (dist <= cfg.followDistance && !player.movement().isManual()) {
-				player.movement().stop();
-			}
-		}
 	}
 
-	/** 每 40 tick：安全网（绑定方块校验 + 跨维度跟随）。 */
+	/**
+	 * 每 40 tick：安全网——绑定方块校验（方块被拆 → 送走并清空该方块记忆）。
+	 */
 	static void onSlowTick(AiAssistantPlayer player) {
 		if (player == null || player.isRemoved()) {
 			return;
@@ -314,20 +299,6 @@ public final class PlayerAssistantService {
 			if (gone != null) {
 				dismiss(gone);
 				AiCompanionService.resetHistory(gone);
-			}
-			return;
-		}
-		if (player.isFollowing()) {
-			ServerPlayer owner = player.level().getServer().getPlayerList().getPlayer(player.getOwnerUuid());
-			if (owner != null && owner.level() != player.level()) {
-				// 跨维度跟随：传送到主人所在维度
-				Vec3 safe = AiCompanionService.findSafeSpawnPos((ServerLevel) owner.level(),
-						new Vec3(owner.getX() + 1.5, owner.getY(), owner.getZ() + 1.5));
-				player.teleportTo((ServerLevel) owner.level(), safe.x, safe.y, safe.z,
-						Set.of(), owner.getYRot(), owner.getXRot(), true);
-				com.swaydy.opencraft.debug.DebugLog.log("teleport",
-						"玩家形态助手跨维度跟随主人 {} 到 {}", owner.getName().getString(),
-						owner.level().dimension().identifier());
 			}
 		}
 	}

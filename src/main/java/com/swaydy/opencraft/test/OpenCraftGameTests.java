@@ -53,7 +53,7 @@ import java.util.List;
  * 7. unboundAssistantDiscarded —— 无绑定助手被安全网清除；
  * 8. aiLogoBlockMiningAndRecipe —— 配方注册 + 徒手挖掘掉落；
  * 9. askTargetsSpecificAssistant —— 多助手时指定和哪个助手对话（ask <名字> <消息>）；
- * 10. assistantRightClickInteract —— 右键助手互动（绑定/普通右键开界面/潜行切换跟随/非主人拒绝/聊天/送走）。
+ * 10. assistantRightClickInteract —— 右键助手互动（绑定/普通右键开界面/非主人拒绝/聊天/送走）。
  */
 public class OpenCraftGameTests {
 	/**
@@ -209,7 +209,7 @@ public class OpenCraftGameTests {
 					}
 				})
 				.thenExecute(() -> {
-					// 7) 跨维度跟随：把玩家传送到地狱，助手应在 ~40 tick 内跟过来
+					// 7) 跨维度：把玩家传送到地狱——跟随模式已移除，助手应留在主世界不跟过来
 					net.minecraft.server.MinecraftServer server = player.level().getServer();
 					net.minecraft.server.level.ServerLevel nether =
 							server.getLevel(net.minecraft.world.level.Level.NETHER);
@@ -230,13 +230,13 @@ public class OpenCraftGameTests {
 				})
 				.thenIdle(70)
 				.thenExecute(() -> {
-					// 8) 助手应该已经跟到地狱维度
+					// 8) 助手应留在主世界（跟随模式已移除，不跨维度传送）
 					AiAssistantEntity assistant = ModEntities.findNearestAssistantFor(player);
 					if (assistant == null) {
 						throw new AssertionError("跨维度后助手实体不存在");
 					}
-					if (assistant.level() != player.level()) {
-						throw new AssertionError("助手没有跟随到地狱维度（助手在 "
+					if (assistant.level() == player.level()) {
+						throw new AssertionError("跟随模式已移除：助手不应跨维度跟随到地狱（助手在 "
 								+ assistant.level().dimension().identifier()
 								+ "，玩家在 " + player.level().dimension().identifier() + "）");
 					}
@@ -380,8 +380,7 @@ public class OpenCraftGameTests {
 							"in-game-edited-model",
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							sent.language(),
-							sent.followDistance(), sent.stopDistance(),
-							sent.teleportDistance(), sent.maxDistance(), sent.speed(),
+							sent.maxDistance(), sent.speed(),
 							"改名小智", "general_agent");
 					AiConfigHandler.save(player, absPos, dimension, edited.toJson());
 					if (!"in-game-edited-model".equals(blockEntity.getConfig().model)) {
@@ -402,8 +401,7 @@ public class OpenCraftGameTests {
 							"model-keep-key",
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							sent.language(),
-							sent.followDistance(), sent.stopDistance(),
-							sent.teleportDistance(), sent.maxDistance(), sent.speed(),
+							sent.maxDistance(), sent.speed(),
 							"keep-key-name", "general_agent");
 					AiConfigHandler.save(player, absPos, dimension, keepKey.toJson());
 					if (!"new-secret-key-456".equals(blockEntity.getConfig().apiKey)) {
@@ -1045,14 +1043,13 @@ public class OpenCraftGameTests {
 	}
 
 	/**
-	 * 验证“右键 AI 助手与之交互”的服务器端行为：
+	 * 验证“右键 AI 助手与之交互”的服务器端行为（跟随/待命模式已移除）：
 	 * 1. 未绑定助手：右键 → 绑定主人；
-	 * 2. 主人普通右键 → 不改变跟随状态（“打开互动界面”的 S2C 在 mock 连接上是空操作）；
-	 * 3. 主人潜行右键 → 快速切换跟随/待命；
-	 * 4. 非主人右键 → 被拒绝（“只听主人的话”），状态不变；
-	 * 5. resolveOwnedAssistant：正确实体 ID → 助手；他人 / 错误 ID → null（服务端不信任客户端）；
-	 * 6. 互动界面“聊天”路径：resolve + ask(player, assistant, msg) → 消息写入该助手历史；
-	 * 7. 互动界面“送走”：dismissAssistantEntity → 助手消失，重复调用幂等返回 false。
+	 * 2. 主人右键（普通或潜行）→ 打开互动界面（“打开互动界面”的 S2C 在 mock 连接上是空操作）；
+	 * 3. 非主人右键 → 被拒绝（“只听主人的话”），状态不变；
+	 * 4. resolveOwnedAssistant：正确实体 ID → 助手；他人 / 错误 ID → null（服务端不信任客户端）；
+	 * 5. 互动界面“聊天”路径：resolve + ask(player, assistant, msg) → 消息写入该助手历史；
+	 * 6. 互动界面“送走”：dismissAssistantEntity → 助手消失，重复调用幂等返回 false。
 	 */
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 300)
 	public void assistantRightClickInteract(GameTestHelper helper) {
@@ -1104,44 +1101,34 @@ public class OpenCraftGameTests {
 					if (assistant == null) {
 						throw new AssertionError("找不到已召唤的助手");
 					}
-					boolean initiallyFollowing = assistant.isFollowing();
-					// 2) 主人普通右键（不潜行）→ 打开互动界面，不改变跟随状态
+					// 2) 主人右键（普通或潜行都一样）→ 打开互动界面
 					net.minecraft.world.InteractionResult normal =
 							assistant.interact(player, net.minecraft.world.InteractionHand.MAIN_HAND);
 					if (!normal.consumesAction()) {
-						throw new AssertionError("主人普通右键应消费交互");
+						throw new AssertionError("主人右键应消费交互");
 					}
-					if (assistant.isFollowing() != initiallyFollowing) {
-						throw new AssertionError("普通右键不应改变跟随状态");
-					}
-					// 3) 主人潜行右键 → 切换跟随/待命
 					player.setShiftKeyDown(true);
 					try {
 						net.minecraft.world.InteractionResult sneak =
 								assistant.interact(player, net.minecraft.world.InteractionHand.MAIN_HAND);
 						if (!sneak.consumesAction()) {
-							throw new AssertionError("潜行右键应消费交互");
-						}
-						if (assistant.isFollowing() == initiallyFollowing) {
-							throw new AssertionError("潜行右键应切换跟随状态");
+							throw new AssertionError("潜行右键也应消费交互（打开互动界面）");
 						}
 					} finally {
 						player.setShiftKeyDown(false);
 					}
-					// 4) 非主人右键 → 被拒绝，跟随状态与主人都不变
+					// 3) 非主人右键 → 被拒绝，主人与状态都不变
 					ServerPlayer other = helper.makeMockServerPlayerInLevel();
 					other.teleportTo(playerPos.x, playerPos.y, playerPos.z);
-					boolean followBefore = assistant.isFollowing();
 					net.minecraft.world.InteractionResult stranger =
 							assistant.interact(other, net.minecraft.world.InteractionHand.MAIN_HAND);
 					if (!stranger.consumesAction()) {
 						throw new AssertionError("非主人右键应消费交互（拒绝但消费）");
 					}
-					if (assistant.isFollowing() != followBefore
-							|| !player.getUUID().equals(assistant.getOwnerUuid())) {
+					if (!player.getUUID().equals(assistant.getOwnerUuid())) {
 						throw new AssertionError("非主人右键不应改变任何状态");
 					}
-					// 5) resolveOwnedAssistant：正确 ID → 助手；他人 → null；错误 ID → null
+					// 4) resolveOwnedAssistant：正确 ID → 助手；他人 → null；错误 ID → null
 					if (AiCompanionService.resolveOwnedAssistant(player, assistant.getId()) != assistant) {
 						throw new AssertionError("主人按实体 ID 应解析到自己的助手");
 					}
@@ -1151,7 +1138,7 @@ public class OpenCraftGameTests {
 					if (AiCompanionService.resolveOwnedAssistant(player, 999999) != null) {
 						throw new AssertionError("不存在的实体 ID 应返回 null");
 					}
-					// 6) 互动界面“聊天”路径（服务器接收器做的正是 resolve + askGui：
+					// 5) 互动界面“聊天”路径（服务器接收器做的正是 resolve + askGui：
 					//    GUI 模式把回复回传互动界面，同时照常写入该助手的历史）
 					int before = AiCompanionService.historySize(bindPos);
 					AiAssistantEntity resolved =
@@ -1337,8 +1324,7 @@ public class OpenCraftGameTests {
 								+ assistant.getInventory().getContainerSize());
 					}
 					// 把助手放到平台正中间（summonFor 的向上安全扫描可能落在周边地形上，
-					// 测试需要确定性的站位）；随后把玩家挪到高空（超过跟随 maxDistance=64），
-					// 让玩家不抢掉落物也不干扰助手位置
+					// 测试需要确定性的站位）；随后把玩家挪到高空（让玩家不抢掉落物也不干扰助手位置）
 					net.minecraft.world.phys.Vec3 standPos = helper.absoluteVec(
 							new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
 					assistant.teleportTo(standPos.x, standPos.y, standPos.z);
@@ -1680,11 +1666,10 @@ public class OpenCraftGameTests {
 	 * 身体形态与 Agent 预设解耦：无论选哪个预设，召唤出的都是玩家形态：
 	 * 1. summonFor 召唤出的就是 AiAssistantPlayer，它真实地进入了 PlayerList，
 	 *    拥有真正的玩家背包（43 槽：36 主背包 + 7 装备槽）；
-	 * 2. 右键交互（绑主/开互动界面/潜行切换跟随/非主人拒绝）与实体形态一致；
-	 * 3. 跟随：主人走远（超过 teleportDistance）后自动传送到主人身边；
-	 * 4. 玩家式动作：player_place 用真实 ServerPlayerGameMode.useItemOn 放置方块；
-	 * 5. 玩家式挖掘：player_mine 走到方块旁用 destroyBlock 破坏，掉落物自动拾进背包；
-	 * 6. 送走后从 PlayerList 移除、绑定方块熄灭。
+	 * 2. 右键交互（绑主/开互动界面/非主人拒绝）与实体形态一致；
+	 * 3. 玩家式动作：player_place 用真实 ServerPlayerGameMode.useItemOn 放置方块；
+	 * 4. 玩家式挖掘：player_mine 走到方块旁用 destroyBlock 破坏，掉落物自动拾进背包；
+	 * 5. 送走后从 PlayerList 移除、绑定方块熄灭。
 	 */
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 400)
 	public void assistantPlayerFormLifecycle(GameTestHelper helper) {
@@ -1751,42 +1736,23 @@ public class OpenCraftGameTests {
 					if (bot.getInventory().getClass() != net.minecraft.world.entity.player.Inventory.class) {
 						throw new AssertionError("玩家形态助手的背包应是真实 PlayerInventory");
 					}
-					if (!bot.isFollowing()) {
-						throw new AssertionError("玩家形态助手默认应跟随");
-					}
 					if (!helper.getLevel().getBlockState(absBlock).getValue(AiLogoBlock.POWERED)) {
 						throw new AssertionError("玩家形态助手召唤后绑定方块应亮起");
 					}
-					// 2) 右键交互：主人右键消费交互（打开互动界面，不改变跟随）
+					// 2) 右键交互：主人右键消费交互（打开互动界面）
 					net.minecraft.world.InteractionResult r =
 							bot.interact(player, net.minecraft.world.InteractionHand.MAIN_HAND);
 					if (!r.consumesAction()) {
 						throw new AssertionError("主人右键玩家形态助手应消费交互");
 					}
-					// 3) 跟随：主人走远（> teleportDistance=24）→ 自动传送到身边。
-					//    先给 +30z 处铺一块平台（测试世界是虚空）
-					for (int dx = -3; dx <= 3; dx++) {
-						for (int dz = -3; dz <= 3; dz++) {
-							level.setBlock(BlockPos.containing(playerPos.x + dx, playerPos.y - 2,
-											playerPos.z + 30 + dz),
-									Blocks.STONE.defaultBlockState(), 3);
-						}
-					}
-					player.teleportTo(playerPos.x, playerPos.y - 1, playerPos.z + 30);
 				})
-				.thenIdle(4)
 				.thenExecute(() -> {
 					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
 							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
 					if (bot == null) {
 						throw new AssertionError("玩家形态助手不应消失");
 					}
-					if (bot.distanceTo(player) > 6.0) {
-						throw new AssertionError("主人走远后玩家形态助手应传送跟随到身边，距离 "
-								+ bot.distanceTo(player));
-					}
-					// 4) 待命 + 玩家式放置：给主手一块石头，player_place 放到平台上方
-					bot.setFollowing(false);
+					// 3) 玩家式放置：给主手一块石头，player_place 放到平台上方
 					bot.setPos(playerPos.x, playerPos.y, playerPos.z + 2); // 站在放置点旁
 					bot.getInventory().setItem(bot.getInventory().getSelectedSlot(),
 							new ItemStack(Items.STONE, 1));
@@ -1929,7 +1895,6 @@ public class OpenCraftGameTests {
 					if (bot == null) {
 						throw new AssertionError("召唤玩家形态助手失败");
 					}
-					bot.setFollowing(false); // 关跟随，避免 keepCompanionState 干扰移动
 					bot.teleportTo(playerPos.x, playerPos.y, playerPos.z); // 站到平台正中
 					// 锚定初始朝向（南，yaw=0），便于断言“转向目标方向”
 					bot.setYRot(0.0F);
@@ -2055,7 +2020,6 @@ public class OpenCraftGameTests {
 					if (bot == null) {
 						throw new AssertionError("召唤玩家形态助手失败");
 					}
-					bot.setFollowing(false);
 					bot.getInventory().setItem(bot.getInventory().getSelectedSlot(),
 							new ItemStack(ModBlocks.AI_LOGO_BLOCK.asItem(), 1));
 					// 3) 用短名 player_hand_to_player 递给主人（复现用户反馈的失败场景）

@@ -149,7 +149,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return "【助手状态】坐标: x=" + Math.round(a.getX())
 				+ ", y=" + Math.round(a.getY()) + ", z=" + Math.round(a.getZ())
 				+ " | " + moving
-				+ " | 跟随: " + (a.isFollowing() ? "跟随" : "待命")
 				+ " | 形态: 玩家";
 	}
 

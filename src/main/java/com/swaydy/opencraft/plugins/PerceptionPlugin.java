@@ -72,8 +72,7 @@ public class PerceptionPlugin implements AssistantPlugin {
 		String taskDesc = task == null ? "空闲" : task.describe();
 		return "【助手当前状态】坐标: x=" + Math.round(assistant.getX())
 				+ ", y=" + Math.round(assistant.getY()) + ", z=" + Math.round(assistant.getZ())
-				+ " | 任务: " + taskDesc
-				+ " | 跟随: " + (assistant.isFollowing() ? "跟随" : "待命");
+				+ " | 任务: " + taskDesc;
 	}
 
 	private ToolResult lookAround(ToolContext ctx, JsonObject args) {

@@ -128,13 +128,10 @@ public class OpenCraftMod implements ModInitializer {
 							player, payload.pos(), payload.dimension()));
 				});
 
-		// 右键 AI 助手互动网络包：注册类型 + 聊天/跟随/送走接收器
+		// 右键 AI 助手互动网络包：注册类型 + 聊天/送走接收器（跟随/待命模式已整体移除）
 		PayloadTypeRegistry.playC2S().register(
 				AssistantPayloads.AssistantChatPayload.TYPE,
 				AssistantPayloads.AssistantChatPayload.STREAM_CODEC);
-		PayloadTypeRegistry.playC2S().register(
-				AssistantPayloads.AssistantToggleFollowPayload.TYPE,
-				AssistantPayloads.AssistantToggleFollowPayload.STREAM_CODEC);
 		PayloadTypeRegistry.playC2S().register(
 				AssistantPayloads.AssistantDismissPayload.TYPE,
 				AssistantPayloads.AssistantDismissPayload.STREAM_CODEC);
@@ -164,22 +161,6 @@ public class OpenCraftMod implements ModInitializer {
 					// GUI 模式：回复以流式增量/完整回复事件回传互动界面（私人会话，不广播世界聊天）
 					AiCompanionService.askGui(player, assistant, message,
 							block.pos(), block.dimension());
-				}));
-		ServerPlayNetworking.registerGlobalReceiver(
-				AssistantPayloads.AssistantToggleFollowPayload.TYPE,
-				(payload, context) -> context.server().execute(() -> {
-					ServerPlayer player = context.player();
-					AiAssistant assistant =
-							AssistantFacade.resolveOwned(player, payload.entityId());
-					if (assistant == null) {
-						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
-						return;
-					}
-					boolean following = !assistant.isFollowing();
-					assistant.setFollowing(following);
-					player.displayClientMessage(Component.translatable(following
-							? "entity.opencraft.ai_assistant.following"
-							: "entity.opencraft.ai_assistant.staying"), true);
 				}));
 		ServerPlayNetworking.registerGlobalReceiver(
 				AssistantPayloads.AssistantDismissPayload.TYPE,

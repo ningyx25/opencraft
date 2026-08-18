@@ -10,7 +10,7 @@ import java.util.EnumSet;
  *
  * - canUse/canContinueToUse：有未终结的任务且助手活着；
  * - tick：驱动当前任务的 tick；任务终结时通过回调让实体清空并通知插件/模型。
- * - 由于优先级 0（与 FloatGoal 同级），任务活跃时会压制优先级更低的跟随/散步 Goal。
+ * - 由于优先级 0（与 FloatGoal 同级），任务活跃时会压制优先级更低的散步 Goal。
  *
  * 任务完成/失败后的清理与通知（停止导航、向 owner 广播、可选的模型可见状态）
  * 由实体 setCurrentTask 的收尾与 tick 末尾的回调处理。

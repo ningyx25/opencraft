@@ -24,7 +24,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 右键 AI 助手打开的“互动界面”：和【这个】助手聊天、切换跟随/待命、送走它（仅主人）。
+ * 右键 AI 助手打开的“互动界面”：和【这个】助手聊天、送走它（仅主人）。
  *
  * 打开时向服务器请求该助手（按绑定方块）的对话历史，历史以 "history" 事件回传并显示在
  * 对话区（与 /opencraft ask、配置界面聊天窗口共享同一份记忆）。
@@ -41,14 +41,12 @@ public class AiAssistantInteractScreen extends Screen {
 	/** 助手绑定方块的坐标：聊天回复的 S2C 事件按它路由回本界面。 */
 	private final BlockPos blockPos;
 	private final ResourceKey<Level> dimension;
-	private boolean following;
 	private boolean isOwner;
 	private String model;
 	private String agent;
 
 	private EditBox chatBox;
 	private Button sendButton;
-	private Button followButton;
 
 	private final HeaderAndFooterLayout layout = new HeaderAndFooterLayout(this);
 
@@ -61,13 +59,12 @@ public class AiAssistantInteractScreen extends Screen {
 
 	private static final int MAX_LOG_ENTRIES = 60;
 
-	public AiAssistantInteractScreen(int entityId, String displayName, boolean following,
+	public AiAssistantInteractScreen(int entityId, String displayName,
 	                                 boolean isOwner, String model, String agent,
 	                                 BlockPos blockPos, ResourceKey<Level> dimension) {
 		super(Component.literal(displayName));
 		this.entityId = entityId;
 		this.displayName = displayName;
-		this.following = following;
 		this.isOwner = isOwner;
 		this.model = model;
 		this.agent = agent;
@@ -86,8 +83,7 @@ public class AiAssistantInteractScreen extends Screen {
 	}
 
 	/** 服务器重新下发状态时刷新（当前用于打开/重建时的兜底）。 */
-	public void updateData(boolean following, boolean isOwner, String model, String agent) {
-		this.following = following;
+	public void updateData(boolean isOwner, String model, String agent) {
 		this.isOwner = isOwner;
 		this.model = model;
 		this.agent = agent;
@@ -155,12 +151,8 @@ public class AiAssistantInteractScreen extends Screen {
 		this.addRenderableWidget(this.chatBox);
 		this.addRenderableWidget(this.sendButton);
 
-		// 底部按钮栏
-		this.followButton = Button.builder(followLabel(), b -> toggleFollow())
-				.width(150)
-				.build();
+		// 底部按钮栏（跟随/待命模式已整体移除，只保留送走与关闭）
 		LinearLayout footer = LinearLayout.horizontal().spacing(8);
-		footer.addChild(this.followButton);
 		if (this.isOwner) {
 			footer.addChild(Button.builder(
 							Component.translatable("screen.opencraft.interact.dismiss"), b -> dismiss())
@@ -307,21 +299,9 @@ public class AiAssistantInteractScreen extends Screen {
 		this.thinking = true;
 	}
 
-	private void toggleFollow() {
-		this.following = !this.following;
-		this.followButton.setMessage(followLabel());
-		ClientPlayNetworking.send(new AssistantPayloads.AssistantToggleFollowPayload(this.entityId));
-	}
-
 	private void dismiss() {
 		ClientPlayNetworking.send(new AssistantPayloads.AssistantDismissPayload(this.entityId));
 		this.onClose();
-	}
-
-	private Component followLabel() {
-		return Component.translatable(this.following
-				? "screen.opencraft.interact.following"
-				: "screen.opencraft.interact.staying");
 	}
 
 	/** 用户消息前缀（历史与本地回显共用）。 */

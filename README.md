@@ -2,16 +2,16 @@
 
 一个为 Minecraft 1.21.11 (Fabric) 开发的模组，目标是给游戏增添 **AI 游戏助手**，陪玩家一起冒险、建造、生存。
 
-助手是一个**真正的 ServerPlayer（bot）**——像多人联机客户端一样进服、绑定到「AI 徽标方块」的真玩家，会跟随玩家、跨维度传送，并可通过聊天对话或**原生 function calling 工具调用**真正动手改变游戏世界——挖掘、放置、合成、递物品，全都能做。任意兼容 OpenAI 的 Chat Completions 接口即可接入（支持流式 SSE）。
+助手是一个**真正的 ServerPlayer（bot）**——像多人联机客户端一样进服、绑定到「AI 徽标方块」的真玩家，**召唤后停留在原地**（不再有跟随/待命模式），只受显式指令驱动（player_goto 移动、teleport_to_player 传送到身边），并可通过聊天对话或**原生 function calling 工具调用**真正动手改变游戏世界——挖掘、放置、合成、递物品，全都能做。任意兼容 OpenAI 的 Chat Completions 接口即可接入（支持流式 SSE）。
 
 ## 功能
 
 ### AI 游戏助手（真正的玩家 Bot）
 - **AI 助手就是一个真正的 ServerPlayer（bot）**——像多人联机客户端一样加入服务器（`PlayerList.placeNewPlayer` 正式进服，出现在玩家列表 / Tab / 实体追踪中，对其他人就是一个客户端玩家）。**这与 Agent 预设无关**：预设只决定大模型的工具与行为，助手的“玩家形态”是它自身的形态。
-- 通过 `/opencraft summon` 或右键 AI 徽标方块点“用本方块召唤助手”召唤，绑定它召唤时使用的 AI 徽标方块；绑定后跟随玩家移动、跨维度跟随，距离过远时自动瞬移到玩家身边。右键助手打开**互动界面**（和这个助手聊天、切换跟随/待命、送走它）；**潜行右键**快速切换跟随/待命。
+- 通过 `/opencraft summon` 或右键 AI 徽标方块点“用本方块召唤助手”召唤，绑定它召唤时使用的 AI 徽标方块。**不自动跟随**：召唤后停留在原地，只有显式移动指令（`player_goto` 等）会驱动它；`teleport_to_player` 可让它瞬移到你身边。右键助手打开**互动界面**（和这个助手聊天、送走它）；未绑定助手右键=绑定主人。
 - **拥有普通玩家的全部内容（可以不用，但不能没有）**：真正的 43 槽玩家背包（36 主背包 + 装备 + 副手 + 身体 + 坐骑鞍）、游戏模式、经验；玩家式动作用真实的 `ServerPlayerGameMode` 执行（`player_mine` 破坏 / `player_place` 放置 / `player_craft` 合成 / `player_hand_to_player` 递物），掉落物自动拾进背包。
 - 生命形态：生存模式 + 无敌 + 食物补满——拥有玩家的一切能力，但作为陪玩助手不会轻易死。
-- 存档持久化：绑定与跟随状态、背包/装备随玩家存档保存（送走/服务器停止自动落盘，重新召唤读回）。
+- 存档持久化：绑定状态、背包/装备随玩家存档保存（送走/服务器停止自动落盘，重新召唤读回）。
 - **多助手共存**：每个 AI 徽标方块最多绑定一个助手，一个玩家可以同时拥有多个助手（各绑定不同的方块）。聊天时以 `[名字 (x,y,z)]` 区分是哪个助手在说话。
 - 旧存档兼容：早期实体形态（PathfinderMob）的助手仍可被查找/送走；重新召唤同一方块时自动迁移为玩家 bot。
 
@@ -30,7 +30,7 @@
 
 | 预设 | 装配的插件 | 可用工具 | 最大工具轮次 |
 |---|---|---|---|
-| `chat_agent`（纯聊天） | 助手控制 | `set_mode`（跟随/待命）、`teleport_to_player`（瞬移） | 1 |
+| `chat_agent`（纯聊天） | 助手控制 | `teleport_to_player`（瞬移到主人身边） | 1 |
 | `general_agent`（全能，默认） | 助手控制 + 玩家动作 | 上表 2 个 + `player_goto/player_stop/player_look/player_mine/player_place/player_craft/player_inventory/player_hand_to_player` | 8 |
 
 玩家动作插件（`PlayerActionsPlugin`，玩家 bot 的核心能力）——**全部用真实的玩家方式执行**：
@@ -72,7 +72,7 @@
 - **普通右键**：打开游戏内配置编辑器，编辑本方块保存的全部 AI 配置（分 4 页 Tab）：
   - 「接口与密钥」：接口地址、API Key、模型、语言；
   - 「对话与动作」：助手名字、**Agent 预设**（`chat_agent` / `general_agent` 下拉）、温度、请求超时、对话记忆条数；
-  - 「伴侣行为」：跟随/停止/瞬移/最大距离、移动速度；
+  - 「行动行为」：行动最大距离（工具目标离主人的上限）、移动速度；
   - 「聊天」：内置聊天窗口——不用 `/opencraft ask` 也能直接和本方块的助手对话（回复以流式增量实时显示在窗口里，与命令行共享同一份对话记忆；本方块还没有助手时发送第一条消息会自动召唤一个绑定本方块）。
   - 点“保存配置”立即生效。**只有管理员（op）可以保存**；非管理员只读。
   - **默认配置**：接口地址、API Key、模型的默认值**在编译期从项目根目录 `.env` 烘焙进 jar**（以 XOR 混淆字节存储，jar 内无明文）：把 `OPEN_CRAFT_BASE_URL`、`OPEN_CRAFT_MODEL`、`OPEN_CRAFT_API_KEY` 写进 `.env` 再 `./gradlew build`，生成的 jar 放到任何环境（游戏启动器/服务器）都自带这些默认值。运行时优先级：JVM 参数（`-Dopencraft.*`）> 环境变量（`OPEN_CRAFT_*`）> jar 内烘焙值 > 代码内置回退（OpenAI 官方地址 `https://api.openai.com/v1` / `gpt-4o` / 混淆默认密钥）。助手名字默认「小智」——新放置的方块可直接用。
@@ -86,10 +86,10 @@
 
 1. 放置 AI 徽标方块（合成：4 铁锭 + 4 红石 + 1 玻璃）；
 2. 右键方块 → 在配置编辑器里填好接口地址（任意 OpenAI 兼容的 Chat Completions 接口）、模型、API Key 等；
-3. 点底部“用本方块召唤助手”→ 助手绑定该方块，`/opencraft ask` 聊天、跟随距离等全部使用该方块的配置；再点同一按钮（此时显示“送走本方块助手”）即可取消召唤；
+3. 点底部“用本方块召唤助手”→ 助手绑定该方块（召唤后停在原地，可用 `player_goto`/`teleport_to_player` 指挥它），`/opencraft ask` 聊天、行动参数等全部使用该方块的配置；再点同一按钮（此时显示“送走本方块助手”）即可取消召唤；
 4. 修改配置 → 点“保存配置”立即生效；换方块=换配置（每个方块独立）。
 
-**多助手共存**：每个 AI 徽标方块最多绑定一个助手；想同时拥有多个助手，就放置多个 AI 徽标方块并分别配置、分别召唤——它们会同时跟随你，`/opencraft ask <消息>` 由绑定方块离你最近的助手回答，`/opencraft ask <名字> <消息>` 可精确指定某一位，聊天前缀 `[名字 (x,y,z)]` 可区分是谁在说话。破坏方块时，绑定它的助手（及其记忆）一起消失。
+**多助手共存**：每个 AI 徽标方块最多绑定一个助手；想同时拥有多个助手，就放置多个 AI 徽标方块并分别配置、分别召唤——它们会同时停留在各自的位置待命，`/opencraft ask <消息>` 由绑定方块离你最近的助手回答，`/opencraft ask <名字> <消息>` 可精确指定某一位，聊天前缀 `[名字 (x,y,z)]` 可区分是谁在说话。破坏方块时，绑定它的助手（及其记忆）一起消失。
 
 ## 构建与运行
 
@@ -115,7 +115,7 @@
   - `plugins/` —— 内置插件：助手控制、移动、感知、挖掘、物品、合成、战斗、玩家动作
   - `presets/` —— Agent 预设：`chat_agent`（纯聊天）、`general_agent`（全能，玩家式行动）——只决定 LLM 行为，不决定身体形态
   - `ai/` —— 大模型客户端与配置：`LlmClient`（OpenAI 兼容 Chat Completions，SSE 流式 + 工具调用）、`AiCompanionService`（对话/召唤/历史服务）、`AiBlockConfig`（配置模型，存在方块实体里）、`AiConfigData`（网络传输）、`AiConfigHandler`（服务端处理）
-  - `entity/` —— AI 助手实体、跟随 AI、任务系统（`AssistantTask`/`TaskHostGoal`/`MoveToBlockTask`/`MineBlockTask`/`AttackTask`）、实体注册
+  - `entity/` —— AI 助手实体（旧存档遗留形态）、任务系统（`AssistantTask`/`TaskHostGoal`/`MoveToBlockTask`/`MineBlockTask`/`AttackTask`）、实体注册
   - `block/` —— AI 徽标方块与方块实体（配置载体）
   - `command/` —— `/opencraft` 指令
   - `net/` —— 自定义网络包（`AiConfigPayloads`、`AssistantPayloads`）
