@@ -88,7 +88,6 @@ public class AiConfigScreen extends Screen {
 	private double temperature;
 	private int timeoutSeconds;
 	private int maxHistoryMessages;
-	private String systemPrompt;
 	private String name;
 	private String agent;
 
@@ -147,7 +146,6 @@ public class AiConfigScreen extends Screen {
 		this.temperature = data.temperature();
 		this.timeoutSeconds = data.timeoutSeconds();
 		this.maxHistoryMessages = data.maxHistoryMessages();
-		this.systemPrompt = data.systemPrompt();
 		this.name = data.name() == null ? "" : data.name();
 		this.agent = data.agent() == null || data.agent().isBlank()
 				? "general_agent" : data.agent();
@@ -347,7 +345,6 @@ public class AiConfigScreen extends Screen {
 				this.changeKey,
 				this.data.apiKeySet(),
 				this.model,
-				this.systemPrompt,
 				this.temperature,
 				this.maxHistoryMessages,
 				this.timeoutSeconds,
@@ -672,17 +669,6 @@ public class AiConfigScreen extends Screen {
 			historySlider.setTooltip(Tooltip.create(Component.translatable("screen.opencraft.config.max_history.tooltip")));
 			historySlider.active = AiConfigScreen.this.canEdit;
 			rows.addChild(historySlider);
-
-			// 系统提示词多行编辑框
-			MultiLineEditBox promptBox = MultiLineEditBox.builder()
-					.setShowBackground(true)
-					.setShowDecorations(true)
-					.build(font, CONTROL_WIDTH, 60, Component.translatable("screen.opencraft.config.system_prompt"));
-			promptBox.setCharacterLimit(3000);
-			promptBox.setValue(AiConfigScreen.this.systemPrompt);
-			promptBox.setValueListener(s -> AiConfigScreen.this.systemPrompt = s);
-			promptBox.setTooltip(Tooltip.create(Component.translatable("screen.opencraft.config.system_prompt.tooltip")));
-			rows.addChild(CommonLayouts.labeledElement(font, promptBox, Component.translatable("screen.opencraft.config.system_prompt")));
 		}
 	}
 

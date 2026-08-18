@@ -2,6 +2,7 @@ package com.swaydy.opencraft.ai;
 
 import com.google.gson.Gson;
 import com.swaydy.opencraft.OpenCraftMod;
+import com.swaydy.opencraft.agent.AgentRegistry;
 import com.swaydy.opencraft.agent.AgentRuntime;
 import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.entity.AiAssistantEntity;
@@ -224,7 +225,8 @@ public final class AiCompanionService {
 			return;
 		}
 		List<LlmClient.Message> messages = List.of(
-				LlmClient.Message.system(config.effectiveSystemPrompt()),
+				LlmClient.Message.system(AgentRuntime.buildPersona(
+						config, AgentRegistry.resolveAgent(config))),
 				LlmClient.Message.user("（你刚刚被玩家召唤出来。请用一两句话热情地打个招呼，简单介绍自己，"
 						+ "并告诉玩家可以用 /opencraft ask 和他聊天；不用操作世界。）"));
 		LlmClient.Request request = new LlmClient.Request(

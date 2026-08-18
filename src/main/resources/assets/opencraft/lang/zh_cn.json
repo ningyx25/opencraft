@@ -34,6 +34,7 @@
   "screen.opencraft.interact.chat": "给这个助手发消息",
   "screen.opencraft.interact.chat_hint": "输入消息，和这个助手聊天…",
   "screen.opencraft.interact.send": "发送",
+  "screen.opencraft.interact.you": "你：",
   "screen.opencraft.interact.model": "模型: %s",
   "screen.opencraft.interact.agent": "预设: %s",
   "screen.opencraft.interact.no_model": "未配置模型（右键其绑定的 AI 徽标方块可设置）",

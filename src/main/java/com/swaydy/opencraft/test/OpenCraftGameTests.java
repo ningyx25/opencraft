@@ -353,7 +353,7 @@ public class OpenCraftGameTests {
 					// 4) 管理员保存：修改模型 + 关闭动作 + 更换密钥（apiKeyChanged=true）+ 改名字
 					AiConfigData edited = new AiConfigData(
 							sent.baseUrl(), "new-secret-key-456", true, true,
-							"in-game-edited-model", sent.systemPrompt(),
+							"in-game-edited-model",
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							sent.language(),
 							sent.followDistance(), sent.stopDistance(),
@@ -375,7 +375,7 @@ public class OpenCraftGameTests {
 					// 5) 未勾选更换时保存：密钥应保留（客户端只会传空串）
 					AiConfigData keepKey = new AiConfigData(
 							sent.baseUrl(), "", false, true,
-							"model-keep-key", sent.systemPrompt(),
+							"model-keep-key",
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							sent.language(),
 							sent.followDistance(), sent.stopDistance(),

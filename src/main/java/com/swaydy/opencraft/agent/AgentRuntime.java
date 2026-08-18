@@ -56,6 +56,14 @@ public final class AgentRuntime {
 	/** 收尾阶段最多再刷新的次数：流结束后剩余文本按自适应步长推完（约 5 秒内）。 */
 	private static final int MAX_REVEAL_FLUSHES = 60;
 
+	/**
+	 * 所有预设共享的基础人设（非配置，随代码内置）：简短友好 + 用玩家语言。
+	 * 具体“怎么做事/何时用工具”由各预设的 personaPrompt 与插件提示词决定。
+	 */
+	private static final String BASE_PERSONA = """
+			你是一个住在《我的世界》(Minecraft) 里的 AI 游戏助手，陪伴玩家一起冒险、建造、生存，
+			像一位可靠又有点幽默的朋友。回答尽量简短（一般不超过 3~4 句话），用玩家使用的语言回复。""";
+
 	/** 进行中的 loop 标记：按“助手绑定的方块”键控，保证同一助手同时只有一个 loop 在跑。 */
 	private static final Map<GlobalPos, Boolean> RUNNING = new ConcurrentHashMap<>();
 
@@ -200,6 +208,10 @@ public final class AgentRuntime {
 							AiCompanionService.appendHistory(historyKey,
 									LlmClient.Message.assistant(full));
 						}
+						// 落账即代表 LLM 工作完成：释放“正忙”锁。
+						// 打字机 reveal/收尾（2b）只是展示，不应阻塞玩家下一条消息
+						// （否则会出现“历史已 +1 但仍被 正忙 拒绝”的竞态）。
+						RUNNING.remove(lockKey);
 					});
 					// 2b) 剩余文本打字机 reveal + 最终收尾（独立异步任务，不阻塞 SSE 读取线程）
 					CompletableFuture.runAsync(() -> {
@@ -218,7 +230,6 @@ public final class AgentRuntime {
 						}
 						// 收尾（服务端线程）：GUI "reply" / 命令模式广播
 						runOnServer(server, () -> {
-							RUNNING.remove(lockKey);
 							if (full == null || full.isBlank()) {
 								if (gui) {
 									AiCompanionService.sendGuiEvent(player, guiBlockPos, guiDimension,
@@ -430,12 +441,9 @@ public final class AgentRuntime {
 
 	private static LlmClient.Message buildSystem(AiBlockConfig config, AgentDefinition agent,
 	                                             ServerPlayer player, AiAssistantEntity assistant) {
-		// 单条 system：人设 + 预设 persona + 插件能力提示 + 游戏上下文 + 插件上下文 + 名字
+		// 单条 system：人设（基础 + 预设 persona + 名字） + 插件能力提示 + 游戏上下文 + 插件上下文
 		StringBuilder sb = new StringBuilder();
-		sb.append(config.effectiveSystemPrompt()).append('\n');
-		if (agent.personaPrompt() != null && !agent.personaPrompt().isBlank()) {
-			sb.append('\n').append(agent.personaPrompt());
-		}
+		sb.append(buildPersona(config, agent));
 		String frags = agent.systemPromptFragments();
 		if (!frags.isBlank()) {
 			sb.append('\n').append(frags);
@@ -448,6 +456,22 @@ public final class AgentRuntime {
 			sb.append('\n').append(ctxFrags);
 		}
 		return LlmClient.Message.system(sb.toString());
+	}
+
+	/**
+	 * 组装“人设 + 名字”的 system 文本（供对话与打招呼共用）：
+	 * 基础人设 + 预设 personaPrompt + 【名字】指令。不再有玩家可编辑的系统提示词——
+	 * 人设完全由 Agent 预设决定。
+	 */
+	public static String buildPersona(AiBlockConfig config, AgentDefinition agent) {
+		StringBuilder sb = new StringBuilder();
+		sb.append(BASE_PERSONA);
+		if (agent != null && agent.personaPrompt() != null && !agent.personaPrompt().isBlank()) {
+			sb.append('\n').append(agent.personaPrompt());
+		}
+		sb.append("\n\n【名字】你的名字是 ").append(config.effectiveName())
+				.append("，请用这个名字自称，不要使用其他名字。");
+		return sb.toString();
 	}
 
 	// ------------------------------------------------------------------

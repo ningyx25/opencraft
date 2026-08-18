@@ -19,7 +19,6 @@ public record AiConfigData(
 		boolean apiKeyChanged,
 		boolean apiKeySet,
 		String model,
-		String systemPrompt,
 		double temperature,
 		int maxHistoryMessages,
 		int timeoutSeconds,

@@ -34,6 +34,7 @@
   "screen.opencraft.interact.chat": "Message this assistant",
   "screen.opencraft.interact.chat_hint": "Type a message to chat with this assistant…",
   "screen.opencraft.interact.send": "Send",
+  "screen.opencraft.interact.you": "You: ",
   "screen.opencraft.interact.model": "Model: %s",
   "screen.opencraft.interact.agent": "Preset: %s",
   "screen.opencraft.interact.no_model": "No model configured (right-click its bound AI Logo Block to set one)",

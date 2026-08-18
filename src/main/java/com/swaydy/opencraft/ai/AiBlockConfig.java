@@ -14,15 +14,6 @@ import net.minecraft.world.level.storage.ValueOutput;
  * AiConfigData 传输时 apiKey 恒为空串，仅以 apiKeySet 告知"已设置/未设置"。
  */
 public final class AiBlockConfig {
-	public static final String DEFAULT_SYSTEM_PROMPT = """
-			你是一个住在《我的世界》(Minecraft) 里的 AI 游戏助手，名字叫“小智”。
-			你陪伴玩家一起冒险、建造、生存，像一位可靠又有点幽默的朋友。
-			- 回答尽量简短（一般不超过 3~4 句话），用玩家使用的语言回复。
-			- 可以给玩家提供合成配方、游戏机制、红石技巧、建筑建议、生存策略等帮助。
-			- 玩家可能会把坐标、维度、时间、生命值等游戏状态告诉你，请结合这些信息给出贴心的建议。
-			- 保持积极、友善的语气，适当使用少量 emoji 或颜文字增加亲和力。
-			""";
-
 	// AI 接口配置
 	/**
 	 * 默认接口地址：优先读环境变量 OPEN_CRAFT_BASE_URL
@@ -40,7 +31,6 @@ public final class AiBlockConfig {
 	 * （或 JVM 参数 -Dopencraft.model），未设置时回退到内置默认模型。
 	 */
 	public String model = defaultModel();
-	public String systemPrompt = DEFAULT_SYSTEM_PROMPT;
 	public String name = "小智";
 	public double temperature = 0.8;
 	public int maxHistoryMessages = 20;
@@ -195,20 +185,13 @@ public final class AiBlockConfig {
 	}
 
 	/**
-	 * 生效的系统提示词：在配置的提示词末尾追加当前名字，
-	 * 保证大模型始终用配置的名字自称（配置的提示词里可能还写着旧名字）。
+	 * 转成传输数据（apiKey 恒为空串，绝不外发）。
+	 * 注意：人设/能力提示词不再作为配置——由 Agent 预设（persona + 插件提示词）决定。
 	 */
-	public String effectiveSystemPrompt() {
-		String base = systemPrompt == null || systemPrompt.isBlank()
-				? DEFAULT_SYSTEM_PROMPT : systemPrompt;
-		return base + "\n\n【名字】你的名字是 " + effectiveName() + "，请用这个名字自称，不要使用其他名字。";
-	}
-
-	/** 转成传输数据（apiKey 恒为空串，绝不外发）。 */
 	public AiConfigData toData() {
 		return new AiConfigData(
 				baseUrl, "", false, !apiKey.isEmpty(),
-				model, systemPrompt,
+				model,
 				temperature, maxHistoryMessages, timeoutSeconds, language,
 				followDistance, stopDistance, teleportDistance, maxDistance, speed,
 				name, agent);
@@ -222,8 +205,6 @@ public final class AiBlockConfig {
 		}
 		model = data.model() == null || data.model().isBlank() ? defaultModel() : data.model().trim();
 		name = data.name() == null || data.name().isBlank() ? "小智" : data.name().trim();
-		systemPrompt = data.systemPrompt() == null || data.systemPrompt().isBlank()
-				? DEFAULT_SYSTEM_PROMPT : data.systemPrompt();
 		temperature = clamp(data.temperature(), 0.0, 2.0, 0.8);
 		maxHistoryMessages = (int) clamp(data.maxHistoryMessages(), 2, 200, 20);
 		timeoutSeconds = (int) clamp(data.timeoutSeconds(), 5, 300, 60);
@@ -252,7 +233,6 @@ public final class AiBlockConfig {
 		output.putString("ApiKey", apiKey);
 		output.putString("Model", model);
 		output.putString("Name", name);
-		output.putString("SystemPrompt", systemPrompt);
 		output.putDouble("Temperature", temperature);
 		output.putInt("MaxHistory", maxHistoryMessages);
 		output.putInt("Timeout", timeoutSeconds);
@@ -271,7 +251,7 @@ public final class AiBlockConfig {
 		apiKey = input.getStringOr("ApiKey", defaultApiKey());
 		model = input.getStringOr("Model", defaultModel());
 		name = input.getStringOr("Name", "小智");
-		systemPrompt = input.getStringOr("SystemPrompt", DEFAULT_SYSTEM_PROMPT);
+		// 旧存档的 "SystemPrompt" 标签已废弃：人设由 Agent 预设决定
 		temperature = input.getDoubleOr("Temperature", 0.8);
 		maxHistoryMessages = input.getIntOr("MaxHistory", 20);
 		timeoutSeconds = input.getIntOr("Timeout", 60);

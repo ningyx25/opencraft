@@ -1,5 +1,10 @@
 package com.swaydy.opencraft.client.gui;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.swaydy.opencraft.net.AiConfigPayloads;
 import com.swaydy.opencraft.net.AssistantPayloads;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.gui.GuiGraphics;
@@ -20,6 +25,9 @@ import java.util.List;
 
 /**
  * 右键 AI 助手打开的“互动界面”：和【这个】助手聊天、切换跟随/待命、送走它（仅主人）。
+ *
+ * 打开时向服务器请求该助手（按绑定方块）的对话历史，历史以 "history" 事件回传并显示在
+ * 对话区（与 /opencraft ask、配置界面聊天窗口共享同一份记忆）。
  *
  * 聊天走 GUI 模式（{@code AiCompanionService.askGui}）：服务器的流式增量（"delta"）与
  * 完整回复（"reply"）通过 S2C {@code AiConfigChatEventPayload}（按绑定方块坐标路由）直接
@@ -48,6 +56,8 @@ public class AiAssistantInteractScreen extends Screen {
 	private final List<String> conversation = new ArrayList<>();
 	private final StringBuilder streaming = new StringBuilder();
 	private boolean thinking = false;
+	/** 是否已请求过历史（只请求一次；重建界面不重复拉取，避免打断进行中的对话）。 */
+	private boolean historyRequested = false;
 
 	private static final int MAX_LOG_ENTRIES = 60;
 
@@ -86,6 +96,7 @@ public class AiAssistantInteractScreen extends Screen {
 
 	/**
 	 * 处理服务器下发的聊天事件（GUI 模式 ask 的 S2C 回传；调用方已按方块坐标过滤）：
+	 * - "history"：对话历史快照（[{role, content}, ...]，整体替换对话区，打开时拉取）；
 	 * - "thinking"：助手开始思考（显示“正在思考…”占位）；
 	 * - "delta"   ：流式增量（服务器发的是截至当前的完整快照，节流合并，因此整体替换）；
 	 * - "reply"   ：流式结束的完整回复（收尾当前气泡）；
@@ -93,6 +104,14 @@ public class AiAssistantInteractScreen extends Screen {
 	 */
 	public void handleChatEvent(String kind, Component text) {
 		switch (kind) {
+			case "history" -> {
+				// 历史快照：清空并整体替换对话区（含进行中的流式状态）
+				this.thinking = false;
+				this.streaming.setLength(0);
+				this.conversation.clear();
+				parseHistory(text.getString());
+				trimConversation();
+			}
 			case "thinking" -> {
 				this.thinking = true;
 				this.streaming.setLength(0);
@@ -155,6 +174,13 @@ public class AiAssistantInteractScreen extends Screen {
 		this.layout.addToFooter(footer);
 		this.layout.visitWidgets(this::addRenderableWidget);
 		this.repositionElements();
+
+		// 打开时向服务器拉取该助手的历史对话（只请求一次；重建界面不重复拉取）
+		if (!this.historyRequested && this.blockPos != null && this.dimension != null) {
+			this.historyRequested = true;
+			ClientPlayNetworking.send(new AiConfigPayloads.AiConfigChatHistoryPayload(
+					this.blockPos, this.dimension));
+		}
 	}
 
 	@Override
@@ -240,6 +266,29 @@ public class AiAssistantInteractScreen extends Screen {
 		}
 	}
 
+	/** 解析服务器下发的历史 JSON（[{role, content}, ...]）并填充对话区；解析失败则保持空。 */
+	private void parseHistory(String json) {
+		try {
+			JsonArray array = JsonParser.parseString(json).getAsJsonArray();
+			for (JsonElement element : array) {
+				JsonObject obj = element.getAsJsonObject();
+				String role = obj.has("role") ? obj.get("role").getAsString() : "user";
+				String content = obj.has("content") ? obj.get("content").getAsString() : "";
+				if (content == null || content.isBlank()) {
+					continue;
+				}
+				// 用户消息加“你：”前缀，助手回复直接显示（标题栏即助手名字）
+				if ("user".equals(role)) {
+					this.conversation.add(youPrefix() + content);
+				} else {
+					this.conversation.add(content);
+				}
+			}
+		} catch (Exception e) {
+			// 历史 JSON 解析失败：保留空对话区，不打扰用户
+		}
+	}
+
 	// ------------------------------------------------------------------
 	// 交互动作（全部发到服务器，由服务器校验并执行）
 	// ------------------------------------------------------------------
@@ -252,7 +301,7 @@ public class AiAssistantInteractScreen extends Screen {
 		ClientPlayNetworking.send(new AssistantPayloads.AssistantChatPayload(this.entityId, message));
 		this.chatBox.setValue("");
 		// 本地立即回显用户消息 + “正在思考…”占位；服务端的 thinking/delta/reply 事件随后接管
-		this.conversation.add(message);
+		this.conversation.add(youPrefix() + message);
 		this.trimConversation();
 		this.streaming.setLength(0);
 		this.thinking = true;
@@ -273,6 +322,11 @@ public class AiAssistantInteractScreen extends Screen {
 		return Component.translatable(this.following
 				? "screen.opencraft.interact.following"
 				: "screen.opencraft.interact.staying");
+	}
+
+	/** 用户消息前缀（历史与本地回显共用）。 */
+	private static String youPrefix() {
+		return Component.translatable("screen.opencraft.interact.you").getString();
 	}
 
 	/** Agent 预设 id → 友好显示名。 */
