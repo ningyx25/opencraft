@@ -4,7 +4,7 @@
 
 ## 演示
 
-https://github.com/ningyx25/opencraft/releases/download/v1.0.0-demo/demo.mp4
+https://github.com/ningyx25/opencraft/raw/1.21.11/docs/media/demo.mp4
 
 ---
 
