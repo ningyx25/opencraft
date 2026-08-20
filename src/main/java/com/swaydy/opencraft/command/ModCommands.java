@@ -29,6 +29,7 @@ import java.util.concurrent.CompletableFuture;
  *   /opencraft dismiss [all]        —— 送走最近的助手；加 all 送走全部助手
  *   /opencraft status               —— 列出你的全部助手与各自的配置状态
  *   /opencraft reset [all]          —— 清空最近助手的记忆；加 all 清空全部
+ *   /opencraft interrupt            —— 中断「最近的」助手当前正在进行的任务（卡住时可立即重新提问）
  *   /opencraft help                 —— 显示帮助
  *
  * 多助手规则：每个 AI 徽标方块最多绑定一个助手（实体形态或玩家形态，见 AssistantFacade），
@@ -67,6 +68,10 @@ public final class ModCommands {
 						.then(Commands.argument("message", StringArgumentType.greedyString())
 								.executes(ctx -> answer(ctx.getSource(),
 										StringArgumentType.getString(ctx, "message")))))
+				.then(Commands.literal("interrupt")
+						.executes(ctx -> interrupt(ctx.getSource())))
+				.then(Commands.literal("stop")
+						.executes(ctx -> interrupt(ctx.getSource())))
 				.then(Commands.literal("debug")
 						.executes(ctx -> debugStatus(ctx.getSource()))
 						.then(Commands.literal("on")
@@ -192,8 +197,23 @@ public final class ModCommands {
 		return 1;
 	}
 
-	private static int summon(CommandSourceStack source) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+	/**
+	 * /opencraft interrupt：中断「最近的」助手当前正在进行的任务（循环/提问/移动）。
+	 * 立即释放忙锁并可马上重新提问；没有在跑的任务时失败。
+	 */
+	private static int interrupt(CommandSourceStack source) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
 		ServerPlayer player = source.getPlayerOrException();
+		AiAssistant target = AssistantFacade.findNearestFor(player);
+		GlobalPos key = target == null ? null : target.getConfigBlock();
+		if (key == null || !AgentRuntime.interrupt(key)) {
+			source.sendFailure(Component.translatable("command.opencraft.interrupt.none"));
+			return 0;
+		}
+		source.sendSuccess(() -> Component.translatable("command.opencraft.interrupt.ok"), false);
+		return 1;
+	}
+
+	private static int summon(CommandSourceStack source) throws com.mojang.brigadier.exceptions.CommandSyntaxException {		ServerPlayer player = source.getPlayerOrException();
 		if (AssistantFacade.summonNearest(player) != null) {
 			source.sendSuccess(() -> Component.translatable("command.opencraft.summon.success"), false);
 		} else {

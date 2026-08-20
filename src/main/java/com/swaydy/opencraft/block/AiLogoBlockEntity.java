@@ -83,6 +83,9 @@ public class AiLogoBlockEntity extends BlockEntity {
 			com.swaydy.opencraft.OpenCraftMod.LOGGER.info(
 					"[OpenCraft] AI 徽标方块({})被移除，{} 个绑定的助手随之消失",
 					this.worldPosition.toShortString(), bound.size());
+			com.swaydy.opencraft.debug.DebugLog.log("summon",
+					"AI 徽标方块 {} 被移除，{} 个绑定的（实体形态）助手随之消失，并清除该方块记忆",
+					this.worldPosition.toShortString(), bound.size());
 			for (AiAssistantEntity assistant : bound) {
 				assistant.discard();
 			}

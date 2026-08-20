@@ -10,6 +10,7 @@ import com.swaydy.opencraft.command.ModCommands;
 import com.swaydy.opencraft.entity.ModEntities;
 import com.swaydy.opencraft.net.AiConfigPayloads;
 import com.swaydy.opencraft.net.AssistantPayloads;
+import com.swaydy.opencraft.net.AssistantStreamPayloads;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
@@ -37,6 +38,11 @@ public class OpenCraftMod implements ModInitializer {
 		// Proceed with mild caution.
 
 		LOGGER.info("OpenCraft 启动！AI 游戏助手已就绪。");
+
+		// 预热 openai-java 客户端（懒初始化共享基客户端，纯本地构建不发任何网络请求）：
+		// 避免玩家第一次提问卡顿、也避免 gametest“冲刺”tick 下首个聊天请求的“等回复”断言
+		// 因冷启动超时。
+		com.swaydy.opencraft.ai.LlmClient.warmUp();
 
 		// 调试模式：-Dopencraft.debug=true / OPEN_CRAFT_DEBUG=true 默认开启；
 		// 游戏内可用 /opencraft debug on|off 动态切换（详见 DebugLog）
@@ -110,6 +116,9 @@ public class OpenCraftMod implements ModInitializer {
 		PayloadTypeRegistry.playC2S().register(
 				AiConfigPayloads.AiConfigChatHistoryPayload.TYPE,
 				AiConfigPayloads.AiConfigChatHistoryPayload.STREAM_CODEC);
+		PayloadTypeRegistry.playC2S().register(
+				AiConfigPayloads.AiConfigInterruptPayload.TYPE,
+				AiConfigPayloads.AiConfigInterruptPayload.STREAM_CODEC);
 		PayloadTypeRegistry.playS2C().register(
 				AiConfigPayloads.AiConfigChatEventPayload.TYPE,
 				AiConfigPayloads.AiConfigChatEventPayload.STREAM_CODEC);
@@ -127,6 +136,18 @@ public class OpenCraftMod implements ModInitializer {
 					context.server().execute(() -> AiConfigHandler.sendChatHistory(
 							player, payload.pos(), payload.dimension()));
 				});
+		ServerPlayNetworking.registerGlobalReceiver(
+				AiConfigPayloads.AiConfigInterruptPayload.TYPE,
+				(payload, context) -> {
+					ServerPlayer player = context.player();
+					context.server().execute(() -> AiConfigHandler.interruptWithBlock(
+							player, payload.pos(), payload.dimension()));
+				});
+
+		// 流式回复世界内浮层：S2C（sessionId 路由，客户端只认最新会话，见 AssistantStreamPayloads）
+		PayloadTypeRegistry.playS2C().register(
+				AssistantStreamPayloads.AssistantStreamPayload.TYPE,
+				AssistantStreamPayloads.AssistantStreamPayload.STREAM_CODEC);
 
 		// 右键 AI 助手互动网络包：注册类型 + 聊天/送走接收器（跟随/待命模式已整体移除）
 		PayloadTypeRegistry.playC2S().register(

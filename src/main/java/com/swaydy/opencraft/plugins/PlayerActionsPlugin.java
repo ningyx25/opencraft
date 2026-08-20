@@ -12,12 +12,17 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
@@ -39,6 +44,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 玩家形态插件：让“假玩家”助手像普通玩家一样行动——用真实的
@@ -89,6 +95,10 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		handProps.add("amount", ToolSchema.prop("integer", "数量（默认 1）。"));
 		JsonObject lookProps = new JsonObject();
 		lookProps.add("radius", ToolSchema.prop("integer", "观察半径（默认 8，最大 16）。"));
+		JsonObject findProps = new JsonObject();
+		findProps.add("target", ToolSchema.prop("string",
+				"要找的东西：方块/物品 ID（minecraft:oak_log、oak_log）或关键词（log、石头、箱子、铁、玩家、怪物…）。"));
+		findProps.add("radius", ToolSchema.prop("integer", "搜索半径（默认 12，最大 20）。"));
 		return List.of(
 				new ToolDefinition("player_goto",
 						"让助手（以玩家身份）走到指定坐标（绝对坐标 x,y,z）。移动是异步的：调用后立即返回，"
@@ -99,11 +109,23 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 						"取消助手的当前移动，让它停下来。",
 						ToolSchema.object(new JsonObject()),
 						this::stopTool),
+				new ToolDefinition("player_jump",
+						"让助手原地跳起来（跃过 1 格台阶/小沟；配合 player_goto 可助跑横跳；"
+								+ "着地时才生效）。",
+						ToolSchema.object(new JsonObject()),
+						this::jump),
 				new ToolDefinition("player_look",
 						"观察助手周围：坐标、朝向、周围方块（按种类计数）、附近的玩家/怪物/掉落物（含距离）、"
 								+ "是否正在移动、背包/装备摘要。行动前先观察，行动后再观察确认。",
 						ToolSchema.object(lookProps),
 						this::lookAround),
+				new ToolDefinition("player_find",
+						"按关键词/ID 在助手周围找东西，返回【精确坐标 + 方位（东/南/西/北几格）+ 距离】。"
+								+ "target 可以是方块/物品 ID（如 minecraft:oak_log、oak_log）或普通关键词"
+								+ "（如 \"log\"、\"石头\"、\"箱子\"、\"铁\"、\"玩家\"、\"怪物\"）。"
+								+ "行动（挖掘/放置/去物品旁）之前先 player_find 拿到精确坐标，不要猜坐标。",
+						ToolSchema.object(findProps, "target"),
+						this::findTarget),
 				new ToolDefinition("player_mine",
 						"让助手（以玩家身份）挖掘指定坐标的方块：走到方块旁，用主手工具像玩家一样破坏，"
 								+ "掉落物以物品形式掉出并被助手自动拾进背包。异步：调用后立即返回，之后用 player_look 确认。"
@@ -133,9 +155,11 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	@Override
 	public String systemPromptFragment() {
 		return "【玩家形态】你以一个真正的玩家身份加入了《我的世界》服务器：拥有普通玩家的完整背包、"
-				+ "装备栏与玩家式动作。player_goto/player_stop 移动，player_mine/player_place 用玩家方式破坏/放置方块"
+				+ "装备栏与玩家式动作。player_goto/player_stop 移动，player_jump 跳跃（跃过 1 格台阶/小沟，"
+				+ "配合移动目标可助跑横跳），player_mine/player_place 用玩家方式破坏/放置方块"
 				+ "（掉落物自动进背包），player_craft 用背包材料合成（规则与玩家一致，3×3 需工作台），"
-				+ "player_hand_to_player 把物品递给主人，player_inventory/player_look 观察状态与环境。"
+				+ "player_hand_to_player 把物品递给主人，player_inventory/player_look 观察状态与环境，"
+				+ "player_find 按关键词/ID 找东西并返回【精确坐标】（先 player_find 拿坐标再行动，不要猜坐标）。"
 				+ "行动前先观察、行动后再观察确认；工具结果以 [工具名 成功/失败] 开头，先读标记再读内容；"
 				+ "不要假设工具一定成功，失败时换方法而不是原样重试。";
 	}
@@ -146,11 +170,21 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		if (a == null) {
 			return null;
 		}
-		String moving = a.movement().isMoving() ? "正在移动" : "静止";
-		return "【助手状态】坐标: x=" + Math.round(a.getX())
-				+ ", y=" + Math.round(a.getY()) + ", z=" + Math.round(a.getZ())
-				+ " | " + moving
-				+ " | 形态: 玩家";
+		StringBuilder sb = new StringBuilder();
+		sb.append("【助手状态】坐标: x=").append(Math.round(a.getX()))
+				.append(", y=").append(Math.round(a.getY()))
+				.append(", z=").append(Math.round(a.getZ()))
+				.append("，朝向: ").append(AiCompanionService.facingName(a.getYRot()));
+		sb.append(a.movement().isMoving() ? " | 正在移动" : " | 静止");
+		ServerLevel level = ctx.level();
+		if (a.level() instanceof ServerLevel al) {
+			level = al;
+		}
+		if (level != null) {
+			sb.append(" | ").append(AiCompanionService.environmentCapsule(level, a.blockPosition(), 16));
+		}
+		sb.append(" | 形态: 玩家");
+		return sb.toString();
 	}
 
 	// ------------------------------------------------------------------
@@ -186,6 +220,16 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return ToolResult.ok("已停止移动。");
 	}
 
+	private ToolResult jump(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("玩家形态工具（player_jump）需要玩家形态助手。");
+		}
+		return a.movement().jump()
+				? ToolResult.ok("已跳起（配合移动目标可助跑越过台阶/小沟）。")
+				: ToolResult.error("现在跳不了：半空中或飞行中，先落地再试。");
+	}
+
 	private ToolResult lookAround(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
@@ -199,8 +243,9 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		StringBuilder sb = new StringBuilder();
 		sb.append("坐标: x=").append(pos.getX()).append(", y=").append(pos.getY())
 				.append(", z=").append(pos.getZ());
-		sb.append(", 朝向: ").append(directionName(a.getYRot()));
+		sb.append(", 朝向: ").append(AiCompanionService.facingName(a.getYRot()));
 		sb.append(", 移动: ").append(a.movement().isMoving() ? "正在移动" : "静止");
+		sb.append(" | ").append(AiCompanionService.environmentCapsule(level, pos, 0));
 
 		Map<String, Integer> blockCounts = new LinkedHashMap<>();
 		for (int dx = -radius; dx <= radius; dx++) {
@@ -246,9 +291,12 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				}
 				double dist = Math.round(a.distanceTo(e) * 10.0) / 10.0;
 				String type = e instanceof Player ? "玩家"
-						: e instanceof net.minecraft.world.entity.monster.Monster ? "怪物"
-						: e instanceof ItemEntity ? "掉落物" : e.getType().getDescriptionId();
-				sb.append(type).append("(").append(dist).append("格)").append(" ");
+						: e instanceof Monster ? "怪物"
+						: e instanceof ItemEntity ? "掉落物" : shortName(e.getType().getDescriptionId());
+				// 带精确坐标 + 方位：模型据此才能判断“东西在哪”
+				sb.append(type).append(" ").append(e.blockPosition().toShortString()).append(" ")
+						.append(bearingTo(pos, e.blockPosition())).append("(").append(dist).append("格) ")
+						.append(" ");
 				count++;
 			}
 		} else {
@@ -256,6 +304,183 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		}
 		sb.append(" | 背包: ").append(formatBackpack(a));
 		return ToolResult.ok(sb.toString());
+	}
+
+	/**
+	 * 按关键词/ID 找方块或实体，返回【精确坐标 + 方位 + 距离】——模型据此才能判断
+	 * “东西在哪”，而不是拿着 oak_log 计数去猜坐标。方块：精确解析失败时按关键词
+	 * 遍历注册表展开（id 路径或描述键子串匹配，限 6 种），再对半径内立方体扫描一次；
+	 * 实体：按关键词/实体类型 id 查询指定类型。
+	 */
+	private ToolResult findTarget(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("玩家形态工具（player_find）需要玩家形态助手。");
+		}
+		ToolArgs t = new ToolArgs(args);
+		String target = t.strOf("target", "").trim().toLowerCase(java.util.Locale.ROOT);
+		if (target.isEmpty()) {
+			return ToolResult.error("player_find 需要 target（要找的东西的 ID 或关键词）。");
+		}
+		int radius = Math.max(1, Math.min(20, t.intOf("radius", 12)));
+		ServerLevel level = ctx.level();
+		BlockPos center = a.blockPosition();
+
+		Set<Block> wantedBlocks = wantedBlocks(target);
+		boolean entityQuery = isEntityQuery(target);
+
+		List<String> lines = new ArrayList<>();
+		int total = 0;
+
+		// 方块扫描：一次过立方体，命中即记
+		if (!wantedBlocks.isEmpty()) {
+			for (int dx = -radius; dx <= radius; dx++) {
+				for (int dy = -radius; dy <= radius; dy++) {
+					for (int dz = -radius; dz <= radius; dz++) {
+						BlockState st = level.getBlockState(center.offset(dx, dy, dz));
+						if (st.isAir() || !wantedBlocks.contains(st.getBlock())) {
+							continue;
+						}
+						total++;
+						if (lines.size() < 6) {
+							lines.add(formatTarget(center.offset(dx, dy, dz),
+									st.getBlock().getDescriptionId(), a));
+						}
+					}
+				}
+			}
+		}
+		// 实体查询（关键词命中或实体类型 id 可解析）
+		if (entityQuery) {
+			AABB box = new AABB(center).inflate(radius);
+			List<Entity> ents = level.getEntities((Entity) null, box,
+					e -> e != a && e.isAlive() && matchesEntity(e, target));
+			total += ents.size();
+			int n = 0;
+			for (Entity e : ents) {
+				if (n >= 6) {
+					break;
+				}
+				String label = e instanceof Player ? "玩家"
+						: e instanceof Monster ? "怪物"
+						: e instanceof ItemEntity ? "掉落物" : shortName(e.getType().getDescriptionId());
+				lines.add(formatTarget(e.blockPosition(), label, a));
+				n++;
+			}
+		}
+
+		if (lines.isEmpty()) {
+			return ToolResult.error("在半径 " + radius + " 格内没有找到与 \"" + target + "\" 相关的东西。"
+					+ "试试更短的关键词（如 \"log\"、\"石头\"），或用精确 ID（如 minecraft:oak_log）。");
+		}
+		StringBuilder sb = new StringBuilder("找到 \"" + target + "\" 相关 ").append(total).append(" 处（半径 ")
+				.append(radius).append(" 格）：");
+		for (int i = 0; i < lines.size(); i++) {
+			sb.append("\n").append(i + 1).append(". ").append(lines.get(i));
+		}
+		if (total > lines.size()) {
+			sb.append("\n…共 ").append(total).append(" 处（此处列出最近 ").append(lines.size()).append(" 处）");
+		}
+		return ToolResult.ok(sb.toString());
+	}
+
+	/** 想找的方块集合：先精确解析；失败则按关键词展开注册表（id/描述键子串匹配，限 6 种）。 */
+	private static Set<Block> wantedBlocks(String target) {
+		Set<Block> out = new java.util.HashSet<>();
+		Holder<net.minecraft.world.level.block.Block> exact = AiCompanionService.resolveBlock(target);
+		if (exact != null) {
+			out.add(exact.value());
+			return out;
+		}
+		for (Map.Entry<ResourceKey<Block>, Block> e : BuiltInRegistries.BLOCK.entrySet()) {
+			if (out.size() >= 6) {
+				break;
+			}
+			String id = e.getKey().identifier().getPath();
+			String desc = e.getValue().getDescriptionId().toLowerCase(java.util.Locale.ROOT);
+			if (id.contains(target) || desc.contains(target)) {
+				out.add(e.getValue());
+			}
+		}
+		return out;
+	}
+
+	/** 该关键词是否应做实体查询（玩家/怪物/掉落物/生物 或 可解析的实体类型 id）。 */
+	private static boolean isEntityQuery(String target) {
+		if (target.contains("玩家") || target.contains("player")
+				|| target.contains("怪物") || target.contains("monster")
+				|| target.contains("zombie") || target.contains("skeleton")
+				|| target.contains("掉落") || target.contains("drop")
+				|| target.contains("animal") || target.contains("生物") || target.contains("living")) {
+			return true;
+		}
+		return tryResolveEntityType(target) != null;
+	}
+
+	private static boolean matchesEntity(Entity e, String target) {
+		if (target.contains("玩家") || target.contains("player")) {
+			return e instanceof Player;
+		}
+		if (target.contains("怪物") || target.contains("monster")
+				|| target.contains("zombie") || target.contains("skeleton")) {
+			return e instanceof Monster; // 僵尸/骷髅是怪物，一网打尽
+		}
+		if (target.contains("掉落") || target.contains("drop")) {
+			return e instanceof ItemEntity;
+		}
+		if (target.contains("living") || target.contains("生物") || target.contains("animal")) {
+			return e instanceof LivingEntity;
+		}
+		EntityType<?> et = tryResolveEntityType(target);
+		if (et != null) {
+			return e.getType() == et || e.getType().getDescriptionId().contains(target);
+		}
+		// 其它：把关键词当实体类型描述子串匹配
+		return e.getType().getDescriptionId().toLowerCase(java.util.Locale.ROOT).contains(target);
+	}
+
+	private static EntityType<?> tryResolveEntityType(String id) {
+		String[] candidates = id.contains(":")
+				? new String[] {id}
+				: new String[] {id, "minecraft:" + id};
+		for (String c : candidates) {
+			try {
+				Identifier ident = Identifier.parse(c);
+				var opt = BuiltInRegistries.ENTITY_TYPE.get(ident);
+				if (!opt.isEmpty()) {
+					return opt.get().value();
+				}
+			} catch (Exception ignored) {
+				// 非法 ID 形状：试下一个候选
+			}
+		}
+		return null;
+	}
+
+	/** 一条定位结果：`(x,y,z) 东3格南2格 距离2.4格(类型)`。 */
+	private static String formatTarget(BlockPos pos, String descId, AiAssistantPlayer a) {
+		double dist = Math.round(Math.sqrt(a.distanceToSqr(
+				pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5)) * 10.0) / 10.0;
+		return "(" + pos.getX() + "," + pos.getY() + "," + pos.getZ() + ") "
+				+ bearingTo(a.blockPosition(), pos) + " 距离" + dist + "格(" + shortName(descId) + ")";
+	}
+
+	/** 从 / 到目标的方位（东北西南格数；原地返回 原地）。 */
+	private static String bearingTo(BlockPos from, BlockPos to) {
+		int dx = to.getX() - from.getX();
+		int dz = to.getZ() - from.getZ();
+		StringBuilder sb = new StringBuilder();
+		if (dx > 0) {
+			sb.append("东").append(dx).append("格");
+		} else if (dx < 0) {
+			sb.append("西").append(-dx).append("格");
+		}
+		if (dz > 0) {
+			sb.append("南").append(dz).append("格");
+		} else if (dz < 0) {
+			sb.append("北").append(-dz).append("格");
+		}
+		return sb.length() == 0 ? "原地" : sb.toString();
 	}
 
 	private ToolResult mine(ToolContext ctx, JsonObject args) {
@@ -678,16 +903,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			case 41 -> "身体";
 			case 42 -> "坐骑鞍";
 			default -> "物品";
-		};
-	}
-
-	private static String directionName(float yaw) {
-		int dir = Math.floorMod(Math.round(yaw / 90.0F), 4);
-		return switch (dir) {
-			case 0 -> "南(+Z)";
-			case 1 -> "西(-X)";
-			case 2 -> "北(-Z)";
-			default -> "东(+X)";
 		};
 	}
 

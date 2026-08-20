@@ -1,11 +1,17 @@
 package com.swaydy.opencraft.agent;
 
+import com.swaydy.opencraft.ai.LlmClient;
+
 import java.util.Locale;
 
 /**
  * LLM 请求重试策略（参考 deepseek-harness 的 {@code dsh-llm-retry} 插件）：
- * 对瞬时性失败（限流 / 服务端 5xx / 超时 / 网络传输错误）做指数退避 + 抖动重试，
+ * 对瞬时性失败（限流 / 服务端 5xx / 超时 / 网络传输错误 / 空响应）做指数退避 + 抖动重试，
  * 避免"网络抖一下整轮对话就报错"的糟糕体验。
+ *
+ * <p>生产路径按新客户端 {@link LlmClient.LlmFailure} 的<b>稳定错误码</b>路由
+ * （{@link #retryableCode}），与 dsh 默认可重试集一致；{@link #retryable(String)} 文本版
+ * 保留给既有调用与单测。
  *
  * <p>纯 Java、无 Minecraft 依赖，便于 JUnit 单测。
  */
@@ -23,17 +29,48 @@ public final class LlmRetryPolicy {
 	}
 
 	/**
-	 * 该错误是否值得重试。
+	 * 按稳定错误码判断是否值得重试（参考 dsh-llm-retry 的默认可重试码）：
+	 * {@code EMPTY_RESPONSE}（退化完成，重试安全）、{@code RATE_LIMIT}、{@code SERVER}、
+	 * {@code TIMEOUT}、{@code TRANSPORT} 可重试；其余（含 {@code STALLED}——服务端拿到连接后
+	 * 长时间不吐数据，重试只会再次白等，快速失败让玩家重问/中断；以及 {@code AUTH/QUOTA/
+	 * CONTEXT_WINDOW_EXCEEDED/INVALID_REQUEST/MALFORMED_RESPONSE/INVALID_CREDENTIAL} 等
+	 * 非瞬时/参数类）不可重试。
+	 */
+	public static boolean retryableCode(String code) {
+		if (code == null || code.isBlank()) {
+			return true; // 未知错误：保守地重试一次
+		}
+		return switch (code) {
+			case LlmClient.Codes.EMPTY_RESPONSE,
+					LlmClient.Codes.RATE_LIMIT,
+					LlmClient.Codes.SERVER,
+					LlmClient.Codes.TIMEOUT,
+					LlmClient.Codes.TRANSPORT -> true;
+			default -> false;
+		};
+	}
+
+	/** 该失败（稳定错误码）是否值得重试。 */
+	public static boolean retryable(LlmClient.LlmFailure failure) {
+		return failure != null && retryableCode(failure.code());
+	}
+
+	/**
+	 * 该错误文本是否值得重试（旧文本版，保留给既有调用与单测）。
 	 *
 	 * <p>可重试：HTTP 429（限流）、HTTP 5xx（服务端错误）、超时、连接/IO/SSL 等传输错误，
 	 * 以及未知/空错误（保守按可重试处理）。不可重试：参数/鉴权类 4xx（除 429）、
-	 * 响应无法解析（非瞬时）、模型侧明确拒绝等。
+	 * 响应无法解析（非瞬时）、模型侧明确拒绝等；以及 {@code request-stalled}（SSE 读取看门狗
+	 * 超时——服务端拿到连接后长时间不吐数据，重试只会再次白等，直接失败让玩家重问/中断）。
 	 */
 	public static boolean retryable(String error) {
 		if (error == null || error.isBlank()) {
 			return true; // 未知错误：保守地重试一次
 		}
 		String e = error.toLowerCase(Locale.ROOT);
+		if (e.contains("request-stalled")) {
+			return false; // 服务端长时间无响应（看门狗触发）：不必重试，快速失败
+		}
 		if (e.contains("http 429") || e.contains("rate limit") || e.contains("too many requests")) {
 			return true;
 		}

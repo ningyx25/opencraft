@@ -1,6 +1,8 @@
 package com.swaydy.opencraft.ai;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.swaydy.opencraft.OpenCraftMod;
 import com.swaydy.opencraft.agent.AgentRegistry;
 import com.swaydy.opencraft.agent.AgentRuntime;
@@ -11,6 +13,7 @@ import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.ModEntities;
 import com.swaydy.opencraft.net.AiConfigPayloads;
+import com.swaydy.opencraft.net.AssistantStreamPayloads;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.core.BlockPos;
@@ -25,12 +28,18 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -85,6 +94,7 @@ public final class AiCompanionService {
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
 			HISTORY.clear();
 			RECENT_SUMMONS.clear();
+			STREAM_SESSIONS.clear();
 			EXECUTOR.shutdown();
 			AgentRuntime.shutdown();
 		});
@@ -283,16 +293,17 @@ public final class AiCompanionService {
 			return;
 		}
 		List<LlmClient.Message> messages = List.of(
-				LlmClient.Message.system(AgentRuntime.buildPersona(
-						config, AgentRegistry.resolveAgent(config))),
 				LlmClient.Message.user("（你刚刚被玩家召唤出来。请用一两句话热情地打个招呼，简单介绍自己，"
 						+ "并告诉玩家可以用 /opencraft ask 和他聊天；不用操作世界。）"));
 		LlmClient.Request request = new LlmClient.Request(
 				config.baseUrl,
 				config.apiKey,
 				config.model,
-				Math.min(0.9, config.temperature),
+				AgentRuntime.buildPersona(config, AgentRegistry.resolveAgent(config)),
 				messages,
+				null,
+				Math.min(0.9, config.temperature),
+				null, null,
 				config.timeoutSeconds);
 		// 流式打招呼：增量显示在召唤者的 action bar，结束后以助手名义广播完整问候
 		// （historyKey 传 null：问候语不写入对话记忆）
@@ -432,6 +443,41 @@ public final class AiCompanionService {
 		player.displayClientMessage(Component.literal(preview + "▍"), true);
 	}
 
+	// ------------------------------------------------------------------
+	// 世界内流式浮层（AssistantStreamPayloads）：所有入口的流式回复都上到这一个
+	// 浮层（多行、可换行、可见完整内容），按 sessionId 路由避免并发串扰
+	// ------------------------------------------------------------------
+
+	/** 每个玩家的流式会话号（递增分配；新的流 = 新会话，覆盖旧浮层内容）。 */
+	private static final Map<UUID, Integer> STREAM_SESSIONS = new ConcurrentHashMap<>();
+
+	/** 为该玩家的新一次流式会话分配一个递增的 sessionId（并发安全）。 */
+	public static int nextStreamSession(ServerPlayer player) {
+		return STREAM_SESSIONS.merge(player.getUUID(), 1, Integer::sum);
+	}
+
+	/** 把流式快照推到玩家的世界内浮层（旧会话的迟到包会被客户端按 sessionId 忽略）。 */
+	public static void streamOverlay(ServerPlayer player, int sessionId, String name, String snapshot) {
+		sendStreamPacket(player, new AssistantStreamPayloads.AssistantStreamPayload(
+				sessionId, name == null ? "" : name, snapshot == null ? "" : snapshot, false));
+	}
+
+	/** 该会话完成：把最终完整文本推到浮层并标记 done（客户端去光标并开始淡出）。 */
+	public static void finishOverlay(ServerPlayer player, int sessionId, String name, String full) {
+		sendStreamPacket(player, new AssistantStreamPayloads.AssistantStreamPayload(
+				sessionId, name == null ? "" : name, full == null ? "" : full, true));
+	}
+
+	private static void sendStreamPacket(ServerPlayer player,
+	                                     AssistantStreamPayloads.AssistantStreamPayload payload) {
+		try {
+			ServerPlayNetworking.send(player, payload);
+		} catch (Exception e) {
+			// mock 连接发送会失败：静默
+			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送流式浮层包失败（可能是模拟连接）: {}", e.toString());
+		}
+	}
+
 	/** 给配置界面聊天窗口发送一个 S2C 事件（模拟连接发送失败时静默忽略）。 */
 	public static void sendGuiEvent(ServerPlayer player, BlockPos guiBlockPos,
 	                                 ResourceKey<Level> guiDimension, String kind, Component text) {
@@ -491,7 +537,16 @@ public final class AiCompanionService {
 	/** 某方块（即其绑定助手）对话历史的 JSON 快照（[{role, content}, ...]）。 */
 	public static String historyJson(GlobalPos block) {
 		List<LlmClient.Message> list = block == null ? null : HISTORY.get(block);
-		return GSON.toJson(list == null ? List.of() : list);
+		JsonArray arr = new JsonArray();
+		if (list != null) {
+			for (LlmClient.Message m : list) {
+				JsonObject o = new JsonObject();
+				o.addProperty("role", m.role().name().toLowerCase(Locale.ROOT));
+				o.addProperty("content", m.text());
+				arr.add(o);
+			}
+		}
+		return GSON.toJson(arr);
 	}
 
 	// ------------------------------------------------------------------
@@ -506,46 +561,50 @@ public final class AiCompanionService {
 	private static void streamPlain(ServerPlayer player, AiAssistant assistant,
 	                                LlmClient.Request request) {
 		MinecraftServer server = player.level().getServer();
+		int sessionId = nextStreamSession(player);
+		final String chatName = safeChatName(assistant);
 		StringBuilder buffer = new StringBuilder();
 		long[] lastFlushAt = {0L};
 		int[] revealed = {0};
 
-		LlmClient.StreamListener listener = new LlmClient.StreamListener() {
+		LlmClient.stream(request, new LlmClient.ChunkSink() {
 			@Override
-			public void onDelta(String delta) {
-				if (delta == null || delta.isEmpty()) {
-					return;
-				}
-				buffer.append(delta);
-				maybeReveal(false);
-			}
-
-			@Override
-			public void onDone() {
-				String full = buffer.toString();
-				// 剩余文本 reveal + 广播交给独立异步任务（不阻塞 SSE 读取线程）
-				CompletableFuture.runAsync(() -> {
-					while (revealed[0] < buffer.length()) {
-						maybeReveal(true);
-						if (revealed[0] >= buffer.length()) {
-							break;
-						}
-						try {
-							Thread.sleep(FLUSH_INTERVAL_MS);
-						} catch (InterruptedException e) {
-							Thread.currentThread().interrupt();
-							break;
-						}
+			public void onChunk(LlmClient.Chunk chunk) {
+				if (chunk instanceof LlmClient.TextDelta td) {
+					if (td.text() == null || td.text().isEmpty()) {
+						return;
 					}
-					runOnServer(server, () -> finishStreamReply(player, assistant, full));
-				}, EXECUTOR);
-			}
-
-			@Override
-			public void onError(String error) {
-				String reason = error == null || error.isBlank() ? "未知错误" : error;
-				runOnServer(server, () -> player.sendSystemMessage(
-						Component.translatable("command.opencraft.ask.error", reason)));
+					buffer.append(td.text());
+					maybeReveal(false);
+				} else if (chunk instanceof LlmClient.Finish f) {
+					if (f.ok()) {
+						String full = buffer.toString();
+						// 剩余文本 reveal + 广播交给独立异步任务（不阻塞 SSE 读取线程）
+						CompletableFuture.runAsync(() -> {
+							while (revealed[0] < buffer.length()) {
+								maybeReveal(true);
+								if (revealed[0] >= buffer.length()) {
+									break;
+								}
+								try {
+									Thread.sleep(FLUSH_INTERVAL_MS);
+								} catch (InterruptedException e) {
+									Thread.currentThread().interrupt();
+									break;
+								}
+							}
+							// 兜底：保证浮层一定收到 done（含空回复/已由收尾 reveal 标记 done 的重复发）
+							finishOverlay(player, sessionId, chatName, full);
+							runOnServer(server, () -> finishStreamReply(player, assistant, full));
+						}, EXECUTOR);
+					} else {
+						String reason = f.failure() == null ? "未知错误"
+								: (f.failure().message() == null || f.failure().message().isBlank()
+										? f.failure().code() : f.failure().message());
+						runOnServer(server, () -> player.sendSystemMessage(
+								Component.translatable("command.opencraft.ask.error", reason)));
+					}
+				}
 			}
 
 			private void maybeReveal(boolean finalizing) {
@@ -565,10 +624,23 @@ public final class AiCompanionService {
 				revealed[0] = target;
 				lastFlushAt[0] = now;
 				String snapshot = buffer.substring(0, target);
-				runOnServer(server, () -> showStreamingText(player, snapshot));
+				boolean last = finalizing && target >= len;
+				streamOverlay(player, sessionId, chatName, snapshot);
+				if (last) {
+					finishOverlay(player, sessionId, chatName, snapshot);
+				}
 			}
-		};
-		CompletableFuture.runAsync(() -> LlmClient.stream(request, listener), EXECUTOR);
+		});
+	}
+
+	/** 浮层/状态用的助手名（配置名；读不到时回退空串）。 */
+	private static String safeChatName(AiAssistant assistant) {
+		try {
+			String n = assistant == null ? "" : assistant.getConfig().effectiveName();
+			return n == null ? "" : n;
+		} catch (Exception e) {
+			return "";
+		}
 	}
 
 	/** 把任务调度回服务端线程执行；服务器已停止时静默丢弃并记日志。 */
@@ -608,42 +680,233 @@ public final class AiCompanionService {
 		}
 	}
 
-	/** 构造“玩家当前游戏状态”上下文，帮助模型给出贴合游戏的回答。 */
+	/**
+	 * 构造“玩家当前游戏状态 + 环境”上下文，帮助模型给出贴合游戏的回答。
+	 * 每轮请求都会重建（见 {@code AgentRuntime.runRound} 对 messages[0] 的刷新），
+	 * 因此位置/天气/装备等都是最新的，不是提问那一刻的静态快照。
+	 */
 	public static String buildGameContext(ServerPlayer player) {
 		try {
-			net.minecraft.world.level.Level level = player.level();
+			Level level = player.level();
 			long dayTime = level.getDayTime();
 			long day = dayTime / 24000 + 1;
 			long timeOfDay = dayTime % 24000;
-			String phase = timeOfDay < 13000 ? "白天" : "夜晚";
+			int hour = (int) ((timeOfDay / 1000 + 6) % 24);
+			int minute = (int) ((timeOfDay % 1000) / 100 * 6);
 			BlockPos pos = player.blockPosition();
+			String phase = phaseOfTime(timeOfDay);
 			ItemStack mainHand = player.getMainHandItem();
 			String itemName = mainHand.isEmpty() ? "空手" : mainHand.getHoverName().getString();
+
+			// 身体状态：水下/氧气/着火
+			String body = "正常";
+			if (player.isUnderWater()) {
+				body = "水下(氧气 " + player.getAirSupply() + "/" + player.getMaxAirSupply() + ")";
+			} else if (player.getAirSupply() < player.getMaxAirSupply()) {
+				body = "氧气 " + player.getAirSupply() + "/" + player.getMaxAirSupply();
+			}
+			if (player.isOnFire()) {
+				body += "，着火";
+			}
 
 			return String.format("""
 					【玩家当前游戏状态】
 					玩家名: %s
 					维度: %s
-					坐标: x=%d, y=%d, z=%d
-					时间: 第 %d 天（%s）
-					生命值: %.0f/20
-					饥饿值: %d/20
-					经验等级: %d
-					游戏模式: %s
+					坐标: x=%d, y=%d, z=%d（朝向 %s）
+					%s
+					时间: 第 %d 天 %02d:%02d（%s）
+					生命值: %.0f/20 | 饥饿值: %d/20 | 经验等级: %d | 游戏模式: %s
+					身体: %s
+					状态效果: %s
+					装备: %s
+					注视方块: %s
 					主手物品: %s
 					""",
 					player.getName().getString(),
 					level.dimension().identifier(),
-					pos.getX(), pos.getY(), pos.getZ(),
-					day, phase,
+					pos.getX(), pos.getY(), pos.getZ(), facingName(player.getYRot()),
+					environmentCapsule(level, pos, 16),
+					day, hour, minute, phase,
 					player.getHealth(),
 					player.getFoodData().getFoodLevel(),
 					player.experienceLevel,
 					player.gameMode.getGameModeForPlayer().name(),
+					body,
+					effectsSummary(player),
+					equipmentSummary(player),
+					lookingAt(level, player),
 					itemName);
 		} catch (Exception e) {
 			return "【玩家当前游戏状态】无法获取";
 		}
+	}
+
+	/** 一天内时刻（24000 tick）→ 时段名。 */
+	private static String phaseOfTime(long timeOfDay) {
+		if (timeOfDay < 6000) {
+			return "清晨";
+		}
+		if (timeOfDay < 11000) {
+			return "白天";
+		}
+		if (timeOfDay < 13000) {
+			return "黄昏";
+		}
+		if (timeOfDay < 18000) {
+			return "夜晚";
+		}
+		return "深夜";
+	}
+
+	/** 面向方位：yaw → 东南西北（双形态通用显示）。 */
+	public static String facingName(float yaw) {
+		int dir = Math.floorMod(Math.round(yaw / 90.0F), 4);
+		return switch (dir) {
+			case 0 -> "南(+Z)";
+			case 1 -> "西(-X)";
+			case 2 -> "北(-Z)";
+			default -> "东(+X)";
+		};
+	}
+
+	/** 装备摘要（36 主背包之后的装备/副手/身体/坐骑鞍槽位所戴物品）；无装备返回「无」。 */
+	static String equipmentSummary(ServerPlayer player) {
+		net.minecraft.world.entity.player.Inventory inv = player.getInventory();
+		StringBuilder sb = new StringBuilder();
+		for (int i = 36; i < inv.getContainerSize(); i++) {
+			ItemStack s = inv.getItem(i);
+			if (s.isEmpty()) {
+				continue;
+			}
+			if (sb.length() > 0) {
+				sb.append(", ");
+			}
+			sb.append(shortName(s.getItem().getDescriptionId())).append("(").append(equipmentSlotLabel(i)).append(")");
+		}
+		return sb.length() == 0 ? "无" : sb.toString();
+	}
+
+	private static String equipmentSlotLabel(int index) {
+		return switch (index) {
+			case 36 -> "脚";
+			case 37 -> "腿";
+			case 38 -> "胸";
+			case 39 -> "头";
+			case 40 -> "副手";
+			case 41 -> "身体";
+			case 42 -> "坐骑鞍";
+			default -> "装备";
+		};
+	}
+
+	/** 状态效果摘要（最多 3 个，含 等级(时长s)）；无效果返回「无」。 */
+	static String effectsSummary(ServerPlayer player) {
+		List<MobEffectInstance> effects = new ArrayList<>(player.getActiveEffects());
+		if (effects.isEmpty()) {
+			return "无";
+		}
+		StringBuilder sb = new StringBuilder();
+		int n = 0;
+		for (MobEffectInstance e : effects) {
+			if (n >= 3) {
+				sb.append("…");
+				break;
+			}
+			if (n > 0) {
+				sb.append(", ");
+			}
+			sb.append(shortName(e.getEffect().value().getDescriptionId()));
+			int amp = e.getAmplifier();
+			if (amp > 0) {
+				sb.append(romanNumeral(amp + 1));
+			}
+			sb.append("(").append(Math.max(1, e.getDuration() / 20)).append("s)");
+			n++;
+		}
+		return sb.toString();
+	}
+
+	private static String romanNumeral(int x) {
+		return switch (x) {
+			case 2 -> "II";
+			case 3 -> "III";
+			case 4 -> "IV";
+			default -> "";
+		};
+	}
+
+	/** 玩家视线命中的方块（10 格射线，含距离）；未命中返回「无」。 */
+	static String lookingAt(Level level, ServerPlayer player) {
+		try {
+			Vec3 eye = player.getEyePosition();
+			Vec3 look = player.getLookAngle();
+			BlockHitResult hit = level.clip(new ClipContext(
+					eye, eye.add(look.scale(10.0)),
+					ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+			if (hit.getType() != net.minecraft.world.phys.HitResult.Type.BLOCK) {
+				return "无";
+			}
+			double dist = Math.round(player.position().distanceTo(hit.getLocation()) * 10.0) / 10.0;
+			return shortName(level.getBlockState(hit.getBlockPos()).getBlock().getDescriptionId())
+					+ "（" + dist + " 格远）";
+		} catch (Exception e) {
+			return "无";
+		}
+	}
+
+	/**
+	 * 紧凑环境摘要（群系/气候/降水/天气/亮度/脚下方块/附近怪物）：
+	 * {@code 群系: 平原（温和/有降水） | 天气: 晴朗 | 亮度: 大晴 | 脚下: grass_block | 附近怪物: 0}。
+	 * 玩家状态与助手自身状态共用，不重复实现。
+	 *
+	 * @param hostileRadius 附近怪物统计半径；<1 表示不统计
+	 */
+	public static String environmentCapsule(Level level, BlockPos pos, int hostileRadius) {
+		try {
+			Holder<Biome> biome = level.getBiome(pos);
+			StringBuilder sb = new StringBuilder();
+			float temp = biome.value().getBaseTemperature();
+			String climate = temp < 0.2 ? "寒冷" : temp > 0.9 ? "炎热" : "温和";
+			String precip = biome.value().hasPrecipitation() ? "有降水" : "无降水";
+			sb.append("环境: 群系 ").append(biomeName(biome))
+					.append("（").append(climate).append("/").append(precip).append("）");
+			sb.append(" | 天气: ").append(level.isThundering() ? "雷暴"
+					: level.isRaining() ? "下雨" : "晴朗");
+			int sky = level.getSkyDarken();
+			sb.append(" | 亮度: ").append(sky == 0 ? "大晴"
+					: sky >= 15 ? "全黑" : "偏暗(" + sky + ")");
+			sb.append(" | 脚下: ")
+					.append(shortName(level.getBlockState(pos.below()).getBlock().getDescriptionId()));
+			if (hostileRadius > 0) {
+				int hostiles = level.getEntities((net.minecraft.world.entity.Entity) null,
+						new AABB(pos).inflate(hostileRadius),
+						e -> e instanceof net.minecraft.world.entity.monster.Monster).size();
+				sb.append(" | 附近怪物: ").append(hostiles);
+			}
+			return sb.toString();
+		} catch (Exception e) {
+			return "环境无法获取";
+		}
+	}
+
+	private static String biomeName(Holder<Biome> biome) {
+		try {
+			return biome.unwrapKey()
+					.map(k -> k.identifier().getPath().replace('_', ' '))
+					.orElse(biome.getRegisteredName());
+		} catch (Exception e) {
+			return "未知";
+		}
+	}
+
+	/** 描述键后缀短名（block.minecraft.stone → stone）；null/异常返回 ?。 */
+	public static String shortName(String key) {
+		if (key == null) {
+			return "?";
+		}
+		int idx = key.lastIndexOf('.');
+		return idx < 0 ? key : key.substring(idx + 1);
 	}
 
 	/**
@@ -710,6 +973,49 @@ public final class AiCompanionService {
 			try {
 				Identifier identifier = Identifier.parse(candidate);
 				var opt = BuiltInRegistries.ITEM.get(identifier);
+				if (!opt.isEmpty()) {
+					return opt.get();
+				}
+			} catch (Exception ignored) {
+				// 非法 ID 形状：试下一个候选
+			}
+		}
+		return null;
+	}
+
+	/** 解析方块：完整 id / 短名 / 描述名后缀 → {@code BuiltInRegistries.BLOCK}；失败返回 null。 */
+	public static Holder<net.minecraft.world.level.block.Block> resolveBlock(String blockId) {
+		if (blockId == null || blockId.isBlank()) {
+			return null;
+		}
+		String s = blockId.trim().toLowerCase(java.util.Locale.ROOT);
+		Holder<net.minecraft.world.level.block.Block> resolved = tryResolveBlock(s);
+		if (resolved != null) {
+			return resolved;
+		}
+		// 描述名兜底：block.minecraft.oak_log → oak_log
+		int dot = s.lastIndexOf('.');
+		if (dot >= 0 && dot < s.length() - 1) {
+			resolved = tryResolveBlock(s.substring(dot + 1));
+		}
+		return resolved;
+	}
+
+	/** 解析单个候选：裸名先原样试、再补 minecraft: / opencraft: 前缀；全部失败返回 null。 */
+	private static Holder<net.minecraft.world.level.block.Block> tryResolveBlock(String id) {
+		if (id == null || id.isBlank()) {
+			return null;
+		}
+		java.util.List<String> candidates = new java.util.ArrayList<>(3);
+		candidates.add(id);
+		if (!id.contains(":")) {
+			candidates.add("minecraft:" + id);
+			candidates.add(OpenCraftMod.MOD_ID + ":" + id);
+		}
+		for (String candidate : candidates) {
+			try {
+				Identifier identifier = Identifier.parse(candidate);
+				var opt = BuiltInRegistries.BLOCK.get(identifier);
 				if (!opt.isEmpty()) {
 					return opt.get();
 				}

@@ -1,11 +1,12 @@
 package com.swaydy.opencraft.assistant.player;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.MoverType;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-
 /**
  * 玩家形态助手的移动控制器（bot 式移动）。
  *
@@ -20,6 +21,9 @@ import net.minecraft.world.phys.Vec3;
  *   水平切片与方块碰撞（{@link #hasGroundBelow}）实时判定是否真的着地；
  * - <b>移动时朝向目标</b>：同步设置 yRot/yHeadRot/yBodyRot（头/身/脚），
  *   用 {@link Mth#rotateTowards} 平滑转向，bot 走路才像正常玩家而不是侧滑；
+ * - <b>跳跃</b>：显式指令 {@link #jump()}（模型 player_jump）与主动爬台阶
+ *   （{@link #climbableStepAhead}）都会把 vy 设为跳跃初速度；2 格以上高墙不浪费
+ *   跳（交给传送回退）；
  * - 跟随（follow）与手动指令（goto）共用本控制器：手动指令置 {@code manual=true}，
  *   跟随逻辑不会覆盖手动目标；{@link #stop()} 清除全部。
  */
@@ -51,6 +55,8 @@ public final class PlayerMovementController {
 	private int stuckTicks = 0;
 	private Runnable onArrived;
 	private boolean arrivedFired = false;
+	/** 本控制器所属的机器人（由每 tick 刷新；供显式跳跃判定着地/飞行）。 */
+	private AiAssistantPlayer owner;
 
 	/** 下达移动目标（跟随用）。 */
 	public void moveTo(Vec3 target, double speed) {
@@ -63,6 +69,10 @@ public final class PlayerMovementController {
 		this.speed = Math.max(0.05, speed);
 		this.manual = manual;
 		this.arrivedFired = false;
+		com.swaydy.opencraft.debug.DebugLog.log("movement",
+				"移动指令{}下达：目标 ({},{},{}) 速度 {}",
+				manual ? "（手动）" : "", (int) target.x, (int) target.y, (int) target.z,
+				speed);
 	}
 
 	/** 到达目标时执行一次的动作（如“走到方块旁再破坏”）；到达后自动清除。 */
@@ -80,10 +90,34 @@ public final class PlayerMovementController {
 
 	/** 停止移动（同时清掉待执行的动作与手动标记）。 */
 	public void stop() {
+		if (this.target != null) {
+			com.swaydy.opencraft.debug.DebugLog.log("movement",
+					"移动已停止（原目标 ({},{},{})）",
+					(int) this.target.x, (int) this.target.y, (int) this.target.z);
+		}
 		this.target = null;
 		this.onArrived = null;
 		this.arrivedFired = false;
 		this.manual = false;
+	}
+
+	/**
+	 * 命令机器人跳一下（显式跳跃，模型通过 player_jump 触发）。原地直跳；
+	 * 配合移动目标（player_goto/player_mine 等）会保持前进方向，形成助跑跳，
+	 * 可越过 1 格台阶/小沟。着地时才有效；空中/飞行中拒绝（不连跳、不加力）。
+	 *
+	 * @return 是否真的起跳
+	 */
+	public boolean jump() {
+		if (owner == null || owner.isRemoved() || owner.getAbilities().flying) {
+			return false;
+		}
+		if (vy > 0.01 || !hasGroundBelow(owner)) {
+			return false; // 已在上升/半空：不连续加力
+		}
+		vy = JUMP_SPEED;
+		com.swaydy.opencraft.debug.DebugLog.log("movement", "显式跳跃指令（vy={}）", JUMP_SPEED);
+		return true;
 	}
 
 	/** 每 tick 驱动：重力/跳跃/前进/朝向/传送回退。在服务端线程调用。 */
@@ -91,17 +125,21 @@ public final class PlayerMovementController {
 		if (player == null || player.isRemoved()) {
 			return;
 		}
+		this.owner = player;
 		Vec3 pos = player.position();
 		boolean flying = player.getAbilities().flying;
 		// 着地判定：实时查脚下方块，不依赖可能陈旧的 onGround 标志（见类注释）
 		boolean grounded = hasGroundBelow(player);
-		// 重力（飞行/着地时不累计；未着地时持续加速下落，封顶）
+		// 重力：未着地时加速下落（封顶）；着地时——若正带上升速度（刚起跳/主动爬台阶）
+		// 则保留 vy 让它生效，否则清零贴地。
+		// ⚠ 关键：不能无条件在着地时 vy=0，否则跳跃初速度会在下一 tick 被抹掉、永远跳不起来
+		// （这正是旧版“卡住反射跳”从未真正起跳的原因）。
 		if (!flying && !grounded) {
 			vy -= GRAVITY;
 			if (vy < MAX_FALL_SPEED) {
 				vy = MAX_FALL_SPEED;
 			}
-		} else {
+		} else if (flying || vy <= 0.0) {
 			vy = 0.0;
 		}
 		if (target == null) {
@@ -117,12 +155,17 @@ public final class PlayerMovementController {
 		if (horiz <= 1.0) {
 			// 到达：先执行“到达动作”（如挖掘），否则只停在这里
 			if (onArrived != null && !arrivedFired) {
+				com.swaydy.opencraft.debug.DebugLog.log("movement",
+						"到达目标 ({},{},{})，开始执行到达动作",
+						(int) pos.x, (int) pos.y, (int) pos.z);
 				arrivedFired = true;
 				Runnable act = onArrived;
 				onArrived = null;
 				target = null;
 				act.run();
 			} else {
+				com.swaydy.opencraft.debug.DebugLog.log("movement",
+						"到达目标 ({},{},{})", (int) pos.x, (int) pos.y, (int) pos.z);
 				target = null;
 			}
 			return;
@@ -130,6 +173,11 @@ public final class PlayerMovementController {
 		double step = Math.min(MAX_STEP * speed, horiz);
 		double mx = dx / horiz * step;
 		double mz = dz / horiz * step;
+		// 主动爬台阶：着地、未在上升、前方是 1 格实心台阶（其正上方空气）→ 提前起跳
+		// （行进方向、距目标仍远时也会跳，不等“卡住”才反射——更像真玩家自己跃上台阶）
+		if (grounded && !flying && vy <= 0.01 && climbableStepAhead(player, mx, mz)) {
+			vy = JUMP_SPEED;
+		}
 		double my = flying ? 0.0 : vy;
 		Vec3 before = player.position();
 		player.move(MoverType.PLAYER, new Vec3(mx, my, mz));
@@ -143,14 +191,21 @@ public final class PlayerMovementController {
 		double moved = Math.hypot(after.x - before.x, after.z - before.z);
 		if (moved < step * 0.25) {
 			stuckTicks++;
-			if (grounded && !flying) {
-				vy = JUMP_SPEED; // 被挡：跳一下尝试越过 1 格障碍
+			// 被挡：仅当前方是 1 格台阶时跳（主动探测漏掉时的兜底）；
+			// 2 格以上高墙不浪费跳（继续卡住最终触发传送回退）
+			if (grounded && !flying && vy <= 0.01
+					&& climbableStepAhead(player, mx, mz)) {
+				vy = JUMP_SPEED;
 			}
 		} else {
 			stuckTicks = 0;
 		}
 		if (stuckTicks > STUCK_TELEPORT_TICKS) {
 			// 长时间卡住（悬崖/水/墙）：传送靠近目标，避免永远卡住
+			com.swaydy.opencraft.debug.DebugLog.log("movement",
+					"玩家形态助手卡住 {} tick，传送到目标 ({},{},{})（原位置 ({},{},{})）",
+					STUCK_TELEPORT_TICKS, (int) target.x, (int) target.y, (int) target.z,
+					(int) pos.x, (int) pos.y, (int) pos.z);
 			player.teleportTo(target.x, target.y, target.z);
 			stuckTicks = 0;
 		}
@@ -169,6 +224,35 @@ public final class PlayerMovementController {
 	private static float turnTowards(float current, float target) {
 		float diff = Mth.wrapDegrees(target - current);
 		return Mth.wrapDegrees(current + Mth.clamp(diff, -MAX_YAW_STEP, MAX_YAW_STEP));
+	}
+
+	/**
+	 * 判断移动方向前方是否是一个“1 格实心台阶”（可跳上去爬升）：取水平主方向
+	 * （|mx|≥|mz| 取 X 向，否则取 Z 向）上前方脚部那一格是实心整块方块、且其正上方
+	 * 是空气 → 是 1 格台阶，跳起来就能翻过去。2 格以上高墙（上方也是实心）返回 false，
+	 * 避免无效傻跳（交给卡住传送回退）。
+	 */
+	private static boolean climbableStepAhead(AiAssistantPlayer player, double mx, double mz) {
+		if (mx == 0 && mz == 0 || !(player.level() instanceof ServerLevel level)) {
+			return false;
+		}
+		int sx;
+		int sz;
+		if (Math.abs(mx) >= Math.abs(mz)) {
+			sx = mx > 0 ? 1 : -1;
+			sz = 0;
+		} else {
+			sx = 0;
+			sz = mz > 0 ? 1 : -1;
+		}
+		BlockPos pos = player.blockPosition();
+		BlockPos foot = pos.offset(sx, 0, sz);
+		BlockState footState = level.getBlockState(foot);
+		if (footState.isAir() || !footState.isCollisionShapeFullBlock(level, foot)) {
+			return false; // 前方不是实心整块（空隙/半砖/栅栏等，跳了也过不去或不需要跳）
+		}
+		BlockState headState = level.getBlockState(foot.above());
+		return headState.isAir();
 	}
 
 	/**

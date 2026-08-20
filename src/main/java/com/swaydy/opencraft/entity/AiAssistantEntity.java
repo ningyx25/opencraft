@@ -491,12 +491,17 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 			// 这也能清除刷怪蛋 / 旧存档遗留的无绑定助手（约 2 秒内）。
 			GlobalPos block = getConfigBlock();
 			if (block == null) {
+				com.swaydy.opencraft.debug.DebugLog.log("summon",
+						"安全网：无绑定方块的（实体形态）助手被清除（tick {}）", tickCount);
 				this.discard();
 				return;
 			}
 			if (this.level() instanceof ServerLevel level) {
 				ServerLevel target = level.getServer().getLevel(block.dimension());
 				if (target == null || !target.getBlockState(block.pos()).is(ModBlocks.AI_LOGO_BLOCK)) {
+					com.swaydy.opencraft.debug.DebugLog.log("summon",
+							"安全网：绑定方块 {} 已消失，（实体形态）助手被清除",
+							block.pos().toShortString());
 					this.discard();
 				}
 			}

@@ -14,7 +14,7 @@ import java.util.List;
  * player_goto/player_stop 移动、player_mine/player_place 用 ServerPlayerGameMode
  * 真实破坏/放置、player_craft 用玩家背包材料合成、player_hand_to_player 递给主人、
  * player_inventory/player_look 观察状态与环境；外加基础控制
- * （teleport_to_player 传送到主人身边）。maxToolRounds=8：多步任务预算。
+ * （teleport_to_player 传送到主人身边）。maxToolRounds=250：多步任务预算。
  */
 public final class GeneralAgent {
 	private GeneralAgent() {
@@ -44,6 +44,6 @@ public final class GeneralAgent {
 				"agent.opencraft.general",
 				List.of(new AssistantControlPlugin(), new PlayerActionsPlugin()),
 				PERSONA,
-				8);
+				250);
 	}
 }

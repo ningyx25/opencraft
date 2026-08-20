@@ -114,6 +114,7 @@ public class AiConfigScreen extends Screen {
 	private ChatLogWidget chatLogWidget;
 	private ChatInputBox chatInputBox;
 	private Button chatSendButton;
+	private Button chatInterruptButton;
 
 	// 布局与导航
 	private final HeaderAndFooterLayout layout = new HeaderAndFooterLayout(this);
@@ -285,6 +286,10 @@ public class AiConfigScreen extends Screen {
 		}
 		if (this.chatSendButton != null) {
 			this.chatSendButton.active = canChat();
+		}
+		if (this.chatInterruptButton != null) {
+			// 「中断」在“思考/工具轮次/流式回复”任一阶段可用（卡住时可中止并重新提问）
+			this.chatInterruptButton.active = this.chatWaiting || this.chatStreamingIndex >= 0;
 		}
 		if (this.chatLogWidget != null) {
 			this.chatLogWidget.refreshScroll();
@@ -465,6 +470,21 @@ public class AiConfigScreen extends Screen {
 		}
 		this.chatHistoryRequested = true;
 		ClientPlayNetworking.send(new AiConfigPayloads.AiConfigChatHistoryPayload(
+				this.blockPos, this.dimension));
+	}
+
+	/**
+	 * 「中断」按钮：中止本方块助手正在进行的任务（卡住时可立即重新提问）。
+	 * 本地先复位“等待”态（输入框立刻可用），服务器中断后回传 "reply"（已中断）上屏。
+	 */
+	private void sendInterrupt() {
+		if (!this.chatWaiting && this.chatStreamingIndex < 0) {
+			return;
+		}
+		this.chatWaiting = false;
+		removeChatThinkingPlaceholder();
+		this.chatStreamingIndex = -1;
+		ClientPlayNetworking.send(new AiConfigPayloads.AiConfigInterruptPayload(
 				this.blockPos, this.dimension));
 	}
 
@@ -707,6 +727,7 @@ public class AiConfigScreen extends Screen {
 		private final ChatLogWidget log;
 		private final ChatInputBox input;
 		private final Button sendButton;
+		private final Button interruptButton;
 
 		public ChatWindowTab() {
 			this.log = new ChatLogWidget(0, 0, 100, 100, AiConfigScreen.this);
@@ -722,9 +743,17 @@ public class AiConfigScreen extends Screen {
 					b -> AiConfigScreen.this.sendChatMessage())
 					.size(60, 20)
 					.build();
+			// 「中断」：只有正在等待回复时才可用（卡住时可立即中止并重新提问）
+			this.interruptButton = Button.builder(
+					Component.translatable("gui.opencraft.interrupt"),
+					b -> AiConfigScreen.this.sendInterrupt())
+					.size(46, 20)
+					.build();
+			this.interruptButton.active = false;
 			AiConfigScreen.this.chatLogWidget = this.log;
 			AiConfigScreen.this.chatInputBox = this.input;
 			AiConfigScreen.this.chatSendButton = this.sendButton;
+			AiConfigScreen.this.chatInterruptButton = this.interruptButton;
 		}
 
 		@Override
@@ -742,6 +771,7 @@ public class AiConfigScreen extends Screen {
 			consumer.accept(this.log);
 			consumer.accept(this.input);
 			consumer.accept(this.sendButton);
+			consumer.accept(this.interruptButton);
 		}
 
 		@Override
@@ -752,13 +782,19 @@ public class AiConfigScreen extends Screen {
 			int inputHeight = 20;
 			int inputY = bottom - inputHeight;
 			int sendWidth = 60;
+			int interruptWidth = 46;
 
 			this.sendButton.setPosition(right - sendWidth, inputY);
 			this.sendButton.setWidth(sendWidth);
 			this.sendButton.setHeight(inputHeight);
 
+			// 中断按钮紧挨发送按钮左侧
+			this.interruptButton.setPosition(right - sendWidth - interruptWidth - 6, inputY);
+			this.interruptButton.setWidth(interruptWidth);
+			this.interruptButton.setHeight(inputHeight);
+
 			this.input.setPosition(left, inputY);
-			this.input.setWidth(Math.max(0, right - sendWidth - 6 - left));
+			this.input.setWidth(Math.max(0, right - sendWidth - interruptWidth - 12 - left));
 			this.input.setHeight(inputHeight);
 
 			this.log.setPosition(left, rectangle.top() + 8);

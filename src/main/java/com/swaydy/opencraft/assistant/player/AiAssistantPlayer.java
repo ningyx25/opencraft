@@ -277,6 +277,12 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 			output.putInt("OpenCraftY", configBlock.pos().getY());
 			output.putInt("OpenCraftZ", configBlock.pos().getZ());
 		}
+		com.swaydy.opencraft.debug.DebugLog.log("save",
+				"玩家形态助手存档写入（主人 {}, 绑定方块 {}, 背包物品 {} 种）",
+				ownerUuid == null ? "无" : ownerUuid.toString().substring(0, 8),
+				configBlock == null ? "无" : configBlock.pos().toShortString(),
+				getInventory().getNonEquipmentItems().stream()
+						.filter(s -> !s.isEmpty()).count());
 	}
 
 	@Override
@@ -303,6 +309,12 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 				this.configBlock = null;
 			}
 		}
+		com.swaydy.opencraft.debug.DebugLog.log("save",
+				"玩家形态助手存档读回（主人 {}, 绑定方块 {}, 背包物品 {} 种）",
+				ownerUuid == null ? "无" : ownerUuid.toString().substring(0, 8),
+				configBlock == null ? "无" : configBlock.pos().toShortString(),
+				getInventory().getNonEquipmentItems().stream()
+						.filter(s -> !s.isEmpty()).count());
 	}
 
 	/** 供 PlayerAssistantService / 插件判断绑定方块是否还在。 */

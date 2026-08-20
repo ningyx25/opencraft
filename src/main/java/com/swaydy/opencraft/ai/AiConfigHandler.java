@@ -184,6 +184,26 @@ public final class AiConfigHandler {
 		AiCompanionService.askGui(player, assistant, text, pos, dimension);
 	}
 
+	/** 配置界面聊天窗口「中断」按钮：中断本方块助手正在进行的任务（服务端线程）。 */
+	public static void interruptWithBlock(ServerPlayer player, BlockPos pos, ResourceKey<Level> dimension) {
+		AiLogoBlockEntity blockEntity = findBlock(player, pos, dimension);
+		if (blockEntity == null) {
+			return;
+		}
+		ServerLevel level = player.level().getServer().getLevel(dimension);
+		GlobalPos bindPos = GlobalPos.of(dimension, pos);
+		AiAssistant assistant = level == null ? null : AssistantFacade.findBoundTo(level, bindPos);
+		if (assistant == null) {
+			sendChatError(player, pos, dimension, "command.opencraft.interrupt.none");
+			return;
+		}
+		if (!com.swaydy.opencraft.agent.AgentRuntime.interrupt(bindPos)) {
+			sendChatError(player, pos, dimension, "command.opencraft.interrupt.none");
+			return;
+		}
+		// AgentRuntime.interrupt 已向窗口发 "reply"（已中断）事件并清理浮层
+	}
+
 	/** 配置界面聊天窗口：把本方块助手的对话历史以 "history" 事件回传（用于打开时填充）。 */
 	public static void sendChatHistory(ServerPlayer player, BlockPos pos, ResourceKey<Level> dimension) {
 		AiLogoBlockEntity blockEntity = findBlock(player, pos, dimension);

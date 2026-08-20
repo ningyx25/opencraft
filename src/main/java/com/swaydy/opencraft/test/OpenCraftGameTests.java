@@ -2046,4 +2046,254 @@ public class OpenCraftGameTests {
 					helper.succeed();
 				});
 	}
+
+	/**
+	 * 验证玩家形态助手的跳跃能力（PlayerMovementController）：
+	 * 1. 显式 jump() 指令会让 bot 真正跳起（Y 明显升高）再落回地面（重力正常）；
+	 * 2. 移动遇到 1 格高台阶时会**主动跳上**（远早于 60 tick 的“卡住传送”回退，
+	 *    用 tick 预算区分主动爬台阶 vs 传送回退），爬上高层平台并到达目标点。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 300)
+	public void playerMovementJumpAndClimb(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		// 平地平台（方块在相对 y=0，顶面 = playerPos.y-1，bot 会落在其上）
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		// 高层平台（方块在相对 y=1，顶面 = playerPos.y）：从西面（相对 x=5）向东延伸到 x=8，
+		// 构成一个 1 格高的台阶——bot 必须跳上才能到达上面的目标点
+		for (int dx = 5; dx <= 8; dx++) {
+			for (int dz = 2; dz <= 6; dz++) {
+				helper.setBlock(new BlockPos(dx, 1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(player.level().dimension(), helper.absolutePos(blockPos));
+
+		// 高层平台上的目标点（相对 x=7.5 y=2 z=4.5；站在高层顶面 = playerPos.y）
+		net.minecraft.world.phys.Vec3 target = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(7.5, 2, 4.5));
+		final double[] startY = {0.0};
+		final long[] climbStartTick = {0};
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							(com.swaydy.opencraft.assistant.player.AiAssistantPlayer)
+									AiCompanionService.summonFor(player, bindPos);
+					if (bot == null) {
+						throw new AssertionError("召唤玩家形态助手失败");
+					}
+					bot.teleportTo(playerPos.x, playerPos.y, playerPos.z); // 到平台中央，等它落稳
+				})
+				.thenIdle(20)
+				.thenExecute(() -> {
+					// 1) 显式跳跃：应成功且先落稳在平台上（y ≈ playerPos.y-1）
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("助手不应消失");
+					}
+					if (Math.abs(bot.getY() - (playerPos.y - 1.0)) > 0.6) {
+						throw new AssertionError("bot 应先落在平台上（y≈" + (playerPos.y - 1) + "），实际 y=" + bot.getY());
+					}
+					startY[0] = bot.getY();
+					if (!bot.movement().jump()) {
+						throw new AssertionError("显式 jump() 应成功（着地时）");
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 2) 跳起：Y 明显高于起跳点
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("助手不存在"),
+								(int) helper.getTick());
+					}
+					if (bot.getY() - startY[0] < 0.35) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待 bot 跳起（当前 y=" + bot.getY() + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 3) 落回地面：Y 回到起跳点附近（重力正常、没悬空）
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("助手不存在"),
+								(int) helper.getTick());
+					}
+					if (bot.getY() > startY[0] + 0.35) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待 bot 落回地面（当前 y=" + bot.getY() + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 4) 走到 1 格台阶前：先放回地面，命令前往高层平台上的目标
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("助手不应消失");
+					}
+					bot.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+					bot.setYRot(0.0F);
+					bot.setYHeadRot(0.0F);
+					bot.yBodyRot = 0.0F;
+					climbStartTick[0] = helper.getTick();
+					bot.movement().moveTo(target, 1.0, true);
+				})
+				.thenWaitUntil(() -> {
+					// 5) 主动爬台阶：Y 升到高层平台顶面（playerPos.y）附近。
+					//    必须在 60 tick“卡住传送”回退之前到达，否则说明没跳、是传送上去的
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("助手不存在"),
+								(int) helper.getTick());
+					}
+					long elapsed = helper.getTick() - climbStartTick[0];
+					if (elapsed > 55) {
+						throw new AssertionError("超过 55 tick 才到高层（已经 "
+								+ elapsed + " tick），疑似用了卡住传送回退而非主动跳上台阶");
+					}
+					if (bot.getY() < playerPos.y - 0.45) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待 bot 跳上 1 格台阶（当前 y=" + bot.getY() + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 6) 到达高层平台上的目标点
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("助手不存在"),
+								(int) helper.getTick());
+					}
+					double dHoriz = Math.hypot(bot.getX() - target.x, bot.getZ() - target.z);
+					if (dHoriz > 1.2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待 bot 到达高层目标点（水平距离 "
+												+ Math.round(dHoriz * 10) / 10.0 + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 7) 收尾：站在高层平台上、清理
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("助手不应消失");
+					}
+					if (Math.abs(bot.getY() - playerPos.y) > 0.6) {
+						throw new AssertionError("到达后应站在高层平台顶面（y≈" + playerPos.y
+								+ "），实际 y=" + bot.getY());
+					}
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bot);
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 验证中断交互（AgentRuntime.interrupt）：
+	 * 1. 提问后循环在跑时 interrupt() 能立即释放忙锁；
+	 * 2. 中断（或第一次已结束时）随后立刻再提问，不再被“正忙”拒绝，能收到第二条的回复。
+	 * 核心断言是「第二条提问一定被处理并得到回复」——这是忙锁已释放的确定性契约。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 300)
+	public void agentInterruptReleasesLoop(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(player.level().dimension(), helper.absolutePos(blockPos));
+		final boolean[] interrupted = {false};
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							(com.swaydy.opencraft.assistant.player.AiAssistantPlayer)
+									AiCompanionService.summonFor(player, bindPos);
+					if (bot == null) {
+						throw new AssertionError("召唤玩家形态助手失败");
+					}
+					// 第一条提问（命令模式，走真实 agentic loop）
+					AiCompanionService.ask(player, "帮我看一下周围。");
+				})
+				.thenIdle(1)
+				.thenExecute(() -> {
+					// 极短等待后尝试中断：mock 回复通常还没回来，loop 大概率还在跑。
+					// 即使已结束（interrupt=false），下面第二条提问仍须被接受——契约不受影响。
+					interrupted[0] = com.swaydy.opencraft.agent.AgentRuntime.interrupt(bindPos);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					// 第二条提问：必须被接受并得到回复（证明忙锁已释放、不再被“正忙”吞掉）
+					AiCompanionService.ask(player, "你好。");
+				})
+				.thenWaitUntil(() -> {
+					// 历史达到：2 条 user + ≥2 条 assistant（第一条的回复或“被中断”占位 + 第二条的回复）
+					java.util.List<com.swaydy.opencraft.ai.LlmClient.Message> h =
+							AiCompanionService.getHistory(bindPos);
+					long users = h.stream()
+							.filter(m -> m.role() == com.swaydy.opencraft.ai.LlmClient.Role.USER).count();
+					long assistants = h.stream()
+							.filter(m -> m.role() == com.swaydy.opencraft.ai.LlmClient.Role.ASSISTANT).count();
+					if (users < 2 || assistants < 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待第二条提问得到回复（user=" + users + " assistant=" + assistants + "）…"),
+								(int) helper.getTick());
+					}
+					if (interrupted[0]) {
+						com.swaydy.opencraft.debug.DebugLog.log("test",
+								"中断成功：首问被中止，第二条提问正常处理并回复");
+					}
+				})
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot != null) {
+						com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bot);
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
 }

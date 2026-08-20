@@ -138,6 +138,23 @@ public final class AiConfigPayloads {
 		}
 	}
 
+	/** 客户端 → 服务器：中断本方块助手正在进行的任务（聊天窗口「中断」按钮；卡住时可立即重新提问）。 */
+	public record AiConfigInterruptPayload(BlockPos pos, ResourceKey<Level> dimension)
+			implements CustomPacketPayload {
+		public static final CustomPacketPayload.Type<AiConfigInterruptPayload> TYPE =
+				new CustomPacketPayload.Type<>(OpenCraftMod.id("ai_config_interrupt"));
+		public static final StreamCodec<ByteBuf, AiConfigInterruptPayload> STREAM_CODEC =
+				StreamCodec.composite(
+						BlockPos.STREAM_CODEC, AiConfigInterruptPayload::pos,
+						DIMENSION_CODEC, AiConfigInterruptPayload::dimension,
+						AiConfigInterruptPayload::new);
+
+		@Override
+		public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
 	/**
 	 * 服务器 → 客户端：配置界面聊天窗口的事件。
 	 * kind 取值：

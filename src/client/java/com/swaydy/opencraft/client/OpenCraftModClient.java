@@ -4,11 +4,14 @@ import com.swaydy.opencraft.ai.AiConfigData;
 import com.swaydy.opencraft.client.gui.AiAssistantInteractScreen;
 import com.swaydy.opencraft.client.gui.AiConfigScreen;
 import com.swaydy.opencraft.client.render.AiAssistantRenderer;
+import com.swaydy.opencraft.client.render.AssistantStreamOverlay;
 import com.swaydy.opencraft.entity.ModEntities;
 import com.swaydy.opencraft.net.AiConfigPayloads;
 import com.swaydy.opencraft.net.AssistantPayloads;
+import com.swaydy.opencraft.net.AssistantStreamPayloads;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.entity.EntityRenderers;
 
@@ -64,5 +67,14 @@ public class OpenCraftModClient implements ClientModInitializer {
 						interact.handleChatEvent(payload.kind(), payload.text());
 					}
 				}));
+
+		// 世界内流式浮层：接收全部入口的流式回复快照（sessionId 路由，见 AssistantStreamOverlay）
+		ClientPlayNetworking.registerGlobalReceiver(
+				AssistantStreamPayloads.AssistantStreamPayload.TYPE,
+				(payload, context) -> context.client().execute(() -> AssistantStreamOverlay.update(
+						payload.sessionId(), payload.name(), payload.text(), payload.done())));
+
+		// 渲染世界内流式浮层（每次 HUD 渲染时）
+		HudRenderCallback.EVENT.register(AssistantStreamOverlay::render);
 	}
 }

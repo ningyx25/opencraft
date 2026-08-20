@@ -105,12 +105,38 @@ class AgentLoopGuardsTest {
 		assertTrue(LlmRetryPolicy.retryable("HttpTimeoutException: request timed out"), "超时可重试");
 		assertTrue(LlmRetryPolicy.retryable("ConnectException: Connection refused"), "连接失败可重试");
 		assertTrue(LlmRetryPolicy.retryable("IOException: stream closed"), "IO 错误可重试");
-		assertTrue(LlmRetryPolicy.retryable(null), "未知错误保守可重试");
+		assertTrue(LlmRetryPolicy.retryable((String) null), "未知错误保守可重试");
 		assertTrue(LlmRetryPolicy.retryable(""), "空错误保守可重试");
 		assertFalse(LlmRetryPolicy.retryable("HTTP 401: unauthorized"), "鉴权失败不可重试");
 		assertFalse(LlmRetryPolicy.retryable("HTTP 400: bad request"), "参数错误不可重试");
 		assertFalse(LlmRetryPolicy.retryable("无法解析响应 JSON: {bad"), "响应解析失败不可重试");
 		assertFalse(LlmRetryPolicy.retryable("响应中没有找到 choices"), "响应结构错误不可重试");
+		assertFalse(LlmRetryPolicy.retryable("request-stalled: 服务器在超过 15 秒内没有返回任何数据"),
+				"SSE 读取看门狗超时（服务端长时间无响应）不可重试，快速失败让玩家重问/中断");
+	}
+
+	@Test
+	void retryPolicyClassifiesCodes() {
+		// 生产路径按新客户端 LlmClient 的稳定错误码路由（与 dsh-llm-retry 默认可重试集一致）
+		assertTrue(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.EMPTY_RESPONSE),
+				"空响应（退化完成）可重试");
+		assertTrue(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.RATE_LIMIT), "限流可重试");
+		assertTrue(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.SERVER), "服务端错误可重试");
+		assertTrue(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.TIMEOUT), "超时可重试");
+		assertTrue(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.TRANSPORT), "传输错误可重试");
+		assertTrue(LlmRetryPolicy.retryableCode(null), "未知错误保守可重试");
+
+		assertFalse(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.STALLED),
+				"SSE 看门狗（连接后不吐数据）不可重试");
+		assertFalse(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.AUTH), "鉴权失败不可重试");
+		assertFalse(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.QUOTA), "配额耗尽不可重试");
+		assertFalse(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.INVALID_REQUEST),
+				"参数错误不可重试");
+		assertFalse(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.CONTEXT_WINDOW_EXCEEDED),
+				"上下文超限不可重试");
+		assertFalse(LlmRetryPolicy.retryableCode(com.swaydy.opencraft.ai.LlmClient.Codes.MALFORMED_RESPONSE),
+				"响应解析失败不可重试");
+		assertFalse(LlmRetryPolicy.retryableCode("HTTP_418"), "其它状态码不可重试");
 	}
 
 	@Test
@@ -218,5 +244,49 @@ class AgentLoopGuardsTest {
 				"{\"steps\":[{\"content\":\"  挖石头  \",\"status\":\"in_progress\"}]}").getAsJsonObject());
 		assertNotNull(plan);
 		assertTrue(plan.format().contains("挖石头"), "content 应被去除首尾空白");
+	}
+
+	// ------------------------------------------------------------------
+	// 5. StallGuard：连续纯观察触发提醒、真实动作重置、bumped 防重复
+	// ------------------------------------------------------------------
+
+	@Test
+	void stallGuardNudgesAfterRepeatedReadOnlyRounds() {
+		StallGuard guard = new StallGuard(3);
+		// 前两轮纯观察：不触发
+		assertNull(guard.observe(java.util.List.of("player_look"), false), "第 1 轮观察不应触发");
+		assertNull(guard.observe(java.util.List.of("player_look", "player_inventory"), false),
+				"第 2 轮观察不应触发");
+		assertEquals(2, guard.streak());
+		// 第三轮纯观察：触发提醒
+		String nudge = guard.observe(java.util.List.of("player_inventory"), false);
+		assertNotNull(nudge, "第 3 轮纯观察应触发停滞提醒");
+		assertTrue(nudge.contains("停滞提醒"), "提醒应包含停滞提示");
+	}
+
+	@Test
+	void stallGuardResetsOnStateChangingAction() {
+		StallGuard guard = new StallGuard(3);
+		guard.observe(java.util.List.of("player_look"), false);
+		guard.observe(java.util.List.of("player_look"), false);
+		// 出现真实动作（即使只是下达指令）：重置，不再累计
+		assertNull(guard.observe(java.util.List.of("player_goto"), true), "真实动作轮返回 null 并重置");
+		assertEquals(0, guard.streak(), "真实动作后停滞计数应归零");
+		// 重置后重新观察也能再次触发（bumped 已清除）
+		guard.observe(java.util.List.of("player_look"), false);
+		guard.observe(java.util.List.of("player_look"), false);
+		assertNotNull(guard.observe(java.util.List.of("player_look"), false),
+				"重置后再次连续观察应能再次触发");
+	}
+
+	@Test
+	void stallGuardOnlyBumpsOnceUntilReset() {
+		StallGuard guard = new StallGuard(2);
+		assertNull(guard.observe(java.util.List.of("player_look"), false));
+		assertNotNull(guard.observe(java.util.List.of("player_inventory"), false),
+				"第 2 轮应触发");
+		// 已触发后再观察：不再重复提醒（bumped 防刷）
+		assertNull(guard.observe(java.util.List.of("player_look"), false), "bumped 后不再重复提醒");
+		assertEquals(3, guard.streak(), "计数继续增长（便于日志）");
 	}
 }

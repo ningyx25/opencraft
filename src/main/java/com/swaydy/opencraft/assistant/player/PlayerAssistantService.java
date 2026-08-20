@@ -141,14 +141,22 @@ public final class PlayerAssistantService {
 		ServerLevel blockLevel = server.getLevel(block.dimension());
 		if (blockLevel == null || !blockLevel.getBlockState(block.pos()).is(ModBlocks.AI_LOGO_BLOCK)) {
 			OpenCraftMod.LOGGER.info("[OpenCraft] 拒绝召唤玩家形态助手：AI 徽标方块不存在或已被移除");
+			com.swaydy.opencraft.debug.DebugLog.log("summon",
+					"拒绝召唤玩家形态助手：AI 徽标方块不存在或已被移除（{}）",
+					block.pos().toShortString());
 			return null;
 		}
 		// 一方块一助手（跨形态）：已被实体形态助手绑定 → 拒绝
 		AiAssistantEntity entityBound = ModEntities.findAssistantBoundTo(blockLevel, block);
 		if (entityBound != null) {
 			if (owner.getUUID().equals(entityBound.getOwnerUuid())) {
+				com.swaydy.opencraft.debug.DebugLog.log("summon",
+						"拒绝召唤：{} 仍绑定实体形态助手（先送走旧形态才能切换）",
+						block.pos().toShortString());
 				return null; // 已是实体形态（需先送走实体形态才能切换）
 			}
+			com.swaydy.opencraft.debug.DebugLog.log("summon",
+					"拒绝召唤：{} 已被其他玩家的实体形态助手绑定", block.pos().toShortString());
 			return null; // 他人占用
 		}
 		// 幂等：已召唤自己的玩家形态助手 → 直接返回
@@ -166,10 +174,15 @@ public final class PlayerAssistantService {
 		AiAssistantPlayer inList = findInPlayerList(server, profile.id());
 		if (inList != null) {
 			if (owner.getUUID().equals(inList.getOwnerUuid())) {
+				com.swaydy.opencraft.debug.DebugLog.log("summon",
+						"重新进服：玩家形态助手（bot 名 {}）已在 PlayerList，直接复用（绑定方块 {}）",
+						profile.name(), block.pos().toShortString());
 				ACTIVE.put(block, inList);
 				BY_UUID.put(inList.getUUID(), block);
 				return inList;
 			}
+			com.swaydy.opencraft.debug.DebugLog.log("summon",
+					"拒绝召唤：PlayerList 中已有他人持有的 bot（{}）", profile.name());
 			return null;
 		}
 
@@ -181,12 +194,23 @@ public final class PlayerAssistantService {
 		// 载入旧存档（背包/装备/经验/绑定信息，best-effort）
 		try {
 			PlayerList playerList = server.getPlayerList();
-			playerList.loadPlayerData(player.nameAndId()).ifPresent(tag ->
-					player.load(TagValueInput.create(
-							net.minecraft.util.ProblemReporter.DISCARDING,
-							ownerLevel.registryAccess(), tag)));
+			java.util.Optional<net.minecraft.nbt.CompoundTag> saved =
+					playerList.loadPlayerData(player.nameAndId());
+			if (saved.isPresent()) {
+				player.load(TagValueInput.create(
+						net.minecraft.util.ProblemReporter.DISCARDING,
+						ownerLevel.registryAccess(), saved.get()));
+				com.swaydy.opencraft.debug.DebugLog.log("summon",
+						"玩家形态助手（{}）载入旧存档成功（含背包/装备）", profile.name());
+			} else {
+				com.swaydy.opencraft.debug.DebugLog.log("summon",
+						"玩家形态助手（{}）无旧存档，按新助手处理", profile.name());
+			}
 		} catch (Exception e) {
 			OpenCraftMod.LOGGER.debug("[OpenCraft] 载入玩家形态助手存档失败（按新助手处理）: {}", e.toString());
+			com.swaydy.opencraft.debug.DebugLog.log("summon",
+					"玩家形态助手（{}）载入旧存档失败，按新助手处理: {}",
+					profile.name(), e.toString());
 		}
 
 		// 摆一个安全出生点（主人旁边向上扫描），再正式进服
@@ -304,6 +328,9 @@ public final class PlayerAssistantService {
 		if (block == null || player.isBoundBlockGone()) {
 			// 无绑定 / 绑定方块已消失 → 送走并清空该方块记忆（与实体版安全网一致）
 			GlobalPos gone = block;
+			com.swaydy.opencraft.debug.DebugLog.log("summon",
+					"安全网：玩家形态助手绑定方块{}已消失，送走并清空记忆",
+					gone == null ? "（无绑定）" : gone.pos().toShortString());
 			if (gone != null) {
 				dismiss(gone);
 				AiCompanionService.resetHistory(gone);

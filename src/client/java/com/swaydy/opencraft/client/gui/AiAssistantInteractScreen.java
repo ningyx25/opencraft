@@ -47,6 +47,7 @@ public class AiAssistantInteractScreen extends Screen {
 
 	private EditBox chatBox;
 	private Button sendButton;
+	private Button interruptButton;
 
 	private final HeaderAndFooterLayout layout = new HeaderAndFooterLayout(this);
 
@@ -148,8 +149,15 @@ public class AiAssistantInteractScreen extends Screen {
 						Component.translatable("screen.opencraft.interact.send"), b -> sendChat())
 				.width(60)
 				.build();
+		// 「中断」：助手正在思考/流式回复时可用（卡住时可立即中止并重新提问）
+		this.interruptButton = Button.builder(
+						Component.translatable("gui.opencraft.interrupt"), b -> interruptChat())
+				.width(46)
+				.build();
+		this.interruptButton.active = false;
 		this.addRenderableWidget(this.chatBox);
 		this.addRenderableWidget(this.sendButton);
+		this.addRenderableWidget(this.interruptButton);
 
 		// 底部按钮栏（跟随/待命模式已整体移除，只保留送走与关闭）
 		LinearLayout footer = LinearLayout.horizontal().spacing(8);
@@ -180,10 +188,19 @@ public class AiAssistantInteractScreen extends Screen {
 		this.layout.arrangeElements();
 		// 输入行固定摆在底部按钮栏上方，给上方对话区留出空间
 		int inputY = this.height - this.layout.getFooterHeight() - 34;
-		int boxWidth = Math.max(120, this.width - 24 - 60 - 6);
+		int boxWidth = Math.max(120, this.width - 24 - 60 - 46 - 12);
 		this.chatBox.setPosition(12, inputY);
 		this.chatBox.setWidth(boxWidth);
 		this.sendButton.setPosition(12 + boxWidth + 6, inputY);
+		this.interruptButton.setPosition(12 + boxWidth + 6 + 60 + 6, inputY);
+	}
+
+	@Override
+	public void tick() {
+		// 「中断」在助手“思考/流式回复”期间可用（卡住时可中止）
+		if (this.interruptButton != null) {
+			this.interruptButton.active = this.thinking || this.streaming.length() > 0;
+		}
 	}
 
 	@Override
@@ -297,6 +314,22 @@ public class AiAssistantInteractScreen extends Screen {
 		this.trimConversation();
 		this.streaming.setLength(0);
 		this.thinking = true;
+	}
+
+	/**
+	 * 「中断」按钮：中止该助手正在进行的任务（卡住时可立即重新提问）。
+	 * 本地先复位“思考/流式”状态（输入恢复可用），服务器中断后回传 "reply"（已中断）上屏。
+	 */
+	private void interruptChat() {
+		if (!this.thinking && this.streaming.length() == 0) {
+			return;
+		}
+		this.thinking = false;
+		this.streaming.setLength(0);
+		if (this.blockPos != null && this.dimension != null) {
+			ClientPlayNetworking.send(new AiConfigPayloads.AiConfigInterruptPayload(
+					this.blockPos, this.dimension));
+		}
 	}
 
 	private void dismiss() {
