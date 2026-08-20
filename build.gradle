@@ -1,6 +1,9 @@
 plugins {
 	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
 	id 'maven-publish'
+	// Shadow：把 openai-java 及全部传递依赖 flat 进 mod jar
+	// com.gradleup.shadow 是 johnrengelman/shadow 的社区维护分支，支持 Gradle 9.x
+	id 'com.gradleup.shadow' version '8.3.6'
 }
 
 version = project.mod_version
@@ -15,8 +18,14 @@ repositories {
 	// openai-java（OpenAI 兼容 Chat Completions 客户端）来自 Maven Central
 	// 国内加速：阿里云 central 镜像（完整镜像 Maven Central）。跨境直连 repo.maven.apache.org
 	// 连接建立瞬间短暂爆发后持续限速到 ~10KB/s，换国内镜像后稳定在多 MB/s，其他环境照常可用。
-	maven { url 'https://maven.aliyun.com/repository/central' }
+	maven { url = 'https://maven.aliyun.com/repository/central' }
 	mavenCentral()
+}
+
+// shade 配置：声明在这里的库会被 shadowJar flat 进 mod jar，不走 JiJ
+configurations {
+	shade
+	implementation.extendsFrom shade
 }
 
 loom {
@@ -130,9 +139,10 @@ dependencies {
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
 	// OpenAI 兼容 Chat Completions 客户端（openai-java，纯库非 mod）：
-	// LlmClient 由手写 java.net.http + Gson 改为基于它（见 ai/LlmClient.java 类注释）。
-	// 普通 implementation：编译 + runClient/runServer/runGametestServer 运行时类路径可用。
-	implementation "com.openai:openai-java:4.52.0"
+	// shade 配置：Shadow 插件会把该库及全部传递依赖（openai-java-core、OkHttp、Jackson、
+	// Kotlin stdlib 等）flat 进 mod jar，游戏启动器无需提前把这些库放到 classpath。
+	// 同时 relocate 到 com.swaydy.opencraft.shadow.* 避免与其他 mod 冲突。
+	shade("com.openai:openai-java:4.52.0")
 
 	// 纯 Java 单测（LlmClient SSE 工具调用分片合并、AgentRegistry 等，无 Minecraft 运行时依赖）
 	testImplementation "org.junit.jupiter:junit-jupiter-api:5.10.2"
@@ -142,6 +152,41 @@ dependencies {
 
 test {
 	useJUnitPlatform()
+}
+
+// ------------------------------------------------------------------
+// Shadow：把 shade 配置的依赖 flat 进 jar，不做 relocate。
+// relocate() 会触发 Shadow 的 ASM bytecode 重写，而 Shadow 8.x 的
+// RelocatorRemapper.mapValue() 不处理 Java 21 invokedynamic bootstrap
+// 携带的 org.objectweb.asm.Type 参数，导致 mod 自身 class 文件崩溃。
+// 不加 relocate() 时 Shadow 直接 flat-copy，跳过 ASM pass，不会崩溃。
+// Jackson / OkHttp / Kotlin stdlib 不在 Minecraft classpath，无冲突风险。
+// archiveClassifier = 'dev-shadow'：未 remap 的胖 jar，交给 Loom remapJar 处理。
+// ------------------------------------------------------------------
+shadowJar {
+	// Loom splitEnvironmentSourceSets() 把 client 代码拆到独立 source set，
+	// shadowJar 默认只含 sourceSets.main.output，必须手动补上 client。
+	from sourceSets.client.output
+	configurations = [project.configurations.shade]
+	archiveClassifier = 'dev-shadow'
+
+	// 合并 META-INF/services（OkHttp 等 SPI 服务发现需要）
+	mergeServiceFiles()
+
+	// 排除签名文件和重复协议文本，避免 jar 校验失败
+	exclude 'META-INF/LICENSE*'
+	exclude 'META-INF/NOTICE*'
+	exclude 'META-INF/DEPENDENCIES'
+	exclude 'META-INF/*.SF'
+	exclude 'META-INF/*.DSA'
+	exclude 'META-INF/*.RSA'
+}
+
+// remapJar 改用 shadowJar 的输出作为输入，这样 Loom 在重新映射字节码的同时
+// 也把 shade 进来的库一并打包进最终 mod jar。
+remapJar {
+	dependsOn shadowJar
+	inputFile = shadowJar.archiveFile
 }
 
 processResources {
@@ -192,4 +237,3 @@ publishing {
 		// retrieving dependencies.
 	}
 }
-

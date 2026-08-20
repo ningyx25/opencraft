@@ -645,6 +645,8 @@ public final class AgentRuntime {
 		Map<String, ToolDefinition> tools = ctx.agent.toolMap();
 		int executed = 0;
 		List<String> executedNames = new ArrayList<>();
+		// task_plan 成功时才算"做了实事"，失败时不应重置停滞守卫
+		boolean taskPlanSucceeded = false;
 		for (LlmClient.ToolCallBlock call : calls) {
 			String toolName = call.name() == null ? "" : call.name().trim();
 			if (executed >= MAX_TOOLS_PER_ROUND) {
@@ -655,7 +657,9 @@ public final class AgentRuntime {
 								+ "不要一次发起太多调用。"), true));
 				continue;
 			}
-			// 核心工具：task_plan（整单替换任务计划，不参与重复调用守卫）
+			// 核心工具：task_plan（整单替换任务计划）
+			// 成功时不参与重复守卫（正常更新进度不应被打断）；
+			// 失败时参与重复守卫——防止参数格式错误导致模型无限重试死循环。
 			if (TOOL_TASK_PLAN.equals(toolName)) {
 				TaskPlan plan = TaskPlan.fromJson(parseArgs(call.arguments()));
 				ToolResult planResult = plan == null
@@ -668,9 +672,21 @@ public final class AgentRuntime {
 				com.swaydy.opencraft.debug.DebugLog.log("tool",
 						"助手更新任务计划 → {}", plan == null ? "参数错误" : plan.summary());
 				ctx.planText = plan == null ? ctx.planText : plan.format();
+				if (plan != null) {
+					taskPlanSucceeded = true;
+				}
 				results.add(LlmClient.Message.toolResult(call.id(),
 						ToolResultPruner.toModelText(toolName, planResult.ok(), planResult.message()),
 						!planResult.ok()));
+				// 失败时走重复守卫：连续相同的错误参数达阈值 → 注入提醒打断死循环
+				if (plan == null) {
+					String reminder = ctx.repeatGuard.observe(toolName, call.arguments());
+					if (reminder != null) {
+						com.swaydy.opencraft.debug.DebugLog.log("tool",
+								"重复工具调用提醒：{} 已连续 {} 次相同调用", toolName, ctx.repeatGuard.currentCount());
+						results.add(LlmClient.Message.user(reminder));
+					}
+				}
 				continue;
 			}
 			ToolDefinition def = tools.get(toolName);
@@ -713,9 +729,11 @@ public final class AgentRuntime {
 				results.add(LlmClient.Message.user(reminder));
 			}
 		}
-		// 停滞守卫：连续多轮纯观察（没有任何状态变化）→ 注入提醒，打断“卡在某一步”空转。
-		// 任何非只读工具（goto/mine/place/craft/hand/task_plan 等）都算“做了实事”→ 重置计数
-		boolean anyAffecting = executedNames.stream().anyMatch(n -> !StallGuard.isReadOnly(n));
+		// 停滞守卫：连续多轮纯观察（没有任何状态变化）→ 注入提醒，打断”卡在某一步”空转。
+		// task_plan 只有成功时才算”做了实事”；失败时（参数错误死循环）不重置停滞计数，
+		// 避免守卫被无效调用屏蔽。
+		boolean anyAffecting = taskPlanSucceeded
+				|| executedNames.stream().anyMatch(n -> !StallGuard.isReadOnly(n) && !TOOL_TASK_PLAN.equals(n));
 		String stallNudge = ctx.stallGuard.observe(executedNames, anyAffecting);
 		if (stallNudge != null) {
 			com.swaydy.opencraft.debug.DebugLog.log("tool",
@@ -794,19 +812,38 @@ public final class AgentRuntime {
 		steps.addProperty("type", "array");
 		steps.add("items", step);
 		steps.addProperty("description", "完整步骤列表，整单替换");
-		com.google.gson.JsonObject planProps = new com.google.gson.JsonObject();
-		planProps.add("steps", steps);
+		// task_plan 参数 schema：{ type: object, properties: { steps: ... }, required: ["steps"] }
+		com.google.gson.JsonObject planProperties = new com.google.gson.JsonObject();
+		planProperties.add("steps", steps);
+		com.google.gson.JsonObject planParams = new com.google.gson.JsonObject();
+		planParams.addProperty("type", "object");
+		planParams.add("properties", planProperties);
+		com.google.gson.JsonArray planRequired = new com.google.gson.JsonArray();
+		planRequired.add("steps");
+		planParams.add("required", planRequired);
+
+		// ask_player 参数 schema：{ type: object, properties: { question, options }, required: ["question"] }
+		com.google.gson.JsonObject askProperties = new com.google.gson.JsonObject();
+		askProperties.add("question", askProps.get("question"));
+		askProperties.add("options", askProps.get("options"));
+		com.google.gson.JsonObject askParams = new com.google.gson.JsonObject();
+		askParams.addProperty("type", "object");
+		askParams.add("properties", askProperties);
+		com.google.gson.JsonArray askRequired = new com.google.gson.JsonArray();
+		askRequired.add("question");
+		askParams.add("required", askRequired);
+
 		return List.of(
 				toolFn("ask_player",
 						"在你无法确定该怎么做、或行动可能有破坏性/不可逆影响（如挖掘功能方块、目标不明确）时，"
 								+ "向玩家提一个简短问题来确认。调用后对话会暂停，等玩家用 /opencraft answer 回答后继续；"
 								+ "除非真需要确认，否则不要用。",
-						askProps),
+						askParams),
 				toolFn("task_plan",
 						"记录你当前多步任务的执行计划与进度。整单替换：每次调用发送完整列表。"
 								+ "每完成一步就把该步标为 completed；只要任务没结束，至少保持一项 in_progress。"
 								+ "简单一步任务不要用。",
-						planProps));
+						planParams));
 	}
 
 	/** 组装一个 {"type":"function","function":{name,description,parameters}} 的 tools 条目。 */
