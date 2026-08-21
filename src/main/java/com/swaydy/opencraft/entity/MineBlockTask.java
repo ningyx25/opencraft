@@ -155,7 +155,7 @@ public class MineBlockTask extends AssistantTask {
 
 	@Override
 	public String describe() {
-		return "正在挖掘 (" + target.getX() + "," + target.getY() + "," + target.getZ() + ")";
+		return "Mining (" + target.getX() + "," + target.getY() + "," + target.getZ() + ")";
 	}
 
 	public BlockPos getTarget() {

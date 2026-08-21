@@ -24,19 +24,20 @@ public class AssistantControlPlugin implements AssistantPlugin {
 	public List<ToolDefinition> tools() {
 		return List.of(
 				new ToolDefinition("teleport_to_player",
-						"让助手瞬间传送到主人身边（支持跨维度）。",
+						"Instantly teleport the assistant to the owner's side (works across dimensions).",
 						ToolSchema.object(new JsonObject()),
 						this::teleport));
 	}
 
 	@Override
 	public String systemPromptFragment() {
-		return "你平时会自动跟随主人（主人走到哪你跟到哪）；当主人给你下达任务指令时，你会停下跟随、"
-				+ "专注执行任务，任务完成后自动回到跟随状态。你也可以使用 teleport_to_player 瞬移到主人身边。";
+		return "You normally follow the owner automatically (wherever the owner goes, you go); when the owner gives you a task, "
+				+ "you stop following and focus on executing it, then automatically resume following once the task is done. "
+				+ "You can also use teleport_to_player to teleport to the owner's side.";
 	}
 
 	private ToolResult teleport(ToolContext ctx, JsonObject args) {
 		AiCompanionService.teleportAssistantToPlayer(ctx.owner(), ctx.assistant());
-		return ToolResult.ok("我已传送到你身边。");
+		return ToolResult.ok("I have teleported to your side.");
 	}
 }

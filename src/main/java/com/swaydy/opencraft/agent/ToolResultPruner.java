@@ -29,7 +29,7 @@ public final class ToolResultPruner {
 	 */
 	public static String toModelText(String toolName, boolean ok, String message) {
 		String head = "[" + (toolName == null || toolName.isBlank() ? "?" : toolName)
-				+ " " + (ok ? "成功" : "失败") + "] ";
+				+ " " + (ok ? "success" : "failure") + "] ";
 		String body = prune(message == null ? "" : message);
 		return head + body;
 	}
@@ -57,7 +57,7 @@ public final class ToolResultPruner {
 		if (text.length() <= maxChars) {
 			return text;
 		}
-		String marker = "\n…[中间省略 " + (text.length() - headChars - tailChars) + " 字符]…\n";
+		String marker = "\n…[… " + (text.length() - headChars - tailChars) + " chars omitted]…\n";
 		return text.substring(0, headChars) + marker + text.substring(text.length() - tailChars);
 	}
 }

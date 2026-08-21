@@ -22,9 +22,9 @@ public final class RepeatToolGuard {
 
 	/** 第一次（温和）提醒：指出"在重复同一调用"，建议换做法。 */
 	private static final String GENTLE_REMINDER =
-			"【提醒】你正在用完全相同的参数连续重复调用同一个工具。请先仔细分析上一次的结果："
-					+ "如果任务还没完成，换一种做法或换一组参数，不要原样重试；"
-					+ "如果证据已足够，直接给出最终回复结束任务。";
+			"[Reminder] You are repeatedly calling the same tool with exactly the same parameters. "
+					+ "Carefully analyze the last result first: if the task is not done, try a different approach or different "
+					+ "parameters instead of retrying identically; if you already have enough evidence, end the task with your final reply.";
 
 	private final List<Integer> thresholds;
 	private String lastKey = null;
@@ -76,12 +76,13 @@ public final class RepeatToolGuard {
 	}
 
 	private static String detailedReminder(String toolName, int count, String argumentsPreview) {
-		return "【提醒】检测到重复工具调用：\n"
-				+ "- 工具: " + (toolName == null ? "?" : toolName) + "\n"
-				+ "- 连续次数: " + count + "\n"
-				+ "- 参数: " + argumentsPreview + "\n"
-				+ "这些重复调用没有取得进展。不要再以这组参数调用该工具：分析最近一次的结果，"
-				+ "选择不同的行动、不同的参数，或任务证据已足够就立即给出最终回复结束。";
+		return "[Reminder] Repeated tool calls detected:\n"
+				+ "- Tool: " + (toolName == null ? "?" : toolName) + "\n"
+				+ "- Consecutive count: " + count + "\n"
+				+ "- Arguments: " + argumentsPreview + "\n"
+				+ "These repeated calls are making no progress. Stop calling this tool with these arguments: "
+				+ "analyze the most recent result, choose a different action or different arguments, "
+				+ "or if you have enough evidence, end the task immediately with your final reply.";
 	}
 
 	/**
@@ -124,6 +125,6 @@ public final class RepeatToolGuard {
 	/** 提醒里引用的参数预览：过长截断。 */
 	private static String previewArguments(String argumentsJson) {
 		String s = canonicalize(argumentsJson);
-		return s.length() <= 200 ? s : s.substring(0, 200) + "…(+" + (s.length() - 200) + " 字符)";
+		return s.length() <= 200 ? s : s.substring(0, 200) + "…(+" + (s.length() - 200) + " chars)";
 	}
 }

@@ -91,14 +91,14 @@ public final class AgentRuntime {
 	 * 具体“怎么做事/何时用工具”由各预设的 personaPrompt 与插件提示词决定。
 	 */
 	private static final String BASE_PERSONA = """
-			你是一个住在《我的世界》(Minecraft) 里的 AI 游戏助手，陪伴玩家一起冒险、建造、生存，
-			像一位可靠又有点幽默的朋友。回答尽量简短（一般不超过 3~4 句话），用玩家使用的语言回复。""";
+			You are an AI game assistant living in Minecraft, accompanying the player through adventures, building, and survival —
+			a reliable and slightly humorous friend. Keep replies short (usually no more than 3~4 sentences) and answer in the language the player uses.""";
 
 	/** 历史压缩的指令（拼在旧消息区段之后，要求模型只输出摘要正文）。 */
 	private static final String COMPACT_INSTRUCTION = """
-			请把上面这段你和玩家的历史聊天压缩成一份简短的记忆摘要（150 字以内）。
-			保留：玩家的重要信息（名字、需求、约定、进度、待办）、你答应过的事、尚未完成的任务、关键坐标/物品。
-			不要寒暄、不要逐条复述，只提炼要点。直接输出摘要正文，不要任何前缀或格式。""";
+			Please compress the chat history between you and the player above into a short memory summary (within 150 words).
+			Keep: important information about the player (name, needs, agreements, progress, todos), things you promised, unfinished tasks, key coordinates/items.
+			No small talk, no line-by-line retelling — only distilled key points. Output only the summary text, with no prefix or formatting.""";
 
 	/** 进行中的 loop 标记：按“助手绑定的方块”键控，保证同一助手同时只有一个 loop 在跑。 */
 	private static final Map<GlobalPos, Boolean> RUNNING = new ConcurrentHashMap<>();
@@ -452,13 +452,13 @@ public final class AgentRuntime {
 							if (question == null || question.isBlank()) {
 								ctx.messages.add(LlmClient.Message.toolResult(askCall.id(),
 										ToolResultPruner.toModelText(TOOL_ASK_PLAYER, false,
-												"请提供要问玩家的 question 参数（一个简短的确认问题）。"),
+												"Please provide the question parameter (a short confirmation question for the player)."),
 										true));
 								ctx.messages.addAll(executeTools(ctx, toolCalls));
 							} else {
 								ctx.messages.add(LlmClient.Message.toolResult(askCall.id(),
 										ToolResultPruner.toModelText(TOOL_ASK_PLAYER, true,
-												"已向玩家提问，正在等待回复……"),
+												"Question asked to the player; waiting for their reply…"),
 										false));
 								pauseForAnswer(ctx, question, round + 1);
 								paused = true;
@@ -479,8 +479,8 @@ public final class AgentRuntime {
 										"已达最大行动轮数（{}），进入最后一轮总结（第 {} 步）",
 										ctx.agent.maxToolRounds(), round + 1);
 								ctx.messages.add(LlmClient.Message.toolResult("round-limit",
-										"你已经达到了本次任务的最大行动步数（" + ctx.agent.maxToolRounds() + " 轮）。"
-												+ "请立即停止行动，用一句简洁的话向玩家总结你已完成的事（不调用工具）。",
+										"You have reached the maximum number of action rounds for this task (" + ctx.agent.maxToolRounds() + ")."
+												+ " Stop acting now and summarize in one concise sentence what you have accomplished (do not call tools).",
 										true));
 								LlmClient.Request summaryRequest = new LlmClient.Request(
 										ctx.config.baseUrl, ctx.config.apiKey, ctx.config.model,
@@ -696,8 +696,8 @@ public final class AgentRuntime {
 				com.swaydy.opencraft.debug.DebugLog.log("tool",
 						"本轮工具调用达上限（{}），截断后续调用：{}", MAX_TOOLS_PER_ROUND, toolName);
 				results.add(LlmClient.Message.toolResult(call.id(), ToolResultPruner.toModelText(toolName, false,
-						"本轮工具调用已达上限（" + MAX_TOOLS_PER_ROUND + " 个）。先观察以上结果再继续，"
-								+ "不要一次发起太多调用。"), true));
+						"You have reached the per-round tool call limit (" + MAX_TOOLS_PER_ROUND + "). "
+								+ "Observe the results above before continuing — don't fire off too many calls at once."), true));
 				continue;
 			}
 			// 核心工具：task_plan（整单替换任务计划）
@@ -706,10 +706,10 @@ public final class AgentRuntime {
 			if (TOOL_TASK_PLAN.equals(toolName)) {
 				TaskPlan plan = TaskPlan.fromJson(parseArgs(call.arguments()));
 				ToolResult planResult = plan == null
-						? ToolResult.error("task_plan 参数格式不对：需要 steps 数组，每项 {content, status}，"
-								+ "status ∈ [pending|in_progress|completed]，content 非空且不重复，至少一步。")
-						: ToolResult.ok("任务计划已更新：" + plan.summary() + "。之后每轮我都会看到这份计划，"
-								+ "请按计划推进并及时更新状态。");
+						? ToolResult.error("task_plan parameters are invalid: provide a steps array, each item {content, status}, "
+								+ "status ∈ [pending|in_progress|completed], content non-empty and unique, at least one step.")
+						: ToolResult.ok("Task plan updated: " + plan.summary() + ". I will see this plan every round; "
+								+ "follow it and update the status as you go.");
 				executed++;
 				executedNames.add(toolName);
 				com.swaydy.opencraft.debug.DebugLog.log("tool",
@@ -735,14 +735,14 @@ public final class AgentRuntime {
 			ToolDefinition def = tools.get(toolName);
 			ToolResult result;
 			if (def == null) {
-				result = ToolResult.error("未知工具 \"" + toolName + "\"。可用的工具有: "
+				result = ToolResult.error("Unknown tool \"" + toolName + "\". Available tools: "
 						+ String.join(", ", tools.keySet()));
 			} else {
 				try {
 					JsonObject args = parseArgs(call.arguments());
 					if (args == null) {
-						result = ToolResult.error("参数 JSON 无法解析: " + previewArgs(call.arguments())
-								+ "；请重新给出正确的参数 JSON。");
+						result = ToolResult.error("Could not parse the arguments JSON: " + previewArgs(call.arguments())
+								+ "; please provide valid argument JSON.");
 					} else {
 						ToolContext toolCtx = new ToolContext(ctx.player.level().getServer(),
 								ctx.assistant, ctx.player, (ServerLevel) ctx.player.level());
@@ -751,7 +751,7 @@ public final class AgentRuntime {
 				} catch (Exception e) {
 					OpenCraftMod.LOGGER.warn("[OpenCraft] 工具 {} 执行异常: {}",
 							toolName, e.toString());
-					result = ToolResult.error("内部错误: " + e.getClass().getSimpleName());
+					result = ToolResult.error("Internal error: " + e.getClass().getSimpleName());
 				}
 			}
 			executed++;
@@ -820,14 +820,14 @@ public final class AgentRuntime {
 		com.google.gson.JsonObject askProps = new com.google.gson.JsonObject();
 		JsonObject qProp = new JsonObject();
 		qProp.addProperty("type", "string");
-		qProp.addProperty("description", "要问玩家的简短问题（中文，一句话）。");
+		qProp.addProperty("description", "A short one-line question to ask the player for confirmation.");
 		askProps.add("question", qProp);
 		com.google.gson.JsonObject options = new com.google.gson.JsonObject();
 		options.addProperty("type", "array");
 		com.google.gson.JsonObject optItem = new com.google.gson.JsonObject();
 		optItem.addProperty("type", "string");
 		options.add("items", optItem);
-		options.addProperty("description", "可选：给玩家的几个候选答案");
+		options.addProperty("description", "Optional: a few candidate answers for the player");
 		askProps.add("options", options);
 		// task_plan：{ steps: [{content, status}] }
 		com.google.gson.JsonObject step = new com.google.gson.JsonObject();
@@ -835,7 +835,7 @@ public final class AgentRuntime {
 		com.google.gson.JsonObject stepProps = new com.google.gson.JsonObject();
 		JsonObject contentProp = new JsonObject();
 		contentProp.addProperty("type", "string");
-		contentProp.addProperty("description", "这一步要做什么");
+		contentProp.addProperty("description", "What this step should accomplish");
 		stepProps.add("content", contentProp);
 		JsonObject statusProp = new JsonObject();
 		statusProp.addProperty("type", "string");
@@ -844,7 +844,7 @@ public final class AgentRuntime {
 		statusEnum.add("in_progress");
 		statusEnum.add("completed");
 		statusProp.add("enum", statusEnum);
-		statusProp.addProperty("description", "pending=待办, in_progress=进行中, completed=已完成");
+		statusProp.addProperty("description", "pending / in_progress / completed");
 		stepProps.add("status", statusProp);
 		step.add("properties", stepProps);
 		com.google.gson.JsonArray stepRequired = new com.google.gson.JsonArray();
@@ -854,7 +854,7 @@ public final class AgentRuntime {
 		com.google.gson.JsonObject steps = new com.google.gson.JsonObject();
 		steps.addProperty("type", "array");
 		steps.add("items", step);
-		steps.addProperty("description", "完整步骤列表，整单替换");
+		steps.addProperty("description", "The complete list of steps; each call sends the full list to replace it");
 		// task_plan 参数 schema：{ type: object, properties: { steps: ... }, required: ["steps"] }
 		com.google.gson.JsonObject planProperties = new com.google.gson.JsonObject();
 		planProperties.add("steps", steps);
@@ -878,14 +878,14 @@ public final class AgentRuntime {
 
 		return List.of(
 				toolFn("ask_player",
-						"在你无法确定该怎么做、或行动可能有破坏性/不可逆影响（如挖掘功能方块、目标不明确）时，"
-								+ "向玩家提一个简短问题来确认。调用后对话会暂停，等玩家用 /opencraft answer 回答后继续；"
-								+ "除非真需要确认，否则不要用。",
+						"Ask the player a short question to confirm when you cannot decide what to do, or when an action may be "
+								+ "destructive or irreversible (e.g. mining a functional block, unclear target). The conversation pauses after "
+								+ "the call and resumes once the player replies via /opencraft answer; don't use it unless you really need confirmation.",
 						askParams),
 				toolFn("task_plan",
-						"记录你当前多步任务的执行计划与进度。整单替换：每次调用发送完整列表。"
-								+ "每完成一步就把该步标为 completed；只要任务没结束，至少保持一项 in_progress。"
-								+ "简单一步任务不要用。",
+						"Record the plan and progress of your current multi-step task. Replace the whole list: each call sends the complete list. "
+								+ "Mark each step completed as you finish it; as long as the task isn't over, keep at least one step in_progress. "
+								+ "Don't use it for simple one-step tasks.",
 						planParams));
 	}
 
@@ -971,7 +971,7 @@ public final class AgentRuntime {
 			return false; // 只有提问的助手的主人才有权限回答
 		}
 		if (PENDING_ASKS.remove(key, pa)) {
-			continueAfterAnswer(pa, "（玩家回答）" + text.trim());
+			continueAfterAnswer(pa, "[Player's answer] " + text.trim());
 			return true;
 		}
 		return false;
@@ -984,8 +984,8 @@ public final class AgentRuntime {
 			return;
 		}
 		runOnServer(pa.server, () -> continueAfterAnswer(pa,
-				"（玩家在时限内没有回答「" + pa.question + "」——请基于最合理的假设继续行动，"
-						+ "并在最终回复里说明你的假设。）"));
+				"(The player did not answer \"" + pa.question + "\" within the time limit — continue based on the most reasonable assumption "
+						+ "and state your assumption in your final reply.)"));
 	}
 
 	/** 把玩家回答写入对话并恢复循环（服务端线程）。 */
@@ -1010,8 +1010,8 @@ public final class AgentRuntime {
 			com.swaydy.opencraft.debug.DebugLog.log("llm",
 					"提问恢复后已达最大行动轮数（{}），进入最后一轮总结", ctx.agent.maxToolRounds());
 			ctx.messages.add(LlmClient.Message.toolResult("round-limit",
-					"你已经达到了本次任务的最大行动步数（" + ctx.agent.maxToolRounds() + " 轮）。"
-							+ "请立即停止行动，用一句简洁的话向玩家总结你已完成的事（不调用工具）。",
+					"You have reached the maximum number of action rounds for this task (" + ctx.agent.maxToolRounds() + ")."
+							+ " Stop acting now and summarize in one concise sentence what you have accomplished (do not call tools).",
 					true));
 			LlmClient.Request summaryRequest = new LlmClient.Request(
 					ctx.config.baseUrl, ctx.config.apiKey, ctx.config.model,
@@ -1056,7 +1056,7 @@ public final class AgentRuntime {
 		endTask(ctx.assistant);
 		if (ctx.historyKey != null) {
 			AiCompanionService.appendHistory(ctx.historyKey,
-					LlmClient.Message.assistant("（上一条任务被玩家中断，未完成）"));
+					LlmClient.Message.assistant("(The previous task was interrupted by the player and left unfinished)"));
 		}
 		Component done = Component.translatable("command.opencraft.interrupt.ok");
 		if (ctx.gui) {
@@ -1101,7 +1101,7 @@ public final class AgentRuntime {
 		if (ctx.planText == null || ctx.planText.isBlank()) {
 			return base;
 		}
-		return base + "\n\n【当前任务计划】\n" + ctx.planText;
+		return base + "\n\n[Current Task Plan]\n" + ctx.planText;
 	}
 
 	/**
@@ -1115,8 +1115,8 @@ public final class AgentRuntime {
 		if (agent != null && agent.personaPrompt() != null && !agent.personaPrompt().isBlank()) {
 			sb.append('\n').append(agent.personaPrompt());
 		}
-		sb.append("\n\n【名字】你的名字是 ").append(config.effectiveName())
-				.append("，请用这个名字自称，不要使用其他名字。");
+		sb.append("\n\n[Name] Your name is ").append(config.effectiveName())
+				.append(". Always refer to yourself by this name and use no other.");
 		return sb.toString();
 	}
 

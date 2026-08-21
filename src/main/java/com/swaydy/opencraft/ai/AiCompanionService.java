@@ -293,8 +293,8 @@ public final class AiCompanionService {
 			return;
 		}
 		List<LlmClient.Message> messages = List.of(
-				LlmClient.Message.user("（你刚刚被玩家召唤出来。请用一两句话热情地打个招呼，简单介绍自己，"
-						+ "并告诉玩家可以用 /opencraft ask 和他聊天；不用操作世界。）"));
+				LlmClient.Message.user("(You were just summoned by the player. Greet them warmly in one or two sentences, "
+						+ "briefly introduce yourself, and tell them they can chat with you using /opencraft ask; no need to act on the world.)"));
 		LlmClient.Request request = new LlmClient.Request(
 				config.baseUrl,
 				config.apiKey,
@@ -696,32 +696,32 @@ public final class AiCompanionService {
 			BlockPos pos = player.blockPosition();
 			String phase = phaseOfTime(timeOfDay);
 			ItemStack mainHand = player.getMainHandItem();
-			String itemName = mainHand.isEmpty() ? "空手" : mainHand.getHoverName().getString();
+			String itemName = mainHand.isEmpty() ? "empty hand" : mainHand.getHoverName().getString();
 
 			// 身体状态：水下/氧气/着火
-			String body = "正常";
+			String body = "normal";
 			if (player.isUnderWater()) {
-				body = "水下(氧气 " + player.getAirSupply() + "/" + player.getMaxAirSupply() + ")";
+				body = "underwater (air " + player.getAirSupply() + "/" + player.getMaxAirSupply() + ")";
 			} else if (player.getAirSupply() < player.getMaxAirSupply()) {
-				body = "氧气 " + player.getAirSupply() + "/" + player.getMaxAirSupply();
+				body = "air " + player.getAirSupply() + "/" + player.getMaxAirSupply();
 			}
 			if (player.isOnFire()) {
-				body += "，着火";
+				body += ", on fire";
 			}
 
 			return String.format("""
-					【玩家当前游戏状态】
-					玩家名: %s
-					维度: %s
-					坐标: x=%d, y=%d, z=%d（朝向 %s）
+					[Player's current game state]
+					Player name: %s
+					Dimension: %s
+					Position: x=%d, y=%d, z=%d (facing %s)
 					%s
-					时间: 第 %d 天 %02d:%02d（%s）
-					生命值: %.0f/20 | 饥饿值: %d/20 | 经验等级: %d | 游戏模式: %s
-					身体: %s
-					状态效果: %s
-					装备: %s
-					注视方块: %s
-					主手物品: %s
+					Time: Day %d %02d:%02d (%s)
+					Health: %.0f/20 | Hunger: %d/20 | XP level: %d | Game mode: %s
+					Body: %s
+					Effects: %s
+					Equipment: %s
+					Looking at: %s
+					Main hand: %s
 					""",
 					player.getName().getString(),
 					level.dimension().identifier(),
@@ -738,35 +738,35 @@ public final class AiCompanionService {
 					lookingAt(level, player),
 					itemName);
 		} catch (Exception e) {
-			return "【玩家当前游戏状态】无法获取";
+			return "[Player's current game state] unavailable";
 		}
 	}
 
 	/** 一天内时刻（24000 tick）→ 时段名。 */
 	private static String phaseOfTime(long timeOfDay) {
 		if (timeOfDay < 6000) {
-			return "清晨";
+			return "dawn";
 		}
 		if (timeOfDay < 11000) {
-			return "白天";
+			return "day";
 		}
 		if (timeOfDay < 13000) {
-			return "黄昏";
+			return "dusk";
 		}
 		if (timeOfDay < 18000) {
-			return "夜晚";
+			return "night";
 		}
-		return "深夜";
+		return "deep night";
 	}
 
 	/** 面向方位：yaw → 东南西北（双形态通用显示）。 */
 	public static String facingName(float yaw) {
 		int dir = Math.floorMod(Math.round(yaw / 90.0F), 4);
 		return switch (dir) {
-			case 0 -> "南(+Z)";
-			case 1 -> "西(-X)";
-			case 2 -> "北(-Z)";
-			default -> "东(+X)";
+			case 0 -> "South(+Z)";
+			case 1 -> "West(-X)";
+			case 2 -> "North(-Z)";
+			default -> "East(+X)";
 		};
 	}
 
@@ -784,19 +784,19 @@ public final class AiCompanionService {
 			}
 			sb.append(shortName(s.getItem().getDescriptionId())).append("(").append(equipmentSlotLabel(i)).append(")");
 		}
-		return sb.length() == 0 ? "无" : sb.toString();
+		return sb.length() == 0 ? "none" : sb.toString();
 	}
 
 	private static String equipmentSlotLabel(int index) {
 		return switch (index) {
-			case 36 -> "脚";
-			case 37 -> "腿";
-			case 38 -> "胸";
-			case 39 -> "头";
-			case 40 -> "副手";
-			case 41 -> "身体";
-			case 42 -> "坐骑鞍";
-			default -> "装备";
+			case 36 -> "feet";
+			case 37 -> "legs";
+			case 38 -> "chest";
+			case 39 -> "head";
+			case 40 -> "offhand";
+			case 41 -> "body";
+			case 42 -> "saddle";
+			default -> "equipment";
 		};
 	}
 
@@ -804,7 +804,7 @@ public final class AiCompanionService {
 	static String effectsSummary(ServerPlayer player) {
 		List<MobEffectInstance> effects = new ArrayList<>(player.getActiveEffects());
 		if (effects.isEmpty()) {
-			return "无";
+			return "none";
 		}
 		StringBuilder sb = new StringBuilder();
 		int n = 0;
@@ -845,13 +845,13 @@ public final class AiCompanionService {
 					eye, eye.add(look.scale(10.0)),
 					ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
 			if (hit.getType() != net.minecraft.world.phys.HitResult.Type.BLOCK) {
-				return "无";
+				return "none";
 			}
 			double dist = Math.round(player.position().distanceTo(hit.getLocation()) * 10.0) / 10.0;
 			return shortName(level.getBlockState(hit.getBlockPos()).getBlock().getDescriptionId())
-					+ "（" + dist + " 格远）";
+					+ " (" + dist + " blocks away)";
 		} catch (Exception e) {
-			return "无";
+			return "none";
 		}
 	}
 
@@ -867,26 +867,26 @@ public final class AiCompanionService {
 			Holder<Biome> biome = level.getBiome(pos);
 			StringBuilder sb = new StringBuilder();
 			float temp = biome.value().getBaseTemperature();
-			String climate = temp < 0.2 ? "寒冷" : temp > 0.9 ? "炎热" : "温和";
-			String precip = biome.value().hasPrecipitation() ? "有降水" : "无降水";
-			sb.append("环境: 群系 ").append(biomeName(biome))
-					.append("（").append(climate).append("/").append(precip).append("）");
-			sb.append(" | 天气: ").append(level.isThundering() ? "雷暴"
-					: level.isRaining() ? "下雨" : "晴朗");
+			String climate = temp < 0.2 ? "cold" : temp > 0.9 ? "hot" : "mild";
+			String precip = biome.value().hasPrecipitation() ? "rainy" : "dry";
+			sb.append("Environment: biome ").append(biomeName(biome))
+					.append(" (").append(climate).append("/").append(precip).append(")");
+			sb.append(" | weather: ").append(level.isThundering() ? "thunderstorm"
+					: level.isRaining() ? "raining" : "clear");
 			int sky = level.getSkyDarken();
-			sb.append(" | 亮度: ").append(sky == 0 ? "大晴"
-					: sky >= 15 ? "全黑" : "偏暗(" + sky + ")");
-			sb.append(" | 脚下: ")
+			sb.append(" | brightness: ").append(sky == 0 ? "bright"
+					: sky >= 15 ? "dark" : "dim(" + sky + ")");
+			sb.append(" | ground: ")
 					.append(shortName(level.getBlockState(pos.below()).getBlock().getDescriptionId()));
 			if (hostileRadius > 0) {
 				int hostiles = level.getEntities((net.minecraft.world.entity.Entity) null,
 						new AABB(pos).inflate(hostileRadius),
 						e -> e instanceof net.minecraft.world.entity.monster.Monster).size();
-				sb.append(" | 附近怪物: ").append(hostiles);
+				sb.append(" | nearby monsters: ").append(hostiles);
 			}
 			return sb.toString();
 		} catch (Exception e) {
-			return "环境无法获取";
+			return "environment unavailable";
 		}
 	}
 
@@ -896,7 +896,7 @@ public final class AiCompanionService {
 					.map(k -> k.identifier().getPath().replace('_', ' '))
 					.orElse(biome.getRegisteredName());
 		} catch (Exception e) {
-			return "未知";
+			return "unknown";
 		}
 	}
 

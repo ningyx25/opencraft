@@ -1481,7 +1481,7 @@ public class OpenCraftGameTests {
 					if (res.ok()) {
 						throw new AssertionError("没有工作台时 3×3 配方（钻石块）不应合成成功");
 					}
-					if (!res.message().contains("工作台")) {
+					if (!res.message().toLowerCase().contains("crafting table")) {
 						throw new AssertionError("应提示需要工作台，实际: " + res.message());
 					}
 					if (bot.getInventory().countItem(Items.DIAMOND) != 9) {

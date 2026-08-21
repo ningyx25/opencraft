@@ -82,11 +82,12 @@ public final class StallGuard {
 	}
 
 	private static String nudge(int rounds) {
-		return "【停滞提醒】你已经连续 " + rounds + " 轮只用观察工具（player_look / player_inventory），"
-				+ "而世界和背包状态没有任何变化——这个任务没有取得进展。请立即二选一："
-				+ "① 用一两句话向玩家说明现状并结束任务（不要再调用工具）；"
-				+ "② 执行一个真实动作：先用 player_find 拿到目标的精确坐标，"
-				+ "再 player_goto / player_mine / player_place 动手做。"
-				+ "不要继续反复调用观察工具。";
+		return "[Stall warning] You have spent " + rounds + " consecutive rounds using only observation tools "
+				+ "(player_look / player_inventory) while the world and inventory state have not changed — "
+				+ "this task is making no progress. Immediately choose one: "
+				+ "① wrap up by explaining the situation to the player in one or two sentences and end the task (stop calling tools); "
+				+ "② perform a real action: first use player_find to get the exact coordinates of the target, "
+				+ "then act with player_goto / player_mine / player_place. "
+				+ "Do not keep repeating observation tools.";
 	}
 }

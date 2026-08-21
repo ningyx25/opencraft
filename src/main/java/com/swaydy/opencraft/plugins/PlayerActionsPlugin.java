@@ -66,98 +66,104 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	@Override
 	public List<ToolDefinition> tools() {
 		JsonObject gotoProps = new JsonObject();
-		gotoProps.add("x", ToolSchema.prop("integer", "目标 X 坐标（绝对坐标，整数）"));
-		gotoProps.add("y", ToolSchema.prop("integer", "目标 Y 坐标（绝对坐标，整数）"));
-		gotoProps.add("z", ToolSchema.prop("integer", "目标 Z 坐标（绝对坐标，整数）"));
+		gotoProps.add("x", ToolSchema.prop("integer", "Target X coordinate (absolute, integer)"));
+		gotoProps.add("y", ToolSchema.prop("integer", "Target Y coordinate (absolute, integer)"));
+		gotoProps.add("z", ToolSchema.prop("integer", "Target Z coordinate (absolute, integer)"));
 		JsonObject mineProps = new JsonObject();
-		mineProps.add("x", ToolSchema.prop("integer", "方块 X 坐标"));
-		mineProps.add("y", ToolSchema.prop("integer", "方块 Y 坐标"));
-		mineProps.add("z", ToolSchema.prop("integer", "方块 Z 坐标"));
+		mineProps.add("x", ToolSchema.prop("integer", "Block X coordinate"));
+		mineProps.add("y", ToolSchema.prop("integer", "Block Y coordinate"));
+		mineProps.add("z", ToolSchema.prop("integer", "Block Z coordinate"));
 		JsonObject placeProps = new JsonObject();
-		placeProps.add("x", ToolSchema.prop("integer", "要放置处的方块 X 坐标（放到的方块，相邻）"));
-		placeProps.add("y", ToolSchema.prop("integer", "要放置处的方块 Y 坐标"));
-		placeProps.add("z", ToolSchema.prop("integer", "要放置处的方块 Z 坐标"));
+		placeProps.add("x", ToolSchema.prop("integer", "X coordinate of the block to place against (the adjacent block)"));
+		placeProps.add("y", ToolSchema.prop("integer", "Y coordinate of the block to place against"));
+		placeProps.add("z", ToolSchema.prop("integer", "Z coordinate of the block to place against"));
 		placeProps.add("face", ToolSchema.prop("string",
-				"贴在哪个面放：up/down/north/south/east/west（默认 up）"));
+				"Which face to place on: up/down/north/south/east/west (default up)"));
 		JsonObject craftProps = new JsonObject();
 		craftProps.add("item", ToolSchema.prop("string",
-				"要合成的物品 id，如 minecraft:diamond_block。"));
-		craftProps.add("amount", ToolSchema.prop("integer", "合成数量（默认 1）。"));
+				"Item id to craft, e.g. minecraft:diamond_block."));
+		craftProps.add("amount", ToolSchema.prop("integer", "Amount to craft (default 1)."));
 		JsonObject listProps = new JsonObject();
 		listProps.add("whose", ToolSchema.prop("string",
-				"查看谁的背包：\"self\"（助手自己，默认）或 \"player\"（主人）。"));
+				"Whose inventory to view: \"self\" (the assistant, default) or \"player\" (the owner)."));
 		JsonObject handProps = new JsonObject();
-		handProps.add("item", ToolSchema.prop("string", "物品 id，如 minecraft:cobblestone。"));
-		handProps.add("amount", ToolSchema.prop("integer", "数量（默认 1）。"));
+		handProps.add("item", ToolSchema.prop("string", "Item id, e.g. minecraft:cobblestone."));
+		handProps.add("amount", ToolSchema.prop("integer", "Amount (default 1)."));
 		JsonObject lookProps = new JsonObject();
-		lookProps.add("radius", ToolSchema.prop("integer", "观察半径（默认 8，最大 16）。"));
+		lookProps.add("radius", ToolSchema.prop("integer", "Observation radius (default 8, max 16)."));
 		JsonObject findProps = new JsonObject();
 		findProps.add("target", ToolSchema.prop("string",
-				"要找的东西：方块/物品 ID（minecraft:oak_log、oak_log）或关键词（log、石头、箱子、铁、玩家、怪物…）。"));
-		findProps.add("radius", ToolSchema.prop("integer", "搜索半径（默认 12，最大 20）。"));
+				"What to find: a block/item ID (minecraft:oak_log, oak_log) or a keyword (log, chest, iron, player, monster…)."));
+		findProps.add("radius", ToolSchema.prop("integer", "Search radius (default 12, max 20)."));
 		return List.of(
 				new ToolDefinition("player_goto",
-						"让助手（以玩家身份）走到指定坐标（绝对坐标 x,y,z）。移动是异步的：调用后立即返回，"
-								+ "助手自己走过去；之后用 player_look 观察是否到达。",
+						"Have the assistant (as a player) walk to the given coordinates (absolute x,y,z). Movement is asynchronous: "
+								+ "the call returns immediately and the assistant walks over by itself; then use player_look to check arrival.",
 						ToolSchema.object(gotoProps, "x", "y", "z"),
 						this::gotoTool),
 				new ToolDefinition("player_stop",
-						"取消助手的当前移动，让它停下来。",
+						"Cancel the assistant's current movement and make it stop.",
 						ToolSchema.object(new JsonObject()),
 						this::stopTool),
 				new ToolDefinition("player_jump",
-						"让助手原地跳起来（跃过 1 格台阶/小沟；配合 player_goto 可助跑横跳；"
-								+ "着地时才生效）。",
+						"Have the assistant jump in place (to hop over 1-block steps/small gaps; can be combined with player_goto "
+								+ "for a running jump; only takes effect when on the ground).",
 						ToolSchema.object(new JsonObject()),
 						this::jump),
 				new ToolDefinition("player_look",
-						"观察助手周围：坐标、朝向、周围方块（按种类计数）、附近的玩家/怪物/掉落物（含距离）、"
-								+ "是否正在移动、背包/装备摘要。行动前先观察，行动后再观察确认。",
+						"Observe the assistant's surroundings: coordinates, facing, nearby blocks (counted by type), "
+								+ "nearby players/monsters/dropped items (with distance), whether it is moving, and inventory/equipment summary. "
+								+ "Observe before acting, and observe again to confirm after acting.",
 						ToolSchema.object(lookProps),
 						this::lookAround),
 				new ToolDefinition("player_find",
-						"按关键词/ID 在助手周围找东西，返回【精确坐标 + 方位（东/南/西/北几格）+ 距离】。"
-								+ "target 可以是方块/物品 ID（如 minecraft:oak_log、oak_log）或普通关键词"
-								+ "（如 \"log\"、\"石头\"、\"箱子\"、\"铁\"、\"玩家\"、\"怪物\"）。"
-								+ "行动（挖掘/放置/去物品旁）之前先 player_find 拿到精确坐标，不要猜坐标。",
+						"Find things around the assistant by keyword/ID, returning exact coordinates + bearing "
+								+ "(how many blocks east/south/west/north) + distance. "
+								+ "target can be a block/item ID (e.g. minecraft:oak_log, oak_log) or a plain keyword "
+								+ "(e.g. \"log\", \"chest\", \"iron\", \"player\", \"monster\"). "
+								+ "Before acting (mining/placing/going to an item), call player_find to get exact coordinates — don't guess coordinates.",
 						ToolSchema.object(findProps, "target"),
 						this::findTarget),
 				new ToolDefinition("player_mine",
-						"让助手（以玩家身份）挖掘指定坐标的方块：走到方块旁，用主手工具像玩家一样破坏，"
-								+ "掉落物以物品形式掉出并被助手自动拾进背包。异步：调用后立即返回，之后用 player_look 确认。"
-								+ "不能挖空气、基岩、容器（箱子/熔炉等）。",
+						"Have the assistant (as a player) mine the block at the given coordinates: walk up to it and break it with the "
+								+ "main-hand tool like a player; drops fall out as items and are auto-picked into the assistant's inventory. "
+								+ "Asynchronous: returns immediately; confirm later with player_look. Cannot mine air, bedrock, or containers (chests/furnaces etc.).",
 						ToolSchema.object(mineProps, "x", "y", "z"),
 						this::mine),
 				new ToolDefinition("player_place",
-						"让助手（以玩家身份）用主手物品在指定位置放置方块：贴到 (x,y,z) 方块的 face 面放置。"
-								+ "需要主手拿着可放置的物品（如石头/木板）。异步：离得远会先走过去再放，之后用 player_look 确认。",
+						"Have the assistant (as a player) place a block at the given position with its main-hand item: place it against the "
+								+ "face of the block at (x,y,z). Requires a placeable item in the main hand (e.g. stone/planks). "
+								+ "Asynchronous: if far away it walks over first, then places; confirm later with player_look.",
 						ToolSchema.object(placeProps, "x", "y", "z"),
 						this::place),
 				new ToolDefinition("player_craft",
-						"让助手用【自己的玩家背包】材料合成指定物品（与玩家完全一致：2×2 及更小配方随时可合成，"
-								+ "3×3 配方需要附近有工作台）。产物进入助手背包，之后可用 player_hand_to_player 递给主人。",
+						"Have the assistant craft the given item using materials from its own player inventory (exactly like a player: "
+								+ "2×2 and smaller recipes can be crafted anytime, 3×3 recipes need a nearby crafting table). "
+								+ "Products go into the assistant's inventory; later you can hand them to the owner with player_hand_to_player.",
 						ToolSchema.object(craftProps, "item"),
 						this::craft),
 				new ToolDefinition("player_inventory",
-						"列出助手（或主人）的玩家背包（36 格 + 装备 + 副手）物品清单。",
+						"List the items in the assistant's (or the owner's) player inventory (36 slots + equipment + offhand).",
 						ToolSchema.object(listProps),
 						this::listInventory),
 				new ToolDefinition("player_hand_to_player",
-						"从助手背包取出物品递给主人（进主人背包；主人背包满则掉主人脚边）。",
+						"Take an item out of the assistant's inventory and hand it to the owner (goes into the owner's inventory; "
+								+ "drops at the owner's feet if their inventory is full).",
 						ToolSchema.object(handProps, "item"),
 						this::handToPlayer));
 	}
 
 	@Override
 	public String systemPromptFragment() {
-		return "【玩家形态】你以一个真正的玩家身份加入了《我的世界》服务器：拥有普通玩家的完整背包、"
-				+ "装备栏与玩家式动作。player_goto/player_stop 移动，player_jump 跳跃（跃过 1 格台阶/小沟，"
-				+ "配合移动目标可助跑横跳），player_mine/player_place 用玩家方式破坏/放置方块"
-				+ "（掉落物自动进背包），player_craft 用背包材料合成（规则与玩家一致，3×3 需工作台），"
-				+ "player_hand_to_player 把物品递给主人，player_inventory/player_look 观察状态与环境，"
-				+ "player_find 按关键词/ID 找东西并返回【精确坐标】（先 player_find 拿坐标再行动，不要猜坐标）。"
-				+ "行动前先观察、行动后再观察确认；工具结果以 [工具名 成功/失败] 开头，先读标记再读内容；"
-				+ "不要假设工具一定成功，失败时换方法而不是原样重试。";
+		return "[Player form] You have joined the Minecraft server as a real player: with a full player inventory, equipment slots "
+				+ "and player-style actions. player_goto/player_stop move, player_jump jumps (over 1-block steps/small gaps, "
+				+ "combined with a movement target for a running jump), player_mine/player_place break/place blocks the player way "
+				+ "(drops go straight into the inventory), player_craft crafts from inventory materials (same rules as a player; "
+				+ "3×3 needs a crafting table), player_hand_to_player hands items to the owner, player_inventory/player_look observe "
+				+ "state and surroundings, player_find finds things by keyword/ID and returns exact coordinates "
+				+ "(always player_find first to get coordinates — don't guess). Observe before acting and confirm after acting; "
+				+ "tool results begin with [tool success/failure] — read the marker first; never assume a tool succeeded; "
+				+ "on failure try a different approach rather than retrying identically.";
 	}
 
 	@Override
@@ -167,11 +173,11 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			return null;
 		}
 		StringBuilder sb = new StringBuilder();
-		sb.append("【助手状态】坐标: x=").append(Math.round(a.getX()))
+		sb.append("[Assistant state] position: x=").append(Math.round(a.getX()))
 				.append(", y=").append(Math.round(a.getY()))
 				.append(", z=").append(Math.round(a.getZ()))
-				.append("，朝向: ").append(AiCompanionService.facingName(a.getYRot()));
-		sb.append(a.movement().isMoving() ? " | 正在移动" : " | 静止");
+				.append(", facing: ").append(AiCompanionService.facingName(a.getYRot()));
+		sb.append(a.movement().isMoving() ? " | moving" : " | still");
 		ServerLevel level = ctx.level();
 		if (a.level() instanceof ServerLevel al) {
 			level = al;
@@ -179,7 +185,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		if (level != null) {
 			sb.append(" | ").append(AiCompanionService.environmentCapsule(level, a.blockPosition(), 16));
 		}
-		sb.append(" | 形态: 玩家");
+		sb.append(" | form: player");
 		return sb.toString();
 	}
 
@@ -190,46 +196,47 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	private ToolResult gotoTool(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_goto）需要玩家形态助手。");
+			return ToolResult.error("Tool player_goto requires a player-form assistant.");
 		}
 		ToolArgs t = new ToolArgs(args);
 		int x = t.intOf("x", Integer.MIN_VALUE);
 		int y = t.intOf("y", Integer.MIN_VALUE);
 		int z = t.intOf("z", Integer.MIN_VALUE);
 		if (x == Integer.MIN_VALUE || y == Integer.MIN_VALUE || z == Integer.MIN_VALUE) {
-			return ToolResult.error("player_goto 需要整数参数 x、y、z（绝对坐标）。");
+			return ToolResult.error("player_goto requires integer parameters x, y, z (absolute coordinates).");
 		}
 		double maxDist = a.getConfig().maxDistance;
 		if (a.distanceToSqr(x + 0.5, y + 0.5, z + 0.5) > maxDist * maxDist) {
-			return ToolResult.error("目标离主人超过 " + (int) maxDist + " 格，太远了；请分步走或选更近的目标。");
+			return ToolResult.error("Target is more than " + (int) maxDist + " blocks from the owner — too far; "
+					+ "move in steps or pick a closer target.");
 		}
 		a.movement().moveTo(new Vec3(x + 0.5, y, z + 0.5), a.getConfig().speed, true);
-		return ToolResult.ok("正在前往 (" + x + "," + y + "," + z + ")。到达后请用 player_look 确认。");
+		return ToolResult.ok("Heading to (" + x + "," + y + "," + z + "). Use player_look to confirm arrival.");
 	}
 
 	private ToolResult stopTool(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_stop）需要玩家形态助手。");
+			return ToolResult.error("Tool player_stop requires a player-form assistant.");
 		}
 		a.movement().stop();
-		return ToolResult.ok("已停止移动。");
+		return ToolResult.ok("Movement stopped.");
 	}
 
 	private ToolResult jump(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_jump）需要玩家形态助手。");
+			return ToolResult.error("Tool player_jump requires a player-form assistant.");
 		}
 		return a.movement().jump()
-				? ToolResult.ok("已跳起（配合移动目标可助跑越过台阶/小沟）。")
-				: ToolResult.error("现在跳不了：半空中或飞行中，先落地再试。");
+				? ToolResult.ok("Jumped (combine with a movement target to run over steps/gaps).")
+				: ToolResult.error("Cannot jump right now: in mid-air or flying; land first and try again.");
 	}
 
 	private ToolResult lookAround(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_look）需要玩家形态助手。");
+			return ToolResult.error("Tool player_look requires a player-form assistant.");
 		}
 		ToolArgs t = new ToolArgs(args);
 		int radius = Math.max(1, Math.min(16, t.intOf("radius", 8)));
@@ -237,10 +244,10 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		BlockPos pos = a.blockPosition();
 
 		StringBuilder sb = new StringBuilder();
-		sb.append("坐标: x=").append(pos.getX()).append(", y=").append(pos.getY())
+		sb.append("position: x=").append(pos.getX()).append(", y=").append(pos.getY())
 				.append(", z=").append(pos.getZ());
-		sb.append(", 朝向: ").append(AiCompanionService.facingName(a.getYRot()));
-		sb.append(", 移动: ").append(a.movement().isMoving() ? "正在移动" : "静止");
+		sb.append(", facing: ").append(AiCompanionService.facingName(a.getYRot()));
+		sb.append(", movement: ").append(a.movement().isMoving() ? "moving" : "still");
 		sb.append(" | ").append(AiCompanionService.environmentCapsule(level, pos, 0));
 
 		Map<String, Integer> blockCounts = new LinkedHashMap<>();
@@ -256,9 +263,9 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			}
 		}
 		if (blockCounts.isEmpty()) {
-			sb.append("。周围 ").append(radius).append(" 格内几乎没有方块。");
+			sb.append(". Almost no blocks within ").append(radius).append(" blocks.");
 		} else {
-			sb.append("。周围方块: ");
+			sb.append(". Nearby blocks: ");
 			int i = 0;
 			for (Map.Entry<String, Integer> e : blockCounts.entrySet()) {
 				if (i >= 8) {
@@ -278,7 +285,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				e -> e != a && e.isAlive()
 						&& (e instanceof LivingEntity || e instanceof ItemEntity));
 		if (!entities.isEmpty()) {
-			sb.append("。附近实体: ");
+			sb.append(". Nearby entities: ");
 			int count = 0;
 			for (Entity e : entities) {
 				if (count >= 10) {
@@ -286,19 +293,19 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 					break;
 				}
 				double dist = Math.round(a.distanceTo(e) * 10.0) / 10.0;
-				String type = e instanceof Player ? "玩家"
-						: e instanceof Monster ? "怪物"
-						: e instanceof ItemEntity ? "掉落物" : shortName(e.getType().getDescriptionId());
+				String type = e instanceof Player ? "Player"
+						: e instanceof Monster ? "Monster"
+						: e instanceof ItemEntity ? "Dropped item" : shortName(e.getType().getDescriptionId());
 				// 带精确坐标 + 方位：模型据此才能判断“东西在哪”
 				sb.append(type).append(" ").append(e.blockPosition().toShortString()).append(" ")
-						.append(bearingTo(pos, e.blockPosition())).append("(").append(dist).append("格) ")
+						.append(bearingTo(pos, e.blockPosition())).append("(").append(dist).append(" blocks) ")
 						.append(" ");
 				count++;
 			}
 		} else {
-			sb.append("。附近没有其他实体。");
+			sb.append(". No other entities nearby.");
 		}
-		sb.append(" | 背包: ").append(formatBackpack(a));
+		sb.append(" | inventory: ").append(formatBackpack(a));
 		return ToolResult.ok(sb.toString());
 	}
 
@@ -311,12 +318,12 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	private ToolResult findTarget(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_find）需要玩家形态助手。");
+			return ToolResult.error("Tool player_find requires a player-form assistant.");
 		}
 		ToolArgs t = new ToolArgs(args);
 		String target = t.strOf("target", "").trim().toLowerCase(java.util.Locale.ROOT);
 		if (target.isEmpty()) {
-			return ToolResult.error("player_find 需要 target（要找的东西的 ID 或关键词）。");
+			return ToolResult.error("player_find requires a target (ID or keyword of what to find).");
 		}
 		int radius = Math.max(1, Math.min(20, t.intOf("radius", 12)));
 		ServerLevel level = ctx.level();
@@ -357,25 +364,25 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				if (n >= 6) {
 					break;
 				}
-				String label = e instanceof Player ? "玩家"
-						: e instanceof Monster ? "怪物"
-						: e instanceof ItemEntity ? "掉落物" : shortName(e.getType().getDescriptionId());
+				String label = e instanceof Player ? "Player"
+						: e instanceof Monster ? "Monster"
+						: e instanceof ItemEntity ? "Dropped item" : shortName(e.getType().getDescriptionId());
 				lines.add(formatTarget(e.blockPosition(), label, a));
 				n++;
 			}
 		}
 
 		if (lines.isEmpty()) {
-			return ToolResult.error("在半径 " + radius + " 格内没有找到与 \"" + target + "\" 相关的东西。"
-					+ "试试更短的关键词（如 \"log\"、\"石头\"），或用精确 ID（如 minecraft:oak_log）。");
+			return ToolResult.error("Nothing related to \"" + target + "\" found within " + radius + " blocks. "
+					+ "Try a shorter keyword (e.g. \"log\"), or an exact ID (e.g. minecraft:oak_log).");
 		}
-		StringBuilder sb = new StringBuilder("找到 \"" + target + "\" 相关 ").append(total).append(" 处（半径 ")
-				.append(radius).append(" 格）：");
+		StringBuilder sb = new StringBuilder("Found ").append(total).append(" match(es) for \"").append(target)
+				.append("\" (within ").append(radius).append(" blocks):");
 		for (int i = 0; i < lines.size(); i++) {
 			sb.append("\n").append(i + 1).append(". ").append(lines.get(i));
 		}
 		if (total > lines.size()) {
-			sb.append("\n…共 ").append(total).append(" 处（此处列出最近 ").append(lines.size()).append(" 处）");
+			sb.append("\n… ").append(total).append(" total (listing the nearest ").append(lines.size()).append(" here)");
 		}
 		return ToolResult.ok(sb.toString());
 	}
@@ -383,82 +390,82 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	private ToolResult mine(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_mine）需要玩家形态助手。");
+			return ToolResult.error("Tool player_mine requires a player-form assistant.");
 		}
 		ToolArgs t = new ToolArgs(args);
 		int x = t.intOf("x", Integer.MIN_VALUE);
 		int y = t.intOf("y", Integer.MIN_VALUE);
 		int z = t.intOf("z", Integer.MIN_VALUE);
 		if (x == Integer.MIN_VALUE || y == Integer.MIN_VALUE || z == Integer.MIN_VALUE) {
-			return ToolResult.error("player_mine 需要整数参数 x、y、z。");
+			return ToolResult.error("player_mine requires integer parameters x, y, z.");
 		}
 		ServerLevel level = ctx.level();
 		BlockPos pos = new BlockPos(x, y, z);
 		// 安全校验（与实体版挖掘一致）
 		if (level != ctx.owner().level()) {
-			return ToolResult.error("只能挖掘主人当前所在维度的方块。");
+			return ToolResult.error("Can only mine blocks in the dimension the owner is currently in.");
 		}
 		double maxDist = a.getConfig().maxDistance;
 		if (ctx.owner().distanceToSqr(pos.getCenter()) > maxDist * maxDist) {
-			return ToolResult.error("目标方块离主人超过 " + (int) maxDist + " 格，太远了。");
+			return ToolResult.error("Target block is more than " + (int) maxDist + " blocks from the owner — too far.");
 		}
 		BlockState state = level.getBlockState(pos);
 		if (state.isAir()) {
-			return ToolResult.error("(" + x + "," + y + "," + z + ") 是空气，没有可挖的方块。");
+			return ToolResult.error("(" + x + "," + y + "," + z + ") is air; nothing to mine there.");
 		}
 		if (state.is(net.minecraft.world.level.block.Blocks.BEDROCK)
 				|| state.getDestroySpeed(level, pos) < 0) {
-			return ToolResult.error("(" + x + "," + y + "," + z + ") 是基岩/不可破坏方块，挖不动。");
+			return ToolResult.error("(" + x + "," + y + "," + z + ") is bedrock/an unbreakable block; can't mine it.");
 		}
 		BlockEntity be = level.getBlockEntity(pos);
 		if (be != null) {
-			return ToolResult.error("(" + x + "," + y + "," + z + ") 是功能方块（有数据），为了安全不破坏它。");
+			return ToolResult.error("(" + x + "," + y + "," + z + ") is a functional block (has data); won't break it for safety.");
 		}
 		GlobalPos cfgBlock = a.getConfigBlock();
 		if (cfgBlock != null && cfgBlock.dimension().equals(level.dimension())
 				&& cfgBlock.pos().equals(pos)) {
-			return ToolResult.error("那是我的配置方块（AI 徽标方块），不能挖。");
+			return ToolResult.error("That is my config block (AI Logo Block); can't mine it.");
 		}
 		// 走到方块旁，到达后用真实的 ServerPlayerGameMode.destroyBlock 破坏
 		a.movement().moveTo(new Vec3(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5),
 				a.getConfig().speed, true);
 		a.movement().whenArrived(() -> doBreak(a, level, pos));
-		return ToolResult.ok("正在以玩家身份走到 (" + x + "," + y + "," + z + ") 旁挖掘；"
-				+ "掉落物会掉出来并被自动拾进背包。");
+		return ToolResult.ok("Walking over to mine (" + x + "," + y + "," + z + ") as a player; "
+				+ "drops will fall out and be auto-picked into the inventory.");
 	}
 
 	private ToolResult place(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_place）需要玩家形态助手。");
+			return ToolResult.error("Tool player_place requires a player-form assistant.");
 		}
 		ToolArgs t = new ToolArgs(args);
 		int x = t.intOf("x", Integer.MIN_VALUE);
 		int y = t.intOf("y", Integer.MIN_VALUE);
 		int z = t.intOf("z", Integer.MIN_VALUE);
 		if (x == Integer.MIN_VALUE || y == Integer.MIN_VALUE || z == Integer.MIN_VALUE) {
-			return ToolResult.error("player_place 需要整数参数 x、y、z。");
+			return ToolResult.error("player_place requires integer parameters x, y, z.");
 		}
 		String faceName = t.strOf("face", "up").toLowerCase(java.util.Locale.ROOT);
 		Direction face = parseDirection(faceName);
 		if (face == null) {
-			return ToolResult.error("face 必须是 up/down/north/south/east/west，收到: " + faceName);
+			return ToolResult.error("face must be up/down/north/south/east/west, got: " + faceName);
 		}
 		ItemStack mainHand = a.getMainHandItem();
 		if (mainHand.isEmpty()) {
-			return ToolResult.error("主手没有可放置的物品（先 player_hand_to_player 或让主人给一个，"
-					+ "再要求装备到主手）。");
+			return ToolResult.error("No placeable item in the main hand (first use player_hand_to_player "
+					+ "or have the owner give one and equip it to the main hand).");
 		}
 		ServerLevel level = ctx.level();
 		BlockPos anchor = new BlockPos(x, y, z); // 贴着这个方块放
 		BlockPos target = anchor.relative(face); // 放置位置
 		if (!level.getBlockState(target).isAir()) {
 			return ToolResult.error("(" + target.getX() + "," + target.getY() + "," + target.getZ()
-					+ ") 不是空气，放不下。");
+					+ ") is not air; can't place there.");
 		}
 		double maxDist = a.getConfig().maxDistance;
 		if (ctx.owner().distanceToSqr(target.getCenter()) > maxDist * maxDist) {
-			return ToolResult.error("目标离主人超过 " + (int) maxDist + " 格，太远了。");
+			return ToolResult.error("Target is more than " + (int) maxDist + " blocks from the owner — too far.");
 		}
 		Vec3 hitLoc = Vec3.atCenterOf(anchor).add(
 				face.getStepX() * 0.5, face.getStepY() * 0.5, face.getStepZ() * 0.5);
@@ -470,21 +477,21 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		a.movement().moveTo(new Vec3(target.getX() + 0.5, target.getY(), target.getZ() + 0.5),
 				a.getConfig().speed, true);
 		a.movement().whenArrived(() -> doPlace(a, level, a.getMainHandItem(), hit));
-		return ToolResult.ok("正在走到放置位置旁，把主手物品放到 (" + target.getX() + ","
-				+ target.getY() + "," + target.getZ() + ")。");
+		return ToolResult.ok("Walking to the placement spot to place the main-hand item at (" + target.getX() + ","
+				+ target.getY() + "," + target.getZ() + ").");
 	}
 
 	private ToolResult craft(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_craft）需要玩家形态助手。");
+			return ToolResult.error("Tool player_craft requires a player-form assistant.");
 		}
 		ToolArgs t = new ToolArgs(args);
 		String itemId = t.strOf("item", "");
 		int amount = Math.max(1, Math.min(64, t.intOf("amount", 1)));
 		Holder<net.minecraft.world.item.Item> item = AiCompanionService.resolveItem(itemId);
 		if (item == null) {
-			return ToolResult.error("我不认识物品 \"" + itemId + "\"，请用类似 minecraft:diamond_block 的物品 ID。");
+			return ToolResult.error("I don't know the item \"" + itemId + "\"; use an item ID like minecraft:diamond_block.");
 		}
 		ServerLevel level = ctx.level();
 		RegistryAccess registryAccess = level.registryAccess();
@@ -524,42 +531,43 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				level.addFreshEntity(new ItemEntity(level,
 						a.getX(), a.getY() + 1.0, a.getZ(), crafted));
 			}
-			return ToolResult.ok("已合成 " + shortName(item.value().getDescriptionId()) + " ×"
-					+ crafted.getCount() + "（放进助手背包）"
-					+ (sets < amount ? "。材料只够合成 " + sets + " 套" : "") + "。");
+			return ToolResult.ok("Crafted " + shortName(item.value().getDescriptionId()) + " ×"
+					+ crafted.getCount() + " (put into the assistant's inventory)"
+					+ (sets < amount ? ". Only enough materials for " + sets + " set(s)" : "") + ".");
 		}
 		if (sawWorkbenchRecipe) {
-			return ToolResult.error("合成 " + shortName(item.value().getDescriptionId())
-					+ " 需要工作台（3×3 合成格，和玩家一样）。请先走到工作台旁边再试一次。");
+			return ToolResult.error("Crafting " + shortName(item.value().getDescriptionId())
+					+ " requires a crafting table (3×3 grid, same as a player). Walk to a crafting table first and try again.");
 		}
-		return ToolResult.error("用我背包里的材料无法合成 "
-				+ shortName(item.value().getDescriptionId()) + "。材料不足或没有配方。");
+		return ToolResult.error("Cannot craft "
+				+ shortName(item.value().getDescriptionId()) + " from the materials in my inventory. "
+				+ "Not enough materials or no recipe.");
 	}
 
 	private ToolResult listInventory(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_inventory）需要玩家形态助手。");
+			return ToolResult.error("Tool player_inventory requires a player-form assistant.");
 		}
 		ToolArgs t = new ToolArgs(args);
 		String whose = t.strOf("whose", "self").toLowerCase(java.util.Locale.ROOT);
 		if (whose.equals("player")) {
-			return ToolResult.ok("主人背包: " + formatPlayerInventory(ctx.owner().getInventory()));
+			return ToolResult.ok("Owner inventory: " + formatPlayerInventory(ctx.owner().getInventory()));
 		}
-		return ToolResult.ok("助手背包: " + formatPlayerInventory(a.getInventory()));
+		return ToolResult.ok("Assistant inventory: " + formatPlayerInventory(a.getInventory()));
 	}
 
 	private ToolResult handToPlayer(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
-			return ToolResult.error("玩家形态工具（player_hand_to_player）需要玩家形态助手。");
+			return ToolResult.error("Tool player_hand_to_player requires a player-form assistant.");
 		}
 		ToolArgs t = new ToolArgs(args);
 		String itemId = t.strOf("item", "");
 		int amount = Math.max(1, Math.min(640, t.intOf("amount", 1)));
 		Holder<net.minecraft.world.item.Item> item = AiCompanionService.resolveItem(itemId);
 		if (item == null) {
-			return ToolResult.error("我不认识物品 \"" + itemId + "\"。");
+			return ToolResult.error("I don't know the item \"" + itemId + "\".");
 		}
 		Inventory inv = a.getInventory();
 		int given = 0;
@@ -580,10 +588,10 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			}
 		}
 		if (given == 0) {
-			return ToolResult.error("助手背包里没有 " + shortName(item.value().getDescriptionId())
-					+ "，无法递给你。");
+			return ToolResult.error("The assistant's inventory has no " + shortName(item.value().getDescriptionId())
+					+ "; can't hand it to you.");
 		}
-		return ToolResult.ok("已把 " + shortName(item.value().getDescriptionId()) + " ×" + given + " 给你。");
+		return ToolResult.ok("Handed you " + shortName(item.value().getDescriptionId()) + " ×" + given + ".");
 	}
 
 
@@ -661,30 +669,30 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return null;
 	}
 
-	/** 一条定位结果：`(x,y,z) 东3格南2格 距离2.4格(类型)`。 */
+	/** 一条定位结果：`(x,y,z) 3 east 2 south distance 2.4 blocks(类型)`。 */
 	private static String formatTarget(BlockPos pos, String descId, AiAssistantPlayer a) {
 		double dist = Math.round(Math.sqrt(a.distanceToSqr(
 				pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5)) * 10.0) / 10.0;
 		return "(" + pos.getX() + "," + pos.getY() + "," + pos.getZ() + ") "
-				+ bearingTo(a.blockPosition(), pos) + " 距离" + dist + "格(" + shortName(descId) + ")";
+				+ bearingTo(a.blockPosition(), pos) + " distance " + dist + " blocks(" + shortName(descId) + ")";
 	}
 
-	/** 从 / 到目标的方位（东北西南格数；原地返回 原地）。 */
+	/** 从 / 到目标的方位（东南西北格数；原地返回 here）。 */
 	private static String bearingTo(BlockPos from, BlockPos to) {
 		int dx = to.getX() - from.getX();
 		int dz = to.getZ() - from.getZ();
 		StringBuilder sb = new StringBuilder();
 		if (dx > 0) {
-			sb.append("东").append(dx).append("格");
+			sb.append(dx).append(" east");
 		} else if (dx < 0) {
-			sb.append("西").append(-dx).append("格");
+			sb.append(-dx).append(" west");
 		}
 		if (dz > 0) {
-			sb.append("南").append(dz).append("格");
+			sb.append(dz).append(" south");
 		} else if (dz < 0) {
-			sb.append("北").append(-dz).append("格");
+			sb.append(-dz).append(" north");
 		}
-		return sb.length() == 0 ? "原地" : sb.toString();
+		return sb.length() == 0 ? "here" : sb.toString();
 	}
 
 	/** 到达后执行真正的玩家式破坏（ServerPlayerGameMode.destroyBlock）。 */
@@ -708,7 +716,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	private static String doPlace(AiAssistantPlayer a, ServerLevel level, ItemStack item,
 	                              BlockHitResult hit) {
 		if (a.isRemoved() || item.isEmpty()) {
-			return "助手已消失或主手空了，无法放置。";
+			return "The assistant is gone or the main hand is empty; cannot place.";
 		}
 		
 		InteractionResult result = a.gameMode.useItemOn(a, level, item, InteractionHand.MAIN_HAND, hit);
@@ -717,8 +725,8 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				&& !level.getBlockState(target).isAir();
 		com.swaydy.opencraft.debug.DebugLog.log("player_action",
 				"玩家形态助手 useItemOn({}, {}, {}) → {}", target.getX(), target.getY(), target.getZ(), result);
-		return placed ? "已把主手物品放到 (" + target.getX() + "," + target.getY() + "," + target.getZ() + ")。"
-				: "放置未生效（结果 " + result + "），可能物品不能放置或位置被占。";
+		return placed ? "Placed the main-hand item at (" + target.getX() + "," + target.getY() + "," + target.getZ() + ")."
+				: "Placement had no effect (result " + result + "); the item may not be placeable or the spot is occupied.";
 	}
 
 	// ------------------------------------------------------------------
@@ -887,7 +895,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				break;
 			}
 		}
-		return shown == 0 ? "空" : sb.toString();
+		return shown == 0 ? "empty" : sb.toString();
 	}
 
 	private static String formatBackpack(AiAssistantPlayer a) {
@@ -896,14 +904,14 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 
 	private static String slotName(int index) {
 		return switch (index) {
-			case 36 -> "靴子";
-			case 37 -> "护腿";
-			case 38 -> "胸甲";
-			case 39 -> "头盔";
-			case 40 -> "副手";
-			case 41 -> "身体";
-			case 42 -> "坐骑鞍";
-			default -> "物品";
+			case 36 -> "boots";
+			case 37 -> "leggings";
+			case 38 -> "chestplate";
+			case 39 -> "helmet";
+			case 40 -> "offhand";
+			case 41 -> "body";
+			case 42 -> "saddle";
+			default -> "items";
 		};
 	}
 

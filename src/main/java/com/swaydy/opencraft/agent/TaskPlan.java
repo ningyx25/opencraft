@@ -86,7 +86,7 @@ public final class TaskPlan {
 		return out.endsWith("\n") ? out.substring(0, out.length() - 1) : out;
 	}
 
-	/** 简短摘要（工具结果回显 + 日志）：N 步（完成 M，进行中 K，待办 L）。 */
+	/** 简短摘要（工具结果回显 + 日志）：N step(s)（完成 M，进行中 K，待办 L）。 */
 	public String summary() {
 		int done = 0;
 		int active = 0;
@@ -97,7 +97,8 @@ public final class TaskPlan {
 				active++;
 			}
 		}
-		return steps.size() + " 步（完成 " + done + "，进行中 " + active + "，待办 "
-				+ (steps.size() - done - active) + "）";
+		String plural = steps.size() == 1 ? "step" : "steps";
+		return steps.size() + " " + plural + " (" + done + " done, " + active + " in progress, "
+				+ (steps.size() - done - active) + " pending)";
 	}
 }

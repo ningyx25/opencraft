@@ -78,6 +78,6 @@ public class AttackTask extends AssistantTask {
 
 	@Override
 	public String describe() {
-		return "正在攻击 " + (target == null ? "目标" : target.getName().getString());
+		return "Attacking " + (target == null ? "target" : target.getName().getString());
 	}
 }
