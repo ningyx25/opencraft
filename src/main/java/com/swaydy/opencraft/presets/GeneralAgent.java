@@ -10,7 +10,8 @@ import java.util.List;
  * general_agent 预设：像普通玩家一样行动的助手（默认预设）。
  *
  * 助手本身就是一个真正的 ServerPlayer bot（像多人联机客户端一样进服），
- * **召唤后停留在原地、不自动跟随**，行动全部用真实的玩家方式完成：
+ * **默认自动跟随主人**（玩家下达任务指令后退出跟随专注执行，完成后回到跟随），
+ * 行动全部用真实的玩家方式完成：
  * player_goto/player_stop 移动、player_mine/player_place 用 ServerPlayerGameMode
  * 真实破坏/放置、player_craft 用玩家背包材料合成、player_hand_to_player 递给主人、
  * player_inventory/player_look 观察状态与环境；外加基础控制

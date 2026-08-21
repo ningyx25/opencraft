@@ -37,10 +37,17 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * 与实体版（ModEntities + AiCompanionService）并行：每个 AI 徽标方块至多绑定一个助手
  * （跨形态统一判定，见 {@link com.swaydy.opencraft.assistant.AssistantFacade}）。
- * **不自动跟随主人**：召唤后停留在原地，只受显式指令（player_goto 等）驱动；
+ * **默认跟随主人**：同维度内走近（超过跟随距离走、很近停、太远瞬移），主人跨维度时
+ * 每 40 tick 跟随传送；玩家下达指令后助手退出跟随专注执行，指令完成自动回到跟随。
  * 配置方块存在时助手留在世界；方块被拆 → 送走并清空该方块记忆。
  */
 public final class PlayerAssistantService {
+	/** 距离主人超过该值（格）时向主人走动。 */
+	private static final double FOLLOW_DISTANCE = 3.0;
+	/** 距离主人不超过该值（格）时停下（跟随到位）。 */
+	private static final double STOP_DISTANCE = 2.0;
+	/** 距离主人超过该值（格）时直接瞬移到主人身边（避免走太久）。 */
+	private static final double TELEPORT_DISTANCE = 24.0;
 	/**
 	 * 玩家形态助手**进服的系统玩家名**（GameProfile name）：加入消息 / Tab 列表 / /list
 	 * 里显示的这个固定名字。与方块配置的显示名（聊天里的「小智 (x,y,z)」）解耦——
@@ -305,8 +312,13 @@ public final class PlayerAssistantService {
 	// ------------------------------------------------------------------
 
 	/**
-	 * 每 tick：维持安全状态——无敌 + 食物补满（拥有普通玩家的全部能力，
-	 * 但作为陪玩助手不会轻易死）。**不再有跟随逻辑**：助手召唤后停留在原地。
+	 * 每 tick：维持安全状态（无敌 + 食物补满）+ 同维度跟随。
+	 *
+	 * 跟随规则：处于跟随模式（默认）且主人在线、同一维度时——
+	 * 距离超过 {@link #TELEPORT_DISTANCE} 直接瞬移回主人身边；超过
+	 * {@link #FOLLOW_DISTANCE} 且当前没有手动指令时向主人走动；不超过
+	 * {@link #STOP_DISTANCE} 且没有手动指令时停下。手动指令（player_goto/
+	 * player_mine 等，movement 的 manual 标记）不会被跟随逻辑覆盖。
 	 */
 	static void keepSafeState(AiAssistantPlayer player) {
 		if (!player.getAbilities().invulnerable) {
@@ -315,10 +327,33 @@ public final class PlayerAssistantService {
 		if (player.getFoodData().getFoodLevel() < 20) {
 			player.getFoodData().setFoodLevel(20);
 		}
+		if (!player.isFollowing()) {
+			return; // 指令执行期间不跟随
+		}
+		Player owner = player.getOwner();
+		if (owner instanceof ServerPlayer ownerSp && ownerSp.level() == player.level()) {
+			double dist = player.distanceTo(ownerSp);
+			if (dist > TELEPORT_DISTANCE) {
+				// 太远：直接传送回主人身边（与实体版/旧版跟随一致）
+				Vec3 safe = AiCompanionService.findSafeSpawnPos((ServerLevel) player.level(),
+						new Vec3(ownerSp.getX() + 1.5, ownerSp.getY(), ownerSp.getZ() + 1.5));
+				player.teleportTo(safe.x, safe.y, safe.z);
+				com.swaydy.opencraft.debug.DebugLog.log("teleport",
+						"跟随：助手距主人 {} 格，瞬移到主人身边", (int) dist);
+			} else if (dist > FOLLOW_DISTANCE && !player.movement().isManual()) {
+				player.movement().moveTo(
+						new Vec3(ownerSp.getX() + 1.5, ownerSp.getY(), ownerSp.getZ() + 1.5),
+						player.getConfig().speed);
+			} else if (dist <= STOP_DISTANCE && !player.movement().isManual()) {
+				player.movement().stop();
+			}
+		}
 	}
 
 	/**
-	 * 每 40 tick：安全网——绑定方块校验（方块被拆 → 送走并清空该方块记忆）。
+	 * 每 40 tick：安全网（绑定方块校验）+ 跨维度跟随。
+	 * - 绑定方块被拆 / 无绑定 → 送走并清空该方块记忆；
+	 * - 跟随模式下主人在另一维度 → 跟随传送到主人所在维度（指令执行期间不拉走）。
 	 */
 	static void onSlowTick(AiAssistantPlayer player) {
 		if (player == null || player.isRemoved()) {
@@ -334,6 +369,20 @@ public final class PlayerAssistantService {
 			if (gone != null) {
 				dismiss(gone);
 				AiCompanionService.resetHistory(gone);
+			}
+			return;
+		}
+		if (player.isFollowing()) {
+			ServerPlayer owner = player.level().getServer().getPlayerList().getPlayer(player.getOwnerUuid());
+			if (owner != null && owner.level() != player.level()) {
+				// 跨维度跟随：传送到主人所在维度（安全位置）
+				Vec3 safe = AiCompanionService.findSafeSpawnPos((ServerLevel) owner.level(),
+						new Vec3(owner.getX() + 1.5, owner.getY(), owner.getZ() + 1.5));
+				player.teleportTo((ServerLevel) owner.level(), safe.x, safe.y, safe.z,
+						java.util.Set.of(), owner.getYRot(), owner.getXRot(), true);
+				com.swaydy.opencraft.debug.DebugLog.log("teleport",
+						"跟随：助手跨维度跟随主人 {} 到 {}", owner.getName().getString(),
+						owner.level().dimension().identifier());
 			}
 		}
 	}

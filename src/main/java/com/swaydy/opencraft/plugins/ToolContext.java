@@ -1,4 +1,4 @@
-package com.swaydy.opencraft.agent;
+package com.swaydy.opencraft.plugins;
 
 import com.swaydy.opencraft.assistant.AiAssistant;
 import com.swaydy.opencraft.assistant.player.AiAssistantPlayer;

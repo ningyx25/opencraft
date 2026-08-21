@@ -1,5 +1,7 @@
 package com.swaydy.opencraft.agent;
 
+import com.swaydy.opencraft.plugins.AssistantPlugin;
+
 import com.swaydy.opencraft.OpenCraftMod;
 import com.swaydy.opencraft.ai.AiBlockConfig;
 import com.swaydy.opencraft.presets.ChatAgent;

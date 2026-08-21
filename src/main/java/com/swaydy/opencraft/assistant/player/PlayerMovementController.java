@@ -153,6 +153,11 @@ public final class PlayerMovementController {
 		double dz = target.z - pos.z;
 		double horiz = Math.sqrt(dx * dx + dz * dz);
 		if (horiz <= 1.0) {
+			// 到达目标：手动标记复位（manual 只表示“一次手动移动进行中”）——
+			// 到达后即清除，这样跟随逻辑（以 !isManual() 门控）能在手动移动完成后
+			// 自动接管；否则一次 player_goto/player_mine 之后 manual 永远为 true，
+			// 跟随将永远无法恢复。
+			this.manual = false;
 			// 到达：先执行“到达动作”（如挖掘），否则只停在这里
 			if (onArrived != null && !arrivedFired) {
 				com.swaydy.opencraft.debug.DebugLog.log("movement",

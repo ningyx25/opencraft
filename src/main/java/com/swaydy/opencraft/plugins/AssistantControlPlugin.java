@@ -1,10 +1,6 @@
 package com.swaydy.opencraft.plugins;
 
 import com.google.gson.JsonObject;
-import com.swaydy.opencraft.agent.AssistantPlugin;
-import com.swaydy.opencraft.agent.ToolContext;
-import com.swaydy.opencraft.agent.ToolDefinition;
-import com.swaydy.opencraft.agent.ToolResult;
 import com.swaydy.opencraft.ai.AiCompanionService;
 
 import java.util.List;
@@ -14,8 +10,9 @@ import java.util.List;
  *
  * - teleport_to_player：瞬移到主人身边（跨维度）。
  *
- * （“跟随/待命”模式已整体移除：助手不再自动跟随，因此没有 set_mode 工具；
- * 助手召唤后停留在原地，只受显式移动指令驱动。）
+ * 跟随模式：助手默认自动跟随主人；玩家下达任务指令后退出跟随专注执行，
+ * 指令完成自动回到跟随（无需模型干预，由服务端 AgentRuntime 切换）。
+ * 因此本插件不需要 set_mode 工具——跟随是自动的。
  */
 public class AssistantControlPlugin implements AssistantPlugin {
 	@Override
@@ -34,7 +31,8 @@ public class AssistantControlPlugin implements AssistantPlugin {
 
 	@Override
 	public String systemPromptFragment() {
-		return "助手召唤后停留在原地，不会自动跟随；玩家可以要求你传送到玩家身边（teleport_to_player）。";
+		return "你平时会自动跟随主人（主人走到哪你跟到哪）；当主人给你下达任务指令时，你会停下跟随、"
+				+ "专注执行任务，任务完成后自动回到跟随状态。你也可以使用 teleport_to_player 瞬移到主人身边。";
 	}
 
 	private ToolResult teleport(ToolContext ctx, JsonObject args) {

@@ -1,4 +1,4 @@
-package com.swaydy.opencraft.agent;
+package com.swaydy.opencraft.plugins;
 
 /**
  * 工具执行的结果文本（喂回给 LLM 看，模型据此决定下一步）。

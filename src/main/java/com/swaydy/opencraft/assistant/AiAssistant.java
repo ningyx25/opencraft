@@ -65,4 +65,21 @@ public interface AiAssistant {
 
 	/** 形态 id：{@code "player"}（假玩家/客户端形态）或 {@code "entity"}（PathfinderMob 底座）。 */
 	String formId();
+
+	/**
+	 * 是否处于跟随模式（默认跟随；玩家下达指令后退出，指令完成回到跟随）。
+	 * 默认实现 = 不跟随（legacy 实体形态是纯聊天伴侣，永不跟随）；
+	 * 玩家形态（{@link com.swaydy.opencraft.assistant.player.AiAssistantPlayer}）覆写为真实状态。
+	 */
+	default boolean isFollowing() {
+		return false;
+	}
+
+	/**
+	 * 设置跟随模式。默认实现 = no-op（legacy 实体形态不跟随）；
+	 * 玩家形态覆写为写自己的字段。
+	 */
+	default void setFollowing(boolean following) {
+		// no-op for legacy entity form
+	}
 }

@@ -2,10 +2,6 @@ package com.swaydy.opencraft.plugins;
 
 import com.google.gson.JsonObject;
 import com.swaydy.opencraft.ai.AiCompanionService;
-import com.swaydy.opencraft.agent.AssistantPlugin;
-import com.swaydy.opencraft.agent.ToolContext;
-import com.swaydy.opencraft.agent.ToolDefinition;
-import com.swaydy.opencraft.agent.ToolResult;
 import com.swaydy.opencraft.assistant.player.AiAssistantPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -384,105 +380,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return ToolResult.ok(sb.toString());
 	}
 
-	/** 想找的方块集合：先精确解析；失败则按关键词展开注册表（id/描述键子串匹配，限 6 种）。 */
-	private static Set<Block> wantedBlocks(String target) {
-		Set<Block> out = new java.util.HashSet<>();
-		Holder<net.minecraft.world.level.block.Block> exact = AiCompanionService.resolveBlock(target);
-		if (exact != null) {
-			out.add(exact.value());
-			return out;
-		}
-		for (Map.Entry<ResourceKey<Block>, Block> e : BuiltInRegistries.BLOCK.entrySet()) {
-			if (out.size() >= 6) {
-				break;
-			}
-			String id = e.getKey().identifier().getPath();
-			String desc = e.getValue().getDescriptionId().toLowerCase(java.util.Locale.ROOT);
-			if (id.contains(target) || desc.contains(target)) {
-				out.add(e.getValue());
-			}
-		}
-		return out;
-	}
-
-	/** 该关键词是否应做实体查询（玩家/怪物/掉落物/生物 或 可解析的实体类型 id）。 */
-	private static boolean isEntityQuery(String target) {
-		if (target.contains("玩家") || target.contains("player")
-				|| target.contains("怪物") || target.contains("monster")
-				|| target.contains("zombie") || target.contains("skeleton")
-				|| target.contains("掉落") || target.contains("drop")
-				|| target.contains("animal") || target.contains("生物") || target.contains("living")) {
-			return true;
-		}
-		return tryResolveEntityType(target) != null;
-	}
-
-	private static boolean matchesEntity(Entity e, String target) {
-		if (target.contains("玩家") || target.contains("player")) {
-			return e instanceof Player;
-		}
-		if (target.contains("怪物") || target.contains("monster")
-				|| target.contains("zombie") || target.contains("skeleton")) {
-			return e instanceof Monster; // 僵尸/骷髅是怪物，一网打尽
-		}
-		if (target.contains("掉落") || target.contains("drop")) {
-			return e instanceof ItemEntity;
-		}
-		if (target.contains("living") || target.contains("生物") || target.contains("animal")) {
-			return e instanceof LivingEntity;
-		}
-		EntityType<?> et = tryResolveEntityType(target);
-		if (et != null) {
-			return e.getType() == et || e.getType().getDescriptionId().contains(target);
-		}
-		// 其它：把关键词当实体类型描述子串匹配
-		return e.getType().getDescriptionId().toLowerCase(java.util.Locale.ROOT).contains(target);
-	}
-
-	private static EntityType<?> tryResolveEntityType(String id) {
-		String[] candidates = id.contains(":")
-				? new String[] {id}
-				: new String[] {id, "minecraft:" + id};
-		for (String c : candidates) {
-			try {
-				Identifier ident = Identifier.parse(c);
-				var opt = BuiltInRegistries.ENTITY_TYPE.get(ident);
-				if (!opt.isEmpty()) {
-					return opt.get().value();
-				}
-			} catch (Exception ignored) {
-				// 非法 ID 形状：试下一个候选
-			}
-		}
-		return null;
-	}
-
-	/** 一条定位结果：`(x,y,z) 东3格南2格 距离2.4格(类型)`。 */
-	private static String formatTarget(BlockPos pos, String descId, AiAssistantPlayer a) {
-		double dist = Math.round(Math.sqrt(a.distanceToSqr(
-				pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5)) * 10.0) / 10.0;
-		return "(" + pos.getX() + "," + pos.getY() + "," + pos.getZ() + ") "
-				+ bearingTo(a.blockPosition(), pos) + " 距离" + dist + "格(" + shortName(descId) + ")";
-	}
-
-	/** 从 / 到目标的方位（东北西南格数；原地返回 原地）。 */
-	private static String bearingTo(BlockPos from, BlockPos to) {
-		int dx = to.getX() - from.getX();
-		int dz = to.getZ() - from.getZ();
-		StringBuilder sb = new StringBuilder();
-		if (dx > 0) {
-			sb.append("东").append(dx).append("格");
-		} else if (dx < 0) {
-			sb.append("西").append(-dx).append("格");
-		}
-		if (dz > 0) {
-			sb.append("南").append(dz).append("格");
-		} else if (dz < 0) {
-			sb.append("北").append(-dz).append("格");
-		}
-		return sb.length() == 0 ? "原地" : sb.toString();
-	}
-
 	private ToolResult mine(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
@@ -530,21 +427,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				+ "掉落物会掉出来并被自动拾进背包。");
 	}
 
-	/** 到达后执行真正的玩家式破坏（ServerPlayerGameMode.destroyBlock）。 */
-	private static void doBreak(AiAssistantPlayer a, ServerLevel level, BlockPos pos) {
-		BlockState state = level.getBlockState(pos);
-		if (state.isAir() || a.isRemoved()) {
-			return;
-		}
-		boolean ok = a.gameMode.destroyBlock(pos);
-		com.swaydy.opencraft.debug.DebugLog.log("player_action",
-				"玩家形态助手 destroyBlock({}, {}, {}) → {}", pos.getX(), pos.getY(), pos.getZ(), ok);
-		if (ok) {
-			level.playSound(null, pos, net.minecraft.sounds.SoundEvents.STONE_BREAK,
-					net.minecraft.sounds.SoundSource.BLOCKS, 0.8F, 1.0F);
-		}
-	}
-
 	private ToolResult place(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
@@ -590,22 +472,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		a.movement().whenArrived(() -> doPlace(a, level, a.getMainHandItem(), hit));
 		return ToolResult.ok("正在走到放置位置旁，把主手物品放到 (" + target.getX() + ","
 				+ target.getY() + "," + target.getZ() + ")。");
-	}
-
-	/** 执行真正的玩家式放置（ServerPlayerGameMode.useItemOn）。 */
-	private static String doPlace(AiAssistantPlayer a, ServerLevel level, ItemStack item,
-	                              BlockHitResult hit) {
-		if (a.isRemoved() || item.isEmpty()) {
-			return "助手已消失或主手空了，无法放置。";
-		}
-		InteractionResult result = a.gameMode.useItemOn(a, level, item, InteractionHand.MAIN_HAND, hit);
-		BlockPos target = hit.getBlockPos().relative(hit.getDirection());
-		boolean placed = result.consumesAction()
-				&& !level.getBlockState(target).isAir();
-		com.swaydy.opencraft.debug.DebugLog.log("player_action",
-				"玩家形态助手 useItemOn({}, {}, {}) → {}", target.getX(), target.getY(), target.getZ(), result);
-		return placed ? "已把主手物品放到 (" + target.getX() + "," + target.getY() + "," + target.getZ() + ")。"
-				: "放置未生效（结果 " + result + "），可能物品不能放置或位置被占。";
 	}
 
 	private ToolResult craft(ToolContext ctx, JsonObject args) {
@@ -718,6 +584,141 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 					+ "，无法递给你。");
 		}
 		return ToolResult.ok("已把 " + shortName(item.value().getDescriptionId()) + " ×" + given + " 给你。");
+	}
+
+
+	/** 想找的方块集合：先精确解析；失败则按关键词展开注册表（id/描述键子串匹配，限 6 种）。 */
+	private static Set<Block> wantedBlocks(String target) {
+		Set<Block> out = new java.util.HashSet<>();
+		Holder<net.minecraft.world.level.block.Block> exact = AiCompanionService.resolveBlock(target);
+		if (exact != null) {
+			out.add(exact.value());
+			return out;
+		}
+		for (Map.Entry<ResourceKey<Block>, Block> e : BuiltInRegistries.BLOCK.entrySet()) {
+			if (out.size() >= 6) {
+				break;
+			}
+			String id = e.getKey().identifier().getPath();
+			String desc = e.getValue().getDescriptionId().toLowerCase(java.util.Locale.ROOT);
+			if (id.contains(target) || desc.contains(target)) {
+				out.add(e.getValue());
+			}
+		}
+		return out;
+	}
+
+	/** 该关键词是否应做实体查询（玩家/怪物/掉落物/生物 或 可解析的实体类型 id）。 */
+	private static boolean isEntityQuery(String target) {
+		if (target.contains("玩家") || target.contains("player")
+				|| target.contains("怪物") || target.contains("monster")
+				|| target.contains("zombie") || target.contains("skeleton")
+				|| target.contains("掉落") || target.contains("drop")
+				|| target.contains("animal") || target.contains("生物") || target.contains("living")) {
+			return true;
+		}
+		return tryResolveEntityType(target) != null;
+	}
+
+	private static boolean matchesEntity(Entity e, String target) {
+		if (target.contains("玩家") || target.contains("player")) {
+			return e instanceof Player;
+		}
+		if (target.contains("怪物") || target.contains("monster")
+				|| target.contains("zombie") || target.contains("skeleton")) {
+			return e instanceof Monster; // 僵尸/骷髅是怪物，一网打尽
+		}
+		if (target.contains("掉落") || target.contains("drop")) {
+			return e instanceof ItemEntity;
+		}
+		if (target.contains("living") || target.contains("生物") || target.contains("animal")) {
+			return e instanceof LivingEntity;
+		}
+		EntityType<?> et = tryResolveEntityType(target);
+		if (et != null) {
+			return e.getType() == et || e.getType().getDescriptionId().contains(target);
+		}
+		// 其它：把关键词当实体类型描述子串匹配
+		return e.getType().getDescriptionId().toLowerCase(java.util.Locale.ROOT).contains(target);
+	}
+
+	private static EntityType<?> tryResolveEntityType(String id) {
+		String[] candidates = id.contains(":")
+				? new String[] {id}
+				: new String[] {id, "minecraft:" + id};
+		for (String c : candidates) {
+			try {
+				
+				Identifier ident = Identifier.parse(c);
+				var opt = BuiltInRegistries.ENTITY_TYPE.get(ident);
+				if (!opt.isEmpty()) {
+					return opt.get().value();
+				}
+			} catch (Exception ignored) {
+				// 非法 ID 形状：试下一个候选
+			}
+		}
+		return null;
+	}
+
+	/** 一条定位结果：`(x,y,z) 东3格南2格 距离2.4格(类型)`。 */
+	private static String formatTarget(BlockPos pos, String descId, AiAssistantPlayer a) {
+		double dist = Math.round(Math.sqrt(a.distanceToSqr(
+				pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5)) * 10.0) / 10.0;
+		return "(" + pos.getX() + "," + pos.getY() + "," + pos.getZ() + ") "
+				+ bearingTo(a.blockPosition(), pos) + " 距离" + dist + "格(" + shortName(descId) + ")";
+	}
+
+	/** 从 / 到目标的方位（东北西南格数；原地返回 原地）。 */
+	private static String bearingTo(BlockPos from, BlockPos to) {
+		int dx = to.getX() - from.getX();
+		int dz = to.getZ() - from.getZ();
+		StringBuilder sb = new StringBuilder();
+		if (dx > 0) {
+			sb.append("东").append(dx).append("格");
+		} else if (dx < 0) {
+			sb.append("西").append(-dx).append("格");
+		}
+		if (dz > 0) {
+			sb.append("南").append(dz).append("格");
+		} else if (dz < 0) {
+			sb.append("北").append(-dz).append("格");
+		}
+		return sb.length() == 0 ? "原地" : sb.toString();
+	}
+
+	/** 到达后执行真正的玩家式破坏（ServerPlayerGameMode.destroyBlock）。 */
+	private static void doBreak(AiAssistantPlayer a, ServerLevel level, BlockPos pos) {
+		
+		BlockState state = level.getBlockState(pos);
+		if (state.isAir() || a.isRemoved()) {
+			return;
+		}
+		
+		boolean ok = a.gameMode.destroyBlock(pos);
+		com.swaydy.opencraft.debug.DebugLog.log("player_action",
+				"玩家形态助手 destroyBlock({}, {}, {}) → {}", pos.getX(), pos.getY(), pos.getZ(), ok);
+		if (ok) {
+			level.playSound(null, pos, net.minecraft.sounds.SoundEvents.STONE_BREAK,
+					net.minecraft.sounds.SoundSource.BLOCKS, 0.8F, 1.0F);
+		}
+	}
+
+	/** 执行真正的玩家式放置（ServerPlayerGameMode.useItemOn）。 */
+	private static String doPlace(AiAssistantPlayer a, ServerLevel level, ItemStack item,
+	                              BlockHitResult hit) {
+		if (a.isRemoved() || item.isEmpty()) {
+			return "助手已消失或主手空了，无法放置。";
+		}
+		
+		InteractionResult result = a.gameMode.useItemOn(a, level, item, InteractionHand.MAIN_HAND, hit);
+		BlockPos target = hit.getBlockPos().relative(hit.getDirection());
+		boolean placed = result.consumesAction()
+				&& !level.getBlockState(target).isAir();
+		com.swaydy.opencraft.debug.DebugLog.log("player_action",
+				"玩家形态助手 useItemOn({}, {}, {}) → {}", target.getX(), target.getY(), target.getZ(), result);
+		return placed ? "已把主手物品放到 (" + target.getX() + "," + target.getY() + "," + target.getZ() + ")。"
+				: "放置未生效（结果 " + result + "），可能物品不能放置或位置被占。";
 	}
 
 	// ------------------------------------------------------------------

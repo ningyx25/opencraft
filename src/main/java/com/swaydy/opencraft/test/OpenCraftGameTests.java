@@ -10,9 +10,9 @@ import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.MineBlockTask;
 import com.swaydy.opencraft.entity.ModEntities;
-import com.swaydy.opencraft.agent.ToolContext;
-import com.swaydy.opencraft.agent.ToolDefinition;
-import com.swaydy.opencraft.agent.ToolResult;
+import com.swaydy.opencraft.plugins.ToolContext;
+import com.swaydy.opencraft.plugins.ToolDefinition;
+import com.swaydy.opencraft.plugins.ToolResult;
 import com.google.gson.JsonObject;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.core.BlockPos;
@@ -1705,7 +1705,7 @@ public class OpenCraftGameTests {
 					bot.setPos(playerPos.x, playerPos.y, playerPos.z + 2); // 站在放置点旁
 					bot.getInventory().setItem(bot.getInventory().getSelectedSlot(),
 							new ItemStack(Items.STONE, 1));
-					com.swaydy.opencraft.agent.ToolDefinition placeTool =
+					com.swaydy.opencraft.plugins.ToolDefinition placeTool =
 							com.swaydy.opencraft.agent.AgentRegistry.agent("general_agent").toolMap()
 									.get("player_place");
 					if (placeTool == null) {
@@ -1740,7 +1740,7 @@ public class OpenCraftGameTests {
 					}
 					bot.getInventory().setItem(bot.getInventory().getSelectedSlot(),
 							new ItemStack(Items.WOODEN_PICKAXE, 1));
-					com.swaydy.opencraft.agent.ToolDefinition mineTool =
+					com.swaydy.opencraft.plugins.ToolDefinition mineTool =
 							com.swaydy.opencraft.agent.AgentRegistry.agent("general_agent").toolMap()
 									.get("player_mine");
 					JsonObject args = new JsonObject();
@@ -1972,7 +1972,7 @@ public class OpenCraftGameTests {
 					bot.getInventory().setItem(bot.getInventory().getSelectedSlot(),
 							new ItemStack(ModBlocks.AI_LOGO_BLOCK.asItem(), 1));
 					// 3) 用短名 player_hand_to_player 递给主人（复现用户反馈的失败场景）
-					com.swaydy.opencraft.agent.ToolDefinition handTool =
+					com.swaydy.opencraft.plugins.ToolDefinition handTool =
 							com.swaydy.opencraft.agent.AgentRegistry.agent("general_agent").toolMap()
 									.get("player_hand_to_player");
 					if (handTool == null) {
@@ -2233,6 +2233,145 @@ public class OpenCraftGameTests {
 					if (interrupted[0]) {
 						com.swaydy.opencraft.debug.DebugLog.log("test",
 								"中断成功：首问被中止，第二条提问正常处理并回复");
+					}
+				})
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot != null) {
+						com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bot);
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 验证“AI 助手跟随模式”（默认跟随；玩家下达指令后退出跟随；指令完成回到跟随）：
+	 * 1. 召唤玩家形态 bot → 默认 isFollowing()==true（跟随模式）；
+	 * 2. 玩家移开 → bot 向玩家方向移动（跟随真的驱动移动，不是停在原地）；
+	 * 3. 下达指令（ask，真实 agentic loop）→ 立即退出跟随（isFollowing()==false）；
+	 * 4. 等指令完成（历史 ≥2 条，loop 收尾）→ 回到跟随（isFollowing()==true）；
+	 * 5. 再次移开玩家 → bot 重新跟上来（跟随恢复）。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 500)
+	public void playerAssistantFollowMode(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(player.level().dimension(), helper.absolutePos(blockPos));
+		final double[] followStartX = {0.0};
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							(com.swaydy.opencraft.assistant.player.AiAssistantPlayer)
+									AiCompanionService.summonFor(player, bindPos);
+					if (bot == null) {
+						throw new AssertionError("召唤玩家形态助手失败");
+					}
+					// 1) 默认跟随模式
+					if (!bot.isFollowing()) {
+						throw new AssertionError("召唤后助手应默认处于跟随模式");
+					}
+					// 把 bot 放到平台中间固定起点，再把玩家沿 +X 移开 8 格
+					net.minecraft.world.phys.Vec3 standPos = helper.absoluteVec(
+							new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+					bot.teleportTo(standPos.x, standPos.y, standPos.z);
+					followStartX[0] = standPos.x;
+					player.teleportTo(playerPos.x + 8.0, playerPos.y, playerPos.z);
+				})
+				.thenWaitUntil(() -> {
+					// 2) 跟随：bot 应朝玩家方向（+X）移动超过 3 格
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("玩家形态助手不存在"),
+								(int) helper.getTick());
+					}
+					double moved = bot.getX() - followStartX[0];
+					if (moved < 3.0) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待助手跟随走向玩家（当前 +X 位移 "
+												+ Math.round(moved * 10) / 10.0 + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("玩家形态助手不存在");
+					}
+					// 3) 下达指令（真实 agentic loop，命令模式）→ 立即退出跟随
+					AiCompanionService.ask(player, bot, "你好，介绍一下你自己。");
+					if (bot.isFollowing()) {
+						throw new AssertionError("玩家下达指令后助手应立即退出跟随模式");
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 4) 等指令完成（user+assistant 历史 ≥2 条）→ 回到跟随
+					if (AiCompanionService.historySize(bindPos) < 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("等待指令完成（回复写入历史）…"),
+								(int) helper.getTick());
+					}
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("玩家形态助手不存在"),
+								(int) helper.getTick());
+					}
+					if (!bot.isFollowing()) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("指令完成后助手应回到跟随模式"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 5) 再次移开玩家 → bot 应重新跟上来（跟随恢复）
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("玩家形态助手不存在");
+					}
+					player.teleportTo(playerPos.x + 14.0, playerPos.y, playerPos.z);
+				})
+				.thenWaitUntil(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("玩家形态助手不存在"),
+								(int) helper.getTick());
+					}
+					double moved = bot.getX() - followStartX[0];
+					if (moved < 8.0) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待助手恢复跟随（当前 +X 位移 "
+												+ Math.round(moved * 10) / 10.0 + "）…"),
+								(int) helper.getTick());
 					}
 				})
 				.thenExecute(() -> {

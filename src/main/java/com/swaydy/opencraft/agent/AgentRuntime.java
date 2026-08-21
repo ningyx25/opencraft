@@ -5,6 +5,9 @@ import com.swaydy.opencraft.OpenCraftMod;
 import com.swaydy.opencraft.ai.AiBlockConfig;
 import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.ai.LlmClient;
+import com.swaydy.opencraft.plugins.ToolContext;
+import com.swaydy.opencraft.plugins.ToolDefinition;
+import com.swaydy.opencraft.plugins.ToolResult;
 import com.swaydy.opencraft.assistant.AiAssistant;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
@@ -145,6 +148,9 @@ public final class AgentRuntime {
 			}
 			return;
 		}
+		// 玩家下达指令：助手退出跟随模式，直到本次指令完成（loop 收尾）再回到跟随。
+		// 放在 busy 锁与配置可用性检查之后——被“正忙”拒绝或配置不可用时不切换跟随状态。
+		beginTask(assistant);
 		AgentDefinition agent = AgentRegistry.resolveAgent(config);
 		MinecraftServer server = player.level().getServer();
 		// 一次提问 = 一个浮层会话（sessionId 按玩家递增；客户端只认最新会话，杜绝并发串扰）
@@ -181,6 +187,43 @@ public final class AgentRuntime {
 		} catch (Exception e) {
 			return "";
 		}
+	}
+
+	// ------------------------------------------------------------------
+	// 跟随模式切换（跟随模式 = 默认；玩家下达指令后退出，指令完成回到跟随）
+	// ------------------------------------------------------------------
+
+	/**
+	 * 玩家下达指令时调用：助手退出跟随模式，并停掉在途的跟随移动
+	 * （否则退出后仍会朝最后一个跟随目标走）。legacy 实体形态是 no-op。
+	 */
+	private static void beginTask(AiAssistant assistant) {
+		if (assistant == null) {
+			return;
+		}
+		assistant.setFollowing(false);
+		if (assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p
+				&& p.movement() != null) {
+			p.movement().stop();
+		}
+	}
+
+	/** 指令完成时调用：助手回到跟随模式（legacy 实体形态是 no-op）。 */
+	private static void endTask(AiAssistant assistant) {
+		if (assistant == null) {
+			return;
+		}
+		assistant.setFollowing(true);
+	}
+
+	/** 收尾一次 loop：释放忙锁 + 让助手回到跟随模式。 */
+	private static void finishLoop(LoopContext ctx) {
+		if (ctx == null) {
+			return;
+		}
+		RUNNING.remove(ctx.lockKey);
+		LIVE.remove(ctx.lockKey);
+		endTask(ctx.assistant);
 	}
 
 	// ------------------------------------------------------------------
@@ -468,8 +511,8 @@ public final class AgentRuntime {
 									LlmClient.Message.assistant(full));
 						}
 						// 落账即代表 LLM 工作完成：释放“正忙”锁（避免“历史已 +1 但仍被 正忙 拒绝”竞态）
-						RUNNING.remove(ctx.lockKey);
-						LIVE.remove(ctx.lockKey);
+						// 并让助手回到跟随模式（指令完成）。
+						finishLoop(ctx);
 						AiCompanionService.finishStreamReply(ctx.player, ctx.assistant, full);
 					});
 					// 2) 浮层/GUI 窗口的“打字机”reveal（纯展示，独立异步任务，不阻塞 SSE 读取线程）：
@@ -523,8 +566,8 @@ public final class AgentRuntime {
 						// 已被中断：不报错、不广播（interrupt 已反馈）
 						return;
 					}
-					RUNNING.remove(ctx.lockKey);
-					LIVE.remove(ctx.lockKey);
+					// 报错即本次指令结束：释放忙锁并让助手回到跟随模式
+					finishLoop(ctx);
 					Component err = Component.translatable("command.opencraft.ask.error", reason);
 					if (ctx.gui) {
 						AiCompanionService.sendGuiEvent(ctx.player, ctx.guiBlockPos, ctx.guiDimension,
@@ -1009,6 +1052,8 @@ public final class AgentRuntime {
 			p.movement().stop();
 		}
 		RUNNING.remove(key);
+		// 中断即本次指令结束：助手回到跟随模式（它会从当前位置走回主人身边）
+		endTask(ctx.assistant);
 		if (ctx.historyKey != null) {
 			AiCompanionService.appendHistory(ctx.historyKey,
 					LlmClient.Message.assistant("（上一条任务被玩家中断，未完成）"));

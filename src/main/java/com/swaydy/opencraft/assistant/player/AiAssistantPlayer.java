@@ -38,8 +38,9 @@ import java.util.UUID;
  * - 会出现在玩家列表 / Tab / 实体追踪中，对其他人就是一个“客户端玩家”。
  *
  * 绑定规则与实体版一致：绑定 AI 徽标方块（配置来源）与主人；
- * 配置方块被拆时由 {@link PlayerAssistantService} 清除。**不自动跟随主人**——
- * 召唤后停留在原地，只受显式指令（player_goto/player_mine 等）驱动。
+ * 配置方块被拆时由 {@link PlayerAssistantService} 清除。**跟随模式**：
+ * 默认跟随主人（同维度走近、跨维度/太远时瞬移跟随）；当玩家给助手下达
+ * 指令（/opencraft ask 或聊天）后退出跟随专注执行，指令完成自动回到跟随。
  * 网络连接是“黑洞”（{@link FakeConnection}），所有发包 no-op。
  *
  * 生命形态：默认生存模式 + 无敌（不会因坠落/溺水/饥饿/怪物而死）+ 食物自动补满——
@@ -53,6 +54,12 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 	private GlobalPos configBlock;
 	/** 主人 UUID（随玩家存档持久化）。 */
 	private UUID ownerUuid;
+	/**
+	 * 是否跟随主人。默认 {@code true}（召唤即跟随）；玩家下达指令时由
+	 * AgentRuntime 置 false，指令完成/中断后置回 true。不持久化——
+	 * 任务生命周期是瞬态的，重进/重召唤一律默认跟随。
+	 */
+	private boolean following = true;
 
 	private final PlayerMovementController movement = new PlayerMovementController();
 
@@ -63,6 +70,16 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 	/** 移动控制器（跟随 / goto / 走到旁再破坏）。 */
 	public PlayerMovementController movement() {
 		return movement;
+	}
+
+	@Override
+	public boolean isFollowing() {
+		return following;
+	}
+
+	@Override
+	public void setFollowing(boolean following) {
+		this.following = following;
 	}
 
 	@Override

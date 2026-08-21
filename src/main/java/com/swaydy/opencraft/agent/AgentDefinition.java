@@ -1,5 +1,9 @@
 package com.swaydy.opencraft.agent;
 
+import com.swaydy.opencraft.plugins.AssistantPlugin;
+import com.swaydy.opencraft.plugins.ToolContext;
+import com.swaydy.opencraft.plugins.ToolDefinition;
+
 import com.swaydy.opencraft.OpenCraftMod;
 
 import java.util.ArrayList;
