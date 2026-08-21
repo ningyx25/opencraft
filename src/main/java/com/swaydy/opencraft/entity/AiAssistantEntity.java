@@ -91,7 +91,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 
 	/**
 	 * 助手自己的背包（36 格，随存档持久化，NBT 键 {@code Inventory}）。
-	 * 拾取/挖掘掉落物/合成材料默认进这里；InventoryPlugin 据此清单/装备/递给主人。
+	 * 拾取/挖掘掉落物/合成材料默认进这里。
 	 * 注意：registerGoals 在字段初始化前调用，背包不能在 registerGoals 里引用。
 	 */
 	private final SimpleContainer inventory = new SimpleContainer(INVENTORY_SIZE);

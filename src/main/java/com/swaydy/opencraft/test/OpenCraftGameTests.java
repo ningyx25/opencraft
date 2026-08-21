@@ -10,8 +10,6 @@ import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.MineBlockTask;
 import com.swaydy.opencraft.entity.ModEntities;
-import com.swaydy.opencraft.plugins.InventoryPlugin;
-import com.swaydy.opencraft.plugins.CraftingPlugin;
 import com.swaydy.opencraft.agent.ToolContext;
 import com.swaydy.opencraft.agent.ToolDefinition;
 import com.swaydy.opencraft.agent.ToolResult;
@@ -1283,11 +1281,9 @@ public class OpenCraftGameTests {
 	 * 验证“助手像普通生存玩家一样拥有背包与装备”：
 	 * 1. 背包为 36 格（27 普通 + 9 快捷栏，与玩家一致）；
 	 * 2. 自动拾取地上的物品进自己的背包（拾取后掉落物实体消失）；
-	 * 3. equip 工具把护甲穿到对应装备栏（胸甲 → CHEST），护甲值如实生效（≥5）；
-	 * 4. equip 工具把剑拿在主手（非护甲 → MAINHAND）；
-	 * 5. 挖掘前 autoSelectMiningTool 自动把背包里最快的镐换到主手；
-	 * 6. 挖掘掉落物进**助手自己的背包**（而不是主人背包），主人背包不增长；
-	 * 7. hand_to_player 把背包物品递给主人（主人背包增加）。
+	 * 3. 装备栏穿上护甲（胸甲 → CHEST）后，护甲值如实生效（≥5）；
+	 * 4. 挖掘前 autoSelectMiningTool 自动把背包里最快的镐换到主手；
+	 * 5. 挖掘掉落物进**助手自己的背包**（而不是主人背包），主人背包不增长。
 	 */
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 400)
 	public void assistantPlayerLikeInventory(GameTestHelper helper) {
@@ -1311,7 +1307,6 @@ public class OpenCraftGameTests {
 		BlockPos configBlockPos = new BlockPos(4, 1, 1);
 		configureMockBlock(helper, configBlockPos, player);
 		ServerLevel level = (ServerLevel) helper.getLevel();
-		net.minecraft.server.MinecraftServer server = level.getServer();
 
 		helper.startSequence()
 				.thenExecute(() -> {
@@ -1362,47 +1357,8 @@ public class OpenCraftGameTests {
 						throw new AssertionError("助手应自动拾取地上的钻石进背包，"
 								+ "实际背包钻石数 " + assistant.countOf(Items.DIAMOND.builtInRegistryHolder()));
 					}
-					// 2.5) 背包内容必须实时注入 system 上下文（模型不调工具也能看到背包）
-					String ctxFrag = new InventoryPlugin().gameContextFragment(
-							new ToolContext(server, assistant, player, level));
-					if (!ctxFrag.contains("diamond") || !ctxFrag.contains("【我的背包】")) {
-						throw new AssertionError("游戏上下文应包含助手背包内容（模型可见），实际: " + ctxFrag);
-					}
-					// 3) equip 护甲：铁胸甲应穿到胸甲栏，护甲值生效
-					assistant.giveToInventory(new ItemStack(Items.IRON_CHESTPLATE));
-					ToolDefinition equipDef = new InventoryPlugin().tools().stream()
-							.filter(t -> t.name().equals("equip")).findFirst().orElseThrow();
-					JsonObject args = new JsonObject();
-					args.addProperty("item", "minecraft:iron_chestplate");
-					ToolResult res = equipDef.executor().execute(
-							new ToolContext(server, assistant, player, level), args);
-					if (!res.ok()) {
-						throw new AssertionError("equip 铁胸甲失败: " + res.message());
-					}
-					if (!assistant.getItemBySlot(EquipmentSlot.CHEST).is(Items.IRON_CHESTPLATE)) {
-						throw new AssertionError("铁胸甲应穿到胸甲栏，实际 "
-								+ assistant.getItemBySlot(EquipmentSlot.CHEST));
-					}
-					// 4) equip 剑 → 主手
-					assistant.giveToInventory(new ItemStack(Items.IRON_SWORD));
-					JsonObject swordArgs = new JsonObject();
-					swordArgs.addProperty("item", "minecraft:iron_sword");
-					ToolResult swordRes = equipDef.executor().execute(
-							new ToolContext(server, assistant, player, level), swordArgs);
-					if (!swordRes.ok()) {
-						throw new AssertionError("equip 铁剑失败: " + swordRes.message());
-					}
-					if (!assistant.getMainHandItem().is(Items.IRON_SWORD)) {
-						throw new AssertionError("铁剑应拿在主手，实际 "
-								+ assistant.getMainHandItem());
-					}
-					// 4.5) 装备也必须实时出现在上下文里（模型知道助手穿着什么）
-					String ctxFrag2 = new InventoryPlugin().gameContextFragment(
-							new ToolContext(server, assistant, player, level));
-					if (!ctxFrag2.contains("iron_chestplate") || !ctxFrag2.contains("胸甲")
-							|| !ctxFrag2.contains("iron_sword")) {
-						throw new AssertionError("游戏上下文应包含助手装备，实际: " + ctxFrag2);
-					}
+					// 3) 穿上铁胸甲（直接写入装备栏），护甲值应如实生效
+					assistant.setItemSlot(EquipmentSlot.CHEST, new ItemStack(Items.IRON_CHESTPLATE));
 				})
 				.thenIdle(5)
 				.thenExecute(() -> {
@@ -1459,20 +1415,6 @@ public class OpenCraftGameTests {
 					if (player.getInventory().countItem(Items.COBBLESTONE) > 0) {
 						throw new AssertionError("挖掘掉落物不应进入主人背包（应先进助手背包）");
 					}
-					// 7) hand_to_player 把圆石递给主人
-					ToolDefinition handDef = new InventoryPlugin().tools().stream()
-							.filter(t -> t.name().equals("hand_to_player")).findFirst().orElseThrow();
-					JsonObject handArgs = new JsonObject();
-					handArgs.addProperty("item", "minecraft:cobblestone");
-					handArgs.addProperty("amount", 1);
-					ToolResult handRes = handDef.executor().execute(
-							new ToolContext(server, assistant, player, level), handArgs);
-					if (!handRes.ok()) {
-						throw new AssertionError("hand_to_player 失败: " + handRes.message());
-					}
-					if (player.getInventory().countItem(Items.COBBLESTONE) < 1) {
-						throw new AssertionError("主人应收到助手递来的圆石");
-					}
 					// 清理
 					AiCompanionService.dismissAllFor(player);
 					AiCompanionService.resetAllHistory(player);
@@ -1481,7 +1423,7 @@ public class OpenCraftGameTests {
 	}
 
 	/**
-	 * 验证“craft 按玩家规则合成”：
+	 * 验证“player_craft 按玩家规则合成”（合成能力在玩家形态助手上，实体形态已无合成工具）：
 	 * 1. 3×3 配方（钻石块）在【没有工作台】时被拒绝，报“需要工作台”且不扣材料；
 	 * 2. 助手旁边放置工作台后，9 个钻石（背包第 20 格）→ 合成钻石块成功、钻石扣光；
 	 * 3. 18 个钻石 + amount=2 → 合成 2 个钻石块（按套数扣料）；
@@ -1510,97 +1452,104 @@ public class OpenCraftGameTests {
 		configureMockBlock(helper, configBlockPos, player);
 		ServerLevel level = (ServerLevel) helper.getLevel();
 		net.minecraft.server.MinecraftServer server = level.getServer();
+		GlobalPos bindPos = GlobalPos.of(level.dimension(), helper.absolutePos(configBlockPos));
 
 		helper.startSequence()
 				.thenExecute(() -> {
-					AiAssistantEntity assistant = (AiAssistantEntity) AiCompanionService.summonLegacyEntityFor(player);					if (assistant == null) {
-						throw new AssertionError("召唤助手失败");
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							(com.swaydy.opencraft.assistant.player.AiAssistantPlayer)
+									AiCompanionService.summonFor(player, bindPos);
+					if (bot == null) {
+						throw new AssertionError("召唤玩家形态助手失败");
 					}
-					// 把助手放到平台中间（summonFor 可能落在周边地形上）
+					// 把 bot 放到平台中间（召唤落点可能落在周边地形上）
 					net.minecraft.world.phys.Vec3 standPos = helper.absoluteVec(
 							new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
-					assistant.teleportTo(standPos.x, standPos.y, standPos.z);
-					ToolDefinition craftDef = new CraftingPlugin().tools().stream()
-							.filter(t -> t.name().equals("craft")).findFirst().orElseThrow();
+					bot.teleportTo(standPos.x, standPos.y, standPos.z);
+					ToolDefinition craftDef = com.swaydy.opencraft.agent.AgentRegistry
+							.agent("general_agent").toolMap().get("player_craft");
+					if (craftDef == null) {
+						throw new AssertionError("general_agent 应提供 player_craft 工具");
+					}
 					// 1) 3×3 配方（钻石块）没有工作台 → 拒绝并提示需要工作台，不扣材料
-					assistant.getInventory().setItem(20, new ItemStack(Items.DIAMOND, 9));
+					bot.getInventory().setItem(20, new ItemStack(Items.DIAMOND, 9));
 					JsonObject args = new JsonObject();
 					args.addProperty("item", "minecraft:diamond_block");
 					args.addProperty("amount", 1);
 					ToolResult res = craftDef.executor().execute(
-							new ToolContext(server, assistant, player, level), args);
+							new ToolContext(server, bot, player, level), args);
 					if (res.ok()) {
 						throw new AssertionError("没有工作台时 3×3 配方（钻石块）不应合成成功");
 					}
 					if (!res.message().contains("工作台")) {
 						throw new AssertionError("应提示需要工作台，实际: " + res.message());
 					}
-					if (assistant.countOf(Items.DIAMOND.builtInRegistryHolder()) != 9) {
+					if (bot.getInventory().countItem(Items.DIAMOND) != 9) {
 						throw new AssertionError("没有工作台时不应扣材料，实际钻石 "
-								+ assistant.countOf(Items.DIAMOND.builtInRegistryHolder()));
+								+ bot.getInventory().countItem(Items.DIAMOND));
 					}
-					// 2) 助手旁边放一个工作台 → 9 个钻石（第 20 格）→ 合成钻石块成功
+					// 2) bot 旁边放一个工作台 → 9 个钻石（第 20 格）→ 合成钻石块成功
 					helper.setBlock(new BlockPos(5, 1, 4), Blocks.CRAFTING_TABLE.defaultBlockState());
 					ToolResult res2 = craftDef.executor().execute(
-							new ToolContext(server, assistant, player, level), args);
+							new ToolContext(server, bot, player, level), args);
 					if (!res2.ok()) {
-						throw new AssertionError("有工作台时 craft 钻石块失败: " + res2.message());
+						throw new AssertionError("有工作台时 player_craft 钻石块失败: " + res2.message());
 					}
-					if (assistant.countOf(Items.DIAMOND_BLOCK.builtInRegistryHolder()) < 1) {
+					if (bot.getInventory().countItem(Items.DIAMOND_BLOCK) < 1) {
 						throw new AssertionError("背包应有 1 个钻石块");
 					}
-					if (assistant.countOf(Items.DIAMOND.builtInRegistryHolder()) != 0) {
+					if (bot.getInventory().countItem(Items.DIAMOND) != 0) {
 						throw new AssertionError("9 个钻石应被扣光，实际 "
-								+ assistant.countOf(Items.DIAMOND.builtInRegistryHolder()));
+								+ bot.getInventory().countItem(Items.DIAMOND));
 					}
 					// 3) 18 个钻石 + amount=2 → 2 个钻石块（按套数扣料）
-					assistant.getInventory().setItem(5, new ItemStack(Items.DIAMOND, 18));
+					bot.getInventory().setItem(5, new ItemStack(Items.DIAMOND, 18));
 					JsonObject args3 = new JsonObject();
 					args3.addProperty("item", "minecraft:diamond_block");
 					args3.addProperty("amount", 2);
 					ToolResult res3 = craftDef.executor().execute(
-							new ToolContext(server, assistant, player, level), args3);
+							new ToolContext(server, bot, player, level), args3);
 					if (!res3.ok()) {
-						throw new AssertionError("craft 2 套钻石块失败: " + res3.message());
+						throw new AssertionError("player_craft 2 套钻石块失败: " + res3.message());
 					}
-					if (assistant.countOf(Items.DIAMOND_BLOCK.builtInRegistryHolder()) < 3) {
+					if (bot.getInventory().countItem(Items.DIAMOND_BLOCK) < 3) {
 						throw new AssertionError("背包应有 3 个钻石块（1+2），实际 "
-								+ assistant.countOf(Items.DIAMOND_BLOCK.builtInRegistryHolder()));
+								+ bot.getInventory().countItem(Items.DIAMOND_BLOCK));
 					}
-					if (assistant.countOf(Items.DIAMOND.builtInRegistryHolder()) != 0) {
+					if (bot.getInventory().countItem(Items.DIAMOND) != 0) {
 						throw new AssertionError("18 个钻石应被扣光，实际 "
-								+ assistant.countOf(Items.DIAMOND.builtInRegistryHolder()));
+								+ bot.getInventory().countItem(Items.DIAMOND));
 					}
 					// 4) 2×2 及更小的配方（木棍 1×2）不依赖工作台也能合成（材料在第 30 格）
 					//    先拆掉工作台，验证“不需要工作台”的规则独立成立
 					helper.setBlock(new BlockPos(5, 1, 4), Blocks.AIR.defaultBlockState());
-					assistant.getInventory().setItem(30, new ItemStack(Items.OAK_PLANKS, 2));
+					bot.getInventory().setItem(30, new ItemStack(Items.OAK_PLANKS, 2));
 					JsonObject args4 = new JsonObject();
 					args4.addProperty("item", "minecraft:stick");
 					ToolResult res4 = craftDef.executor().execute(
-							new ToolContext(server, assistant, player, level), args4);
+							new ToolContext(server, bot, player, level), args4);
 					if (!res4.ok()) {
-						throw new AssertionError("craft 木棍失败（1×2 配方不需要工作台）: " + res4.message());
+						throw new AssertionError("player_craft 木棍失败（1×2 配方不需要工作台）: " + res4.message());
 					}
-					if (assistant.countOf(Items.STICK.builtInRegistryHolder()) < 4) {
+					if (bot.getInventory().countItem(Items.STICK) < 4) {
 						throw new AssertionError("2 个木板应合成 4 根木棍，实际 "
-								+ assistant.countOf(Items.STICK.builtInRegistryHolder()));
+								+ bot.getInventory().countItem(Items.STICK));
 					}
 					// 5) 材料不足：只有一个钻石 → 应返回错误且不扣料（钻石还在）
-					int diamondBefore = assistant.countOf(Items.DIAMOND.builtInRegistryHolder());
-					assistant.getInventory().setItem(0, new ItemStack(Items.DIAMOND, 1));
+					int diamondBefore = bot.getInventory().countItem(Items.DIAMOND);
+					bot.getInventory().setItem(0, new ItemStack(Items.DIAMOND, 1));
 					JsonObject args5 = new JsonObject();
 					args5.addProperty("item", "minecraft:diamond_block");
 					ToolResult res5 = craftDef.executor().execute(
-							new ToolContext(server, assistant, player, level), args5);
+							new ToolContext(server, bot, player, level), args5);
 					if (res5.ok()) {
-						throw new AssertionError("材料不足时 craft 应返回错误");
+						throw new AssertionError("材料不足时 player_craft 应返回错误");
 					}
-					if (assistant.countOf(Items.DIAMOND.builtInRegistryHolder()) != diamondBefore + 1) {
+					if (bot.getInventory().countItem(Items.DIAMOND) != diamondBefore + 1) {
 						throw new AssertionError("合成失败不应扣材料");
 					}
 					// 清理
-					AiCompanionService.dismissAllFor(player);
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bot);
 					AiCompanionService.resetAllHistory(player);
 					helper.succeed();
 				});

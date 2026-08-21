@@ -721,7 +721,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	}
 
 	// ------------------------------------------------------------------
-	// 合成辅助（与实体版 CraftingPlugin 同款网格匹配，作用于玩家背包 36 格）
+	// 合成辅助（网格匹配作用于玩家背包 36 格）
 	// ------------------------------------------------------------------
 
 	private static final CraftingInput EMPTY_INPUT =

@@ -35,12 +35,6 @@ public final class AgentRegistry {
 		}
 		initialized = true;
 		registerPlugin(new com.swaydy.opencraft.plugins.AssistantControlPlugin());
-		registerPlugin(new com.swaydy.opencraft.plugins.MovementPlugin());
-		registerPlugin(new com.swaydy.opencraft.plugins.PerceptionPlugin());
-		registerPlugin(new com.swaydy.opencraft.plugins.MiningPlugin());
-		registerPlugin(new com.swaydy.opencraft.plugins.InventoryPlugin());
-		registerPlugin(new com.swaydy.opencraft.plugins.CraftingPlugin());
-		registerPlugin(new com.swaydy.opencraft.plugins.CombatPlugin());
 		// 玩家形态插件：假玩家（ServerPlayer 客户端形态）的真实玩家动作。
 		// 注意：插件只是“能力单元”；身体形态（玩家 bot）不由预设决定——
 		// 助手一律以真正的 ServerPlayer 身份进服，预设只装配 LLM 可调用的工具。
