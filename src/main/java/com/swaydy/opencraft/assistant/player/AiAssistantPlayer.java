@@ -16,6 +16,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
@@ -29,22 +30,22 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * “玩家形态”AI 助手：一个真实的 {@link ServerPlayer}（bot），像多人联机客户端一样加入服务器。
+ * "玩家形态"AI 助手：一个真实的 {@link ServerPlayer}（bot），像多人联机客户端一样加入服务器。
  *
  * 与实体版（PathfinderMob）相比，玩家形态自带普通玩家拥有的**全部内容**：
  * - 真正的玩家背包（41 格：36 主背包 + 4 护甲 + 副手）、经验、游戏模式、玩家式交互；
  * - 能通过 {@link net.minecraft.server.level.ServerPlayerGameMode} 执行真正的玩家动作
  *   （破坏/放置/交互/合成），掉落物自动拾取（玩家形态本身就是 Player）；
- * - 会出现在玩家列表 / Tab / 实体追踪中，对其他人就是一个“客户端玩家”。
+ * - 会出现在玩家列表 / Tab / 实体追踪中，对其他人就是一个"客户端玩家"。
  *
  * 绑定规则与实体版一致：绑定 AI 徽标方块（配置来源）与主人；
  * 配置方块被拆时由 {@link PlayerAssistantService} 清除。**跟随模式**：
  * 默认跟随主人（同维度走近、跨维度/太远时瞬移跟随）；当玩家给助手下达
  * 指令（/opencraft ask 或聊天）后退出跟随专注执行，指令完成自动回到跟随。
- * 网络连接是“黑洞”（{@link FakeConnection}），所有发包 no-op。
+ * 网络连接是"黑洞"（{@link FakeConnection}），所有发包 no-op。
  *
  * 生命形态：默认生存模式 + 无敌（不会因坠落/溺水/饥饿/怪物而死）+ 食物自动补满——
- * “可以不用，但不能没有”的完整玩家能力，但作为陪玩助手不会轻易死掉。
+ * "可以不用，但不能没有"的完整玩家能力，但作为陪玩助手不会轻易死掉。
  */
 public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 	/** 没有绑定配置方块时的默认配置（只读，不修改）。 */
@@ -184,15 +185,15 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 			// 第一次右键：绑定主人
 			setOwner(player);
 			player.displayClientMessage(Component.translatable("entity.opencraft.ai_assistant.bind"), true);
-			com.swaydy.opencraft.debug.DebugLog.log("bind",
+			com.swaydy.opencraft.logging.DebugLog.log("bind",
 					"玩家 {} 右键绑定了玩家形态助手（玩家名 {}）", player.getName().getString(),
 					getName().getString());
 			return InteractionResult.SUCCESS;
 		}
 		if (ownerUuid.equals(player.getUUID())) {
-			// 主人右键：打开“互动界面”（和这个助手聊天 / 送走）
+			// 主人右键：打开助手背包界面（左侧助手背包 + 右侧玩家背包，原版 E 背包布局）
 			if (player instanceof ServerPlayer serverPlayer) {
-				openInteractScreen(serverPlayer);
+				openInventoryScreen(serverPlayer);
 			}
 			return InteractionResult.SUCCESS;
 		}
@@ -200,11 +201,30 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 		return InteractionResult.SUCCESS;
 	}
 
-	/** 给主人发送互动界面数据（打开/刷新右键互动 GUI，与实体版同款）。 */
-	private void openInteractScreen(ServerPlayer player) {
+	/** 右键主人：打开助手的双面板背包界面（左半=助手按 E 的背包，右半=玩家自己的）。 */
+	private void openInventoryScreen(ServerPlayer player) {
+		try {
+			player.openMenu(new SimpleMenuProvider(
+					(id, playerInv, p) -> new com.swaydy.opencraft.inventory.AssistantInventoryMenu(
+							id, playerInv, this.getInventory(), this, () -> !this.isRemoved()),
+					getDisplayName()));
+		} catch (Exception e) {
+			// 模拟连接等场景打开失败：静默忽略
+			com.swaydy.opencraft.OpenCraftMod.LOGGER.debug(
+					"[OpenCraft] 打开背包界面失败（可能是模拟连接）: {}", e.toString());
+			return;
+		}
+		sendInventoryScreenEntityId(player);
+	}
+
+	/**
+	 * 把助手实体 ID 发给客户端（复用 {@code AssistantInteractPayload} 通道，紧随打开包
+	 * 按序到达）：背包界面左侧要用原版 {@code renderEntityInInventory} 渲染这个实体的模型。
+	 */
+	private void sendInventoryScreenEntityId(ServerPlayer player) {
 		AiBlockConfig config = getConfig();
-		String model = config.model == null ? "" : config.model;
-		String agent = config.agent == null ? "general_agent" : config.agent;
+		String model = config == null || config.model == null ? "" : config.model;
+		String agent = config == null || config.agent == null ? "general_agent" : config.agent;
 		GlobalPos block = getConfigBlock();
 		BlockPos blockPos = block == null ? this.blockPosition() : block.pos();
 		ResourceKey<Level> dimension = block == null ? this.level().dimension() : block.dimension();
@@ -214,9 +234,9 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 							this.getId(), getDisplayName().getString(), true, model,
 							agent, blockPos, dimension));
 		} catch (Exception e) {
-			// 模拟连接等场景发送失败：静默忽略（与配置界面一致）
+			// 模拟连接等场景发送失败：静默忽略（只是少了模型渲染，界面不受影响）
 			com.swaydy.opencraft.OpenCraftMod.LOGGER.debug(
-					"[OpenCraft] 发送互动界面数据失败（可能是模拟连接）: {}", e.toString());
+					"[OpenCraft] 发送背包界面实体 ID 失败（可能是模拟连接）: {}", e.toString());
 		}
 	}
 
@@ -226,6 +246,17 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 
 	@Override
 	public void tick() {
+		if (!this.level().isClientSide()) {
+			// 与真实进服玩家完全一致的 tick 链：真实玩家每 tick 被驱动两次——连接监听器
+			// （Connection.tick → ServerGamePacketListenerImpl.tick → doTick，含
+			// Player.tick → LivingEntity.tick：装备变更同步检测、状态效果、食物等）
+			// + 实体循环的 ServerPlayer.tick。bot 的 FakeConnection 不在服务器连接列表里、
+			// 监听器永远不会被 tick，这里按同样的顺序（先 doTick 后 ServerPlayer.tick）
+			// 手动补上——装备穿/脱、状态等行为从此与真实玩家无异。
+			// （移动仍由 PlayerMovementController 自管：keepSafeState 维持 noGravity，
+			// 原版旅行物理不会与控制器双重驱动。）
+			this.doTick();
+		}
 		super.tick();
 		if (!this.level().isClientSide()) {
 			PlayerAssistantService.keepSafeState(this);
@@ -266,7 +297,7 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 				stack.setCount(0);
 				this.take(item, taken);
 				this.onItemPickup(item);
-				com.swaydy.opencraft.debug.DebugLog.log("pickup",
+				com.swaydy.opencraft.logging.DebugLog.log("pickup",
 						"玩家形态助手拾取了 {}×{}（位置 {}, {}, {}）",
 						itemName, taken, (int) getX(), (int) getY(), (int) getZ());
 				item.discard();
@@ -276,7 +307,7 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 
 	@Override
 	public boolean causeFallDamage(double distance, float damageMultiplier, DamageSource source) {
-		// 陪伴助手不摔伤（但保留“摔落距离”语义供其他逻辑判断）
+		// 陪伴助手不摔伤（但保留"摔落距离"语义供其他逻辑判断）
 		return false;
 	}
 
@@ -294,7 +325,7 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 			output.putInt("OpenCraftY", configBlock.pos().getY());
 			output.putInt("OpenCraftZ", configBlock.pos().getZ());
 		}
-		com.swaydy.opencraft.debug.DebugLog.log("save",
+		com.swaydy.opencraft.logging.DebugLog.log("save",
 				"玩家形态助手存档写入（主人 {}, 绑定方块 {}, 背包物品 {} 种）",
 				ownerUuid == null ? "无" : ownerUuid.toString().substring(0, 8),
 				configBlock == null ? "无" : configBlock.pos().toShortString(),
@@ -326,7 +357,7 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 				this.configBlock = null;
 			}
 		}
-		com.swaydy.opencraft.debug.DebugLog.log("save",
+		com.swaydy.opencraft.logging.DebugLog.log("save",
 				"玩家形态助手存档读回（主人 {}, 绑定方块 {}, 背包物品 {} 种）",
 				ownerUuid == null ? "无" : ownerUuid.toString().substring(0, 8),
 				configBlock == null ? "无" : configBlock.pos().toShortString(),

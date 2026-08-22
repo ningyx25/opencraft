@@ -46,13 +46,16 @@ public class OpenCraftMod implements ModInitializer {
 
 		// 调试模式：-Dopencraft.debug=true / OPEN_CRAFT_DEBUG=true 默认开启；
 		// 游戏内可用 /opencraft debug on|off 动态切换（详见 DebugLog）
-		if (com.swaydy.opencraft.debug.DebugLog.isEnabled()) {
-			com.swaydy.opencraft.debug.DebugLog.log("debug",
+		if (com.swaydy.opencraft.logging.DebugLog.isEnabled()) {
+			com.swaydy.opencraft.logging.DebugLog.log("debug",
 					"OpenCraft 启动，调试模式已由启动参数开启（日志文件: {}）",
-					com.swaydy.opencraft.debug.DebugLog.logFilePath());
+					com.swaydy.opencraft.logging.DebugLog.logFilePath());
 			LOGGER.info("[OpenCraft] 调试模式已开启，日志写入 {}",
-					com.swaydy.opencraft.debug.DebugLog.logFilePath());
+					com.swaydy.opencraft.logging.DebugLog.logFilePath());
 		}
+
+		// 助手双面板背包菜单类型注册
+		com.swaydy.opencraft.inventory.ModMenuTypes.register();
 
 		// 方块 / BlockItem 注册 + 加入创造标签页
 		ModBlocks.register();

@@ -141,12 +141,13 @@ src/
 │   ├── entity/                    # 旧存档遗留实体形态（PathfinderMob）
 │   ├── block/                     # AI 徽标方块与方块实体
 │   ├── command/                   # /opencraft 指令
+│   ├── inventory/                 # 右键助手的双面板背包菜单（AssistantInventoryMenu）
 │   ├── net/                       # 自定义网络包
 │   ├── mixin/                     # 通用 mixin
 │   └── test/                      # Fabric 游戏测试
 ├── client/java/com/swaydy/opencraft/client/
 │   ├── OpenCraftModClient.java    # 客户端入口
-│   ├── gui/                       # 配置界面（4 页 Tab）、助手互动界面
+│   ├── gui/                       # 配置界面（4 页 Tab）、右键助手的双面板背包界面
 │   ├── render/                    # 助手实体渲染器
 │   └── mixin/                     # 客户端 mixin
 └── main/resources/                # fabric.mod.json、语言文件、贴图、配方、战利品表

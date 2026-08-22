@@ -32,6 +32,7 @@
 			"environment": "client"
 		}
 	],
+	"accessWidener": "opencraft.accesswidener",
 	"depends": {
 		"fabricloader": ">=0.19.3",
 		"minecraft": "~1.21.11",

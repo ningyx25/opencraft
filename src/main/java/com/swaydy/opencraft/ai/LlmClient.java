@@ -44,6 +44,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
+import com.swaydy.opencraft.logging.LlmDebugLogger;
+
 /**
  * 基于官方 {@code com.openai:openai-java}（4.52.0）的 OpenAI 兼容 Chat Completions 客户端。
  *
@@ -525,12 +527,17 @@ public final class LlmClient {
 		if (!key.ok() && !"empty".equals(key.reason())) {
 			return ChatResult.failure(LlmFailure.of("Invalid API key: " + key.reason(), Codes.INVALID_CREDENTIAL));
 		}
+		LlmDebugLogger.logRequest(request);
 		try {
 			OpenAIClient client = clientFor(key, request.baseUrl(), nonStreamTimeout(request.timeoutSeconds()));
 			ChatCompletion completion = client.chat().completions().create(buildParams(request, false));
-			return parseCompletion(completion);
+			ChatResult result = parseCompletion(completion);
+			LlmDebugLogger.logResponse(result.content(), result.reason(), result.failure());
+			return result;
 		} catch (Exception e) {
-			return ChatResult.failure(toFailure(e));
+			ChatResult result = ChatResult.failure(toFailure(e));
+			LlmDebugLogger.logResponse(result.content(), result.reason(), result.failure());
+			return result;
 		}
 	}
 
@@ -561,6 +568,9 @@ public final class LlmClient {
 					LlmFailure.of("Invalid API key: " + key.reason(), Codes.INVALID_CREDENTIAL)));
 			return;
 		}
+		LlmDebugLogger.logRequest(request);
+		// 包装 sink：在 BlockEnd 收集完整块、Finish 时记录原始回复
+		ChunkSink loggingSink = LlmDebugLogger.wrapSink(sink);
 		AtomicBoolean finished = new AtomicBoolean(false);
 		AtomicBoolean stalled = new AtomicBoolean(false);
 		try {
@@ -570,7 +580,7 @@ public final class LlmClient {
 			Watchdog watchdog = new Watchdog(request.timeoutSeconds(), stream, stalled, finished);
 			watchdog.start();
 			try (stream) {
-				translate(request, stream, sink, watchdog);
+				translate(request, stream, loggingSink, watchdog);
 				// 正常完成：translate 已发终端 Finish；置位后即使收尾关闭抛异常也不重复发
 				finished.set(true);
 			} finally {
@@ -580,10 +590,10 @@ public final class LlmClient {
 			// 只发一个终端 Finish（防看门狗与正常结束的竞态）
 			if (!finished.getAndSet(true)) {
 				if (stalled.get()) {
-					sink.onChunk(new Finish(FinishReason.error(Codes.STALLED),
+					loggingSink.onChunk(new Finish(FinishReason.error(Codes.STALLED),
 							LlmFailure.of("request-stalled: 服务端连接后长时间未返回数据", Codes.STALLED)));
 				} else {
-					sink.onChunk(new Finish(FinishReason.error(failureCode(e)), toFailure(e)));
+					loggingSink.onChunk(new Finish(FinishReason.error(failureCode(e)), toFailure(e)));
 				}
 			}
 		}
@@ -628,7 +638,7 @@ public final class LlmClient {
 	 * 规范化 baseUrl：去尾部斜杠；若以 {@code /chat/completions} 结尾则去掉该后缀
 	 * （SDK 自行拼接路径，baseUrl 必须是根形态）。
 	 */
-	static String normalizeBaseUrl(String baseUrl) {
+	public static String normalizeBaseUrl(String baseUrl) {
 		String url = baseUrl == null ? "" : baseUrl.trim();
 		while (url.endsWith("/")) {
 			url = url.substring(0, url.length() - 1);

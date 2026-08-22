@@ -128,7 +128,7 @@ public final class AiCompanionService {
 	 */
 	public static void ask(ServerPlayer player, AiAssistant assistant, String question) {
 		GlobalPos historyKey = historyKeyFor(assistant);
-		com.swaydy.opencraft.debug.DebugLog.log("chat",
+		com.swaydy.opencraft.logging.DebugLog.log("chat",
 				"玩家 {} 问助手 {}（方块 {}）: {}", player.getName().getString(),
 				assistant.getConfig().effectiveName(),
 				historyKey == null ? "?" : historyKey.pos().toShortString(), question);
@@ -146,7 +146,7 @@ public final class AiCompanionService {
 	public static void askGui(ServerPlayer player, AiAssistant assistant, String question,
 	                          BlockPos guiBlockPos, ResourceKey<Level> guiDimension) {
 		GlobalPos historyKey = historyKeyFor(assistant);
-		com.swaydy.opencraft.debug.DebugLog.log("chat",
+		com.swaydy.opencraft.logging.DebugLog.log("chat",
 				"玩家 {} 通过界面问助手 {}（方块 {}）: {}", player.getName().getString(),
 				assistant.getConfig().effectiveName(),
 				historyKey == null ? "?" : historyKey.pos().toShortString(), question);
@@ -208,7 +208,7 @@ public final class AiCompanionService {
 			if (blkLevel == null
 					|| !blkLevel.getBlockState(explicitConfigBlock.pos()).is(ModBlocks.AI_LOGO_BLOCK)) {
 				OpenCraftMod.LOGGER.info("[OpenCraft] 拒绝召唤：指定的 AI 徽标方块不存在或已被移除");
-				com.swaydy.opencraft.debug.DebugLog.log("summon",
+				com.swaydy.opencraft.logging.DebugLog.log("summon",
 						"拒绝召唤：玩家 {} 指定的 AI 徽标方块不存在（{}）",
 						player.getName().getString(), explicitConfigBlock.pos().toShortString());
 				return null;
@@ -221,7 +221,7 @@ public final class AiCompanionService {
 				}
 				OpenCraftMod.LOGGER.info("[OpenCraft] 拒绝召唤：AI 徽标方块({})已被另一个助手绑定",
 						explicitConfigBlock.pos().toShortString());
-				com.swaydy.opencraft.debug.DebugLog.log("summon",
+				com.swaydy.opencraft.logging.DebugLog.log("summon",
 						"拒绝召唤：方块 {} 已被其他玩家的助手绑定", explicitConfigBlock.pos().toShortString());
 				return null;
 			}
@@ -230,7 +230,7 @@ public final class AiCompanionService {
 			configBlock = AiConfigHandler.findNearestConfigBlock(level, player.blockPosition(), 48, true);
 			if (configBlock == null) {
 				OpenCraftMod.LOGGER.info("[OpenCraft] 拒绝召唤：附近 48 格内没有未绑定的 AI 徽标方块");
-				com.swaydy.opencraft.debug.DebugLog.log("summon",
+				com.swaydy.opencraft.logging.DebugLog.log("summon",
 						"拒绝召唤：玩家 {} 附近 48 格内没有未绑定的 AI 徽标方块",
 						player.getName().getString());
 				return null;
@@ -262,7 +262,7 @@ public final class AiCompanionService {
 					SoundSource.AMBIENT, 0.6F, 1.1F);
 			OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 召唤了绑定方块({})的 AI 助手",
 					player.getName().getString(), configBlock.pos().toShortString());
-			com.swaydy.opencraft.debug.DebugLog.log("summon",
+			com.swaydy.opencraft.logging.DebugLog.log("summon",
 					"玩家 {} 召唤了助手（名字 {}，绑定方块 {}，出生点 ({},{},{})）",
 					player.getName().getString(), assistant.getConfig().effectiveName(),
 					configBlock.pos().toShortString(),
@@ -384,7 +384,7 @@ public final class AiCompanionService {
 		assistant.cancelCurrentTask();
 		GlobalPos configBlock = assistant.getConfigBlock();
 		assistant.discard();
-		com.swaydy.opencraft.debug.DebugLog.log("summon",
+		com.swaydy.opencraft.logging.DebugLog.log("summon",
 				"送走助手（名字 {}，绑定方块 {}）",
 				assistant.getConfig().effectiveName(),
 				configBlock == null ? "?" : configBlock.pos().toShortString());
@@ -398,7 +398,7 @@ public final class AiCompanionService {
 	public static void resetHistory(GlobalPos block) {
 		if (block != null) {
 			HISTORY.remove(block);
-			com.swaydy.opencraft.debug.DebugLog.log("history", "清空了方块 {} 的对话历史",
+			com.swaydy.opencraft.logging.DebugLog.log("history", "清空了方块 {} 的对话历史",
 					block.pos().toShortString());
 		}
 	}
@@ -497,11 +497,11 @@ public final class AiCompanionService {
 	public static void finishStreamReply(ServerPlayer player, AiAssistant assistant, String full) {
 		player.displayClientMessage(Component.empty(), true);
 		if (full == null || full.isBlank()) {
-			com.swaydy.opencraft.debug.DebugLog.log("chat",
+			com.swaydy.opencraft.logging.DebugLog.log("chat",
 					"助手 {} 回复为空（未广播）", assistant.getConfig().effectiveName());
 			return; // 空回复：不广播也不报错
 		}
-		com.swaydy.opencraft.debug.DebugLog.log("chat",
+		com.swaydy.opencraft.logging.DebugLog.log("chat",
 				"助手 {} 回复玩家 {}: {}", assistant.getConfig().effectiveName(),
 				player.getName().getString(), full);
 		speakAsAssistant((ServerLevel) player.level(), assistant, full);
@@ -662,7 +662,7 @@ public final class AiCompanionService {
 				Set.of(), player.getYRot(), player.getXRot(), true);
 		target.playSound(null, assistant.blockPosition(), SoundEvents.ALLAY_AMBIENT_WITH_ITEM,
 				SoundSource.AMBIENT, 0.5F, 1.2F);
-		com.swaydy.opencraft.debug.DebugLog.log("teleport",
+		com.swaydy.opencraft.logging.DebugLog.log("teleport",
 				"助手 {} 传送到玩家 {} 身边（{}, {}, {}）", assistant.getConfig().effectiveName(),
 				player.getName().getString(), (int) safe.x, (int) safe.y, (int) safe.z);
 		player.sendSystemMessage(Component.translatable("command.opencraft.action.tp.ok"));

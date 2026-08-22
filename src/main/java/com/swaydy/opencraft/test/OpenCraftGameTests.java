@@ -10,6 +10,7 @@ import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.entity.AiAssistantEntity;
 import com.swaydy.opencraft.entity.MineBlockTask;
 import com.swaydy.opencraft.entity.ModEntities;
+import com.swaydy.opencraft.inventory.AssistantInventoryMenu;
 import com.swaydy.opencraft.plugins.ToolContext;
 import com.swaydy.opencraft.plugins.ToolDefinition;
 import com.swaydy.opencraft.plugins.ToolResult;
@@ -51,7 +52,9 @@ import java.util.List;
  * 7. unboundAssistantDiscarded —— 无绑定助手被安全网清除；
  * 8. aiLogoBlockMiningAndRecipe —— 配方注册 + 徒手挖掘掉落；
  * 9. askTargetsSpecificAssistant —— 多助手时指定和哪个助手对话（ask <名字> <消息>）；
- * 10. assistantRightClickInteract —— 右键助手互动（绑定/普通右键开界面/非主人拒绝/聊天/送走）。
+ * 10. assistantRightClickInteract —— 右键助手互动（绑定/主人右键开背包界面/非主人拒绝/聊天/送走）；
+ * 11. assistantInventoryMenuLayoutAndTransfer —— 右键打开的双面板背包菜单
+ *     （原版 E 背包布局：装备槽/2×2 合成/主背包/快捷栏 / 原版合成 / Shift 双向转移 / 助手消失后失效）。
  */
 public class OpenCraftGameTests {
 	/**
@@ -1043,7 +1046,7 @@ public class OpenCraftGameTests {
 	/**
 	 * 验证“右键 AI 助手与之交互”的服务器端行为（跟随/待命模式已移除）：
 	 * 1. 未绑定助手：右键 → 绑定主人；
-	 * 2. 主人右键（普通或潜行）→ 打开互动界面（“打开互动界面”的 S2C 在 mock 连接上是空操作）；
+	 * 2. 主人右键（普通或潜行）→ 打开双面板背包界面（“打开菜单”的 S2C 在 mock 连接上是空操作）；
 	 * 3. 非主人右键 → 被拒绝（“只听主人的话”），状态不变；
 	 * 4. resolveOwnedAssistant：正确实体 ID → 助手；他人 / 错误 ID → null（服务端不信任客户端）；
 	 * 5. 互动界面“聊天”路径：resolve + ask(player, assistant, msg) → 消息写入该助手历史；
@@ -1099,7 +1102,7 @@ public class OpenCraftGameTests {
 					if (assistant == null) {
 						throw new AssertionError("找不到已召唤的助手");
 					}
-					// 2) 主人右键（普通或潜行都一样）→ 打开互动界面
+					// 2) 主人右键（普通或潜行都一样）→ 打开双面板背包界面
 					net.minecraft.world.InteractionResult normal =
 							assistant.interact(player, net.minecraft.world.InteractionHand.MAIN_HAND);
 					if (!normal.consumesAction()) {
@@ -1110,7 +1113,7 @@ public class OpenCraftGameTests {
 						net.minecraft.world.InteractionResult sneak =
 								assistant.interact(player, net.minecraft.world.InteractionHand.MAIN_HAND);
 						if (!sneak.consumesAction()) {
-							throw new AssertionError("潜行右键也应消费交互（打开互动界面）");
+							throw new AssertionError("潜行右键也应消费交互（打开背包界面）");
 						}
 					} finally {
 						player.setShiftKeyDown(false);
@@ -1171,6 +1174,359 @@ public class OpenCraftGameTests {
 						throw new AssertionError("重复送走应幂等返回 false");
 					}
 					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 验证右键打开的“双面板助手背包菜单”（{@link AssistantInventoryMenu}）——
+	 * 两半都是原版按 E 的背包（护甲 + 副手 + 2×2 合成 + 主背包 + 快捷栏）：
+	 * 1. 布局：92 个槽位（每侧 46），坐标与原版 InventoryMenu 一致（右面板 x+180）；
+	 * 2. 装备槽直通实体：给助手戴头盔 → 菜单护甲槽读到同一件；
+	 * 3. 原版合成：玩家侧 2×2 合成格放 4 块橡木板 → 结果槽出工作台（原版
+	 *    slotChangedCraftingGrid 配方匹配直接复用）；
+	 * 4. Shift + 点击双向转移：助手 → 玩家（优先快捷栏）、玩家 → 助手；
+	 * 5. 助手被送走（实体移除）后菜单失效（服务端自动关闭界面）。
+	 *
+	 * <p>直接用与实体 {@code openInventoryScreen} 相同的方式构造菜单——
+	 * “打开菜单”的网络发包在 mock 连接上是空操作，这里只验证菜单逻辑本身。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 120)
+	public void assistantInventoryMenuLayoutAndTransfer(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		// 平台 + 玩家 + 配置方块 + 召唤助手（右键打开的正是该助手的背包）
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+		BlockPos configBlockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, configBlockPos, player);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(level.dimension(), helper.absolutePos(configBlockPos));
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					AiAssistantEntity assistant =
+							(AiAssistantEntity) AiCompanionService.summonLegacyEntityFor(player, bindPos);
+					if (assistant == null) {
+						throw new AssertionError("召唤助手失败");
+					}
+					AssistantInventoryMenu menu = new AssistantInventoryMenu(
+							1, player.getInventory(), assistant.getInventory(), assistant,
+							() -> !assistant.isRemoved());
+
+					// 1) 布局：每侧 46 格（结果/合成4/护甲4/副手/主背包27/快捷栏9）
+					if (menu.slots.size() != AssistantInventoryMenu.TOTAL_SLOTS) {
+						throw new AssertionError("应有 " + AssistantInventoryMenu.TOTAL_SLOTS
+								+ " 个槽位，实际 " + menu.slots.size());
+					}
+					assertSlot(menu, AssistantInventoryMenu.LEFT_RESULT, 154, 28, "助手结果槽");
+					assertSlot(menu, AssistantInventoryMenu.LEFT_CRAFT_START, 98, 18, "助手合成格");
+					assertSlot(menu, AssistantInventoryMenu.LEFT_ARMOR_START, 8, 8, "助手头盔槽");
+					assertSlot(menu, AssistantInventoryMenu.LEFT_OFFHAND, 77, 62, "助手副手槽");
+					assertSlot(menu, AssistantInventoryMenu.LEFT_INV_START, 8, 84, "助手主背包首格");
+					assertSlot(menu, 37, 8, 142, "助手快捷栏首格");
+					int rx = AssistantInventoryMenu.RIGHT_PANEL_X;
+					assertSlot(menu, AssistantInventoryMenu.RIGHT_RESULT, 154 + rx, 28, "玩家结果槽");
+					assertSlot(menu, AssistantInventoryMenu.RIGHT_CRAFT_START, 98 + rx, 18, "玩家合成格");
+					assertSlot(menu, AssistantInventoryMenu.RIGHT_ARMOR_START, 8 + rx, 8, "玩家头盔槽");
+					assertSlot(menu, AssistantInventoryMenu.RIGHT_OFFHAND, 77 + rx, 62, "玩家副手槽");
+					assertSlot(menu, AssistantInventoryMenu.RIGHT_INV_START, 8 + rx, 84, "玩家主背包首格");
+					assertSlot(menu, 83, 8 + rx, 142, "玩家快捷栏首格");
+
+					// 2) 装备槽直通实体：给助手戴头盔 → 菜单护甲槽读到同一件
+					assistant.setItemSlot(net.minecraft.world.entity.EquipmentSlot.HEAD,
+							new ItemStack(Items.DIAMOND_HELMET));
+					if (menu.slots.get(AssistantInventoryMenu.LEFT_ARMOR_START).getItem()
+							.getItem() != Items.DIAMOND_HELMET) {
+						throw new AssertionError("助手头盔槽应实时读到实体装备");
+					}
+
+					// 3) 原版合成：玩家侧 2×2 格放 4 块橡木板 → 结果槽出工作台
+					for (int i = 0; i < 4; i++) {
+						menu.slots.get(AssistantInventoryMenu.RIGHT_CRAFT_START + i)
+								.set(new ItemStack(Items.OAK_PLANKS));
+					}
+					if (menu.slots.get(AssistantInventoryMenu.RIGHT_RESULT).getItem()
+							.getItem() != Items.CRAFTING_TABLE) {
+						throw new AssertionError("玩家侧合成格应产出工作台（原版配方匹配）");
+					}
+
+					// 4) Shift 转移：助手 → 玩家（reverse 优先快捷栏，落到玩家快捷栏最后一格）
+					assistant.getInventory().setItem(9, new ItemStack(Items.STONE, 3));
+					ItemStack moved = menu.quickMoveStack(player, AssistantInventoryMenu.LEFT_INV_START);
+					if (moved.getItem() != Items.STONE || moved.getCount() != 3) {
+						throw new AssertionError("Shift 转移应返回被移动的物品");
+					}
+					if (!assistant.getInventory().getItem(9).isEmpty()) {
+						throw new AssertionError("转移后原助手格应清空");
+					}
+					if (player.getInventory().getItem(8).getItem() != Items.STONE
+							|| player.getInventory().getItem(8).getCount() != 3) {
+						throw new AssertionError("石头应转移到玩家快捷栏（优先快捷栏）");
+					}
+					if (menu.slots.get(91).getItem().getItem() != Items.STONE) {
+						throw new AssertionError("玩家快捷栏末格（容器格 8）应映射到菜单末格");
+					}
+
+					// 玩家 → 助手（玩家主背包容器格 20 = 菜单 slot 56+11=67）
+					player.getInventory().setItem(20, new ItemStack(Items.DIAMOND, 2));
+					moved = menu.quickMoveStack(player, AssistantInventoryMenu.RIGHT_INV_START + 11);
+					if (moved.getItem() != Items.DIAMOND) {
+						throw new AssertionError("玩家 → 助手 Shift 转移应成功");
+					}
+					if (!player.getInventory().getItem(20).isEmpty()) {
+						throw new AssertionError("转移后玩家原格应清空");
+					}
+					if (assistant.getInventory().getItem(9).getItem() != Items.DIAMOND
+							|| assistant.getInventory().getItem(9).getCount() != 2) {
+						throw new AssertionError("钻石应转移到助手背包");
+					}
+
+					// 5) 助手被送走 → 菜单失效
+					if (!menu.stillValid(player)) {
+						throw new AssertionError("助手还在时菜单应有效");
+					}
+					AiCompanionService.dismissAssistantEntity(assistant);
+					if (menu.stillValid(player)) {
+						throw new AssertionError("助手消失后菜单应失效");
+					}
+					helper.succeed();
+				});
+	}
+
+	/** 断言菜单槽位的屏幕坐标（相对 leftPos/topPos，与原版纹理洞对齐）。 */
+	private static void assertSlot(AssistantInventoryMenu menu, int index, int x, int y, String what) {
+		net.minecraft.world.inventory.Slot slot = menu.slots.get(index);
+		if (slot.x != x || slot.y != y) {
+			throw new AssertionError(what + "应在 (" + x + "," + y + ")，实际 ("
+					+ slot.x + "," + slot.y + ")");
+		}
+	}
+
+	/**
+	 * 聚焦验证原版式挖掘状态机（START → 工具速度推进 → STOP）：
+	 * 直接 startMining（不经走路），断言按预计 tick 数破坏方块。
+	 * 木镐挖石头 ≈ 1.15s（23 tick），与真实玩家一致。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
+	public void botMinesWithVanillaProgression(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+		BlockPos configBlockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, configBlockPos, player);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(level.dimension(), helper.absolutePos(configBlockPos));
+		BlockPos stoneRel = new BlockPos(5, 1, 4);
+		helper.setBlock(stoneRel, Blocks.STONE.defaultBlockState());
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.AiAssistant summoned =
+							AiCompanionService.summonFor(player, bindPos);
+					if (!(summoned instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot)) {
+						throw new AssertionError("召唤玩家形态助手失败");
+					}
+					bot.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+					bot.getInventory().setItem(bot.getInventory().getSelectedSlot(),
+							new ItemStack(Items.WOODEN_PICKAXE, 1));
+				})
+				.thenIdle(10) // 让 bot 落到平台并让 movement.tick 把真实着地状态写回 onGround（挖掘速度依赖它）
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("玩家形态助手不应消失");
+					}
+					BlockPos stone = helper.absolutePos(stoneRel);
+					// 直接开始挖掘（不经过走路），断言按工具速度需要 ~23 tick（木镐 vs 石头）
+					int ticks = bot.movement().startMining(bot, level, stone);
+					if (ticks < 0) {
+						throw new AssertionError("startMining 拒绝开始（范围/方块/工具问题），返回 " + ticks);
+					}
+					if (ticks < 10 || ticks > 60) {
+						throw new AssertionError("木镐挖石头应约 23 tick（真实速度），实际 " + ticks
+								+ "（若 ≈113：onGround 未生效的原版 ÷5 悬空减速）");
+					}
+				})
+				.thenWaitUntil(() -> {
+					BlockPos stone = helper.absolutePos(stoneRel);
+					if (!helper.getLevel().getBlockState(stone).is(Blocks.AIR)) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("等待原版进度挖掘完成…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> helper.succeed());
+	}
+
+	/**
+	 * 端到端复现“右键玩家形态助手打开双面板背包”的服务器侧全链路：
+	 * 1. 真实召唤玩家形态 bot，给它头盔/盾牌/镐子；
+	 * 2. 直接调用 {@code openMenu}（**不经过实体里的 try/catch**，任何异常都会带栈浮出）；
+	 * 3. 断言菜单真的挂到玩家身上（openMenu 若在 initMenu/同步阶段抛异常，
+	 *    containerMenu 不会更新——客户端会打开一个“死”界面：左面板空、点击无效）；
+	 * 4. 断言左侧装备/副手/背包槽实时读到 bot 的真实装备与物品；
+	 * 5. 模拟“拿着头盔点击助手头盔槽”：bot 真的戴上头盔。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
+	public void assistantBotInventoryOpensEndToEnd(GameTestHelper helper) {
+		helper.killAllEntitiesOfClass(AiAssistantEntity.class);
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		// 平台 + 玩家 + 配置方块
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+		BlockPos configBlockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, configBlockPos, player);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(level.dimension(), helper.absolutePos(configBlockPos));
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 1) 真实召唤玩家形态 bot（与玩家右键使用同一条路径）
+					com.swaydy.opencraft.assistant.AiAssistant summoned =
+							AiCompanionService.summonFor(player, bindPos);
+					if (!(summoned instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot)) {
+						throw new AssertionError("召唤玩家形态助手失败: " + summoned);
+					}
+					// 给 bot 装备：头盔 + 副手盾牌 + 背包里一把镐子
+					bot.setItemSlot(net.minecraft.world.entity.EquipmentSlot.HEAD,
+							new ItemStack(Items.DIAMOND_HELMET));
+					bot.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND,
+							new ItemStack(Items.SHIELD));
+					bot.getInventory().add(new ItemStack(Items.DIAMOND_PICKAXE));
+
+					// 2) 直接 openMenu——不走实体里的 try/catch，异常会原样抛出（带栈）
+					player.openMenu(new net.minecraft.world.SimpleMenuProvider(
+							(id, playerInv, p) -> new AssistantInventoryMenu(
+									id, playerInv, bot.getInventory(), bot, () -> !bot.isRemoved()),
+							bot.getDisplayName()));
+
+					// 3) 菜单必须真的挂上（若 initMenu/初始同步抛异常，这里不会更新）
+					if (!(player.containerMenu instanceof AssistantInventoryMenu menu)) {
+						throw new AssertionError("openMenu 后 containerMenu 应为 AssistantInventoryMenu，实际 "
+								+ player.containerMenu.getClass().getSimpleName());
+					}
+					// 4) 左侧槽位实时读到 bot 的装备与物品
+					if (menu.slots.get(AssistantInventoryMenu.LEFT_ARMOR_START).getItem()
+							.getItem() != Items.DIAMOND_HELMET) {
+						throw new AssertionError("bot 的头盔应出现在左侧头盔槽");
+					}
+					if (menu.slots.get(AssistantInventoryMenu.LEFT_OFFHAND).getItem()
+							.getItem() != Items.SHIELD) {
+						throw new AssertionError("bot 的盾牌应出现在左侧副手槽");
+					}
+					boolean pickaxeVisible = false;
+					for (int i = AssistantInventoryMenu.LEFT_INV_START; i < 46; i++) {
+						if (menu.slots.get(i).getItem().getItem() == Items.DIAMOND_PICKAXE) {
+							pickaxeVisible = true;
+							break;
+						}
+					}
+					if (!pickaxeVisible) {
+						throw new AssertionError("bot 背包里的镐子应出现在左侧背包/快捷栏");
+					}
+					// 右侧第一格应是玩家自己的背包
+					if (menu.slots.get(AssistantInventoryMenu.RIGHT_INV_START).container != player.getInventory()) {
+						throw new AssertionError("右面板应是玩家自己的背包");
+					}
+
+					// 5) 模拟“拿着胸甲点击助手胸甲槽”：bot 真的穿上
+					menu.setCarried(new ItemStack(Items.DIAMOND_CHESTPLATE));
+					menu.clicked(AssistantInventoryMenu.LEFT_ARMOR_START + 1, 0,
+							net.minecraft.world.inventory.ClickType.PICKUP, player);
+					if (bot.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.CHEST)
+							.getItem() != Items.DIAMOND_CHESTPLATE) {
+						throw new AssertionError("点击后 bot 应穿上胸甲，实际 "
+								+ bot.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.CHEST));
+					}
+					if (!menu.getCarried().isEmpty()) {
+						throw new AssertionError("放上后光标物品应收走");
+					}
+					// 6) 再取下：空光标点击助手胸甲槽 → bot 脱下（装备槽绑的是 bot 的
+					//    Inventory 原版索引，读写即真实装备）
+					menu.clicked(AssistantInventoryMenu.LEFT_ARMOR_START + 1, 0,
+							net.minecraft.world.inventory.ClickType.PICKUP, player);
+					if (!bot.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.CHEST).isEmpty()) {
+						throw new AssertionError("取下后 bot 不应再穿胸甲");
+					}
+					if (menu.getCarried().getItem() != Items.DIAMOND_CHESTPLATE) {
+						throw new AssertionError("取下后胸甲应在光标上");
+					}
+
+					// 7) 客户端式菜单（MenuType 工厂同款构造）对称性冒烟：所有槽位都是
+					//    容器绑定——客户端同步（container_set_content → slot.set）只会写
+					//    容器、绝不触碰实体装备 API（右键助手闪退的根因就是客户端槽位
+					//    调了实体的 setItemSlot → onEquipItem 的 ServerLevel 强转）
+					AssistantInventoryMenu clientMenu = new AssistantInventoryMenu(0, player.getInventory());
+					for (net.minecraft.world.inventory.Slot slot : clientMenu.slots) {
+						slot.set(new ItemStack(Items.STONE)); // 任何槽位被同步写入都不应抛异常
+						slot.set(ItemStack.EMPTY);
+					}
+					// 玩家侧头盔槽写头盔 → 落到玩家 Inventory 的原版装备索引
+					clientMenu.slots.get(AssistantInventoryMenu.RIGHT_ARMOR_START)
+							.set(new ItemStack(Items.DIAMOND_HELMET));
+					if (player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD)
+							.getItem() != Items.DIAMOND_HELMET) {
+						throw new AssertionError("玩家侧头盔槽应写入玩家 Inventory 的装备索引");
+					}
+				})
+				.thenIdle(3) // 让 bot 的 doTick（LivingEntity.tick）跑装备检测：头盔修饰器应被加上
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("玩家形态助手不应消失");
+					}
+					// 装备修饰器只会在 doTick → LivingEntity.tick 的装备检测里应用——
+					// 护甲值 >0 是“bot 与真实玩家同款 tick 链真正在跑”的行为证据
+					if (bot.getArmorValue() < 1) {
+						throw new AssertionError("戴着头盔的 bot 护甲值应 >0（doTick 装备检测已应用修饰器），实际 "
+								+ bot.getArmorValue());
+					}
+					// 制造真实变更：取下头盔，稍后护甲值应归零（修饰器被同一条链移除）
+					bot.setItemSlot(net.minecraft.world.entity.EquipmentSlot.HEAD, ItemStack.EMPTY);
+				})
+				.thenIdle(3)
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("玩家形态助手不应消失");
+					}
+					if (bot.getArmorValue() != 0) {
+						throw new AssertionError("取下头盔后护甲值应归零（doTick 的装备检测已移除修饰器），实际 "
+								+ bot.getArmorValue());
+					}
+					player.closeContainer();
 					helper.succeed();
 				});
 	}
@@ -1563,22 +1919,22 @@ public class OpenCraftGameTests {
 	 */
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 120)
 	public void debugModeLogsToFile(GameTestHelper helper) {
-		java.nio.file.Path logFile = com.swaydy.opencraft.debug.DebugLog.logFilePath();
-		boolean wasEnabled = com.swaydy.opencraft.debug.DebugLog.isEnabled();
+		java.nio.file.Path logFile = com.swaydy.opencraft.logging.DebugLog.logFilePath();
+		boolean wasEnabled = com.swaydy.opencraft.logging.DebugLog.isEnabled();
 		// 1) 第一次开启：写入“旧会话”内容后关闭（文件里保留旧内容）
-		com.swaydy.opencraft.debug.DebugLog.enable();
-		if (!com.swaydy.opencraft.debug.DebugLog.isEnabled()) {
+		com.swaydy.opencraft.logging.DebugLog.enable();
+		if (!com.swaydy.opencraft.logging.DebugLog.isEnabled()) {
 			throw new AssertionError("enable 后调试模式应处于开启状态");
 		}
-		com.swaydy.opencraft.debug.DebugLog.log("old", "旧会话内容");
-		com.swaydy.opencraft.debug.DebugLog.disable();
-		if (com.swaydy.opencraft.debug.DebugLog.isEnabled()) {
+		com.swaydy.opencraft.logging.DebugLog.log("old", "旧会话内容");
+		com.swaydy.opencraft.logging.DebugLog.disable();
+		if (com.swaydy.opencraft.logging.DebugLog.isEnabled()) {
 			throw new AssertionError("disable 后调试模式应处于关闭状态");
 		}
 		// 2) 重新开启：覆盖式——旧日志被清空，只保留本次会话的新内容
-		com.swaydy.opencraft.debug.DebugLog.enable();
-		com.swaydy.opencraft.debug.DebugLog.log("test", "调试日志测试 {}", 42);
-		com.swaydy.opencraft.debug.DebugLog.log("chat", "模拟对话记录 abc");
+		com.swaydy.opencraft.logging.DebugLog.enable();
+		com.swaydy.opencraft.logging.DebugLog.log("test", "调试日志测试 {}", 42);
+		com.swaydy.opencraft.logging.DebugLog.log("chat", "模拟对话记录 abc");
 		String content;
 		try {
 			content = java.nio.file.Files.readString(logFile);
@@ -1593,8 +1949,8 @@ public class OpenCraftGameTests {
 			throw new AssertionError("覆盖式日志应清空旧会话内容，实际: " + content);
 		}
 		// 3) 关闭后写入应 no-op（文件不再增长）
-		com.swaydy.opencraft.debug.DebugLog.disable();
-		com.swaydy.opencraft.debug.DebugLog.log("test", "不应写入");
+		com.swaydy.opencraft.logging.DebugLog.disable();
+		com.swaydy.opencraft.logging.DebugLog.log("test", "不应写入");
 		try {
 			String after = java.nio.file.Files.readString(logFile);
 			if (after.contains("不应写入")) {
@@ -1604,7 +1960,7 @@ public class OpenCraftGameTests {
 			throw new AssertionError("调试日志文件不可读: " + e);
 		}
 		if (!wasEnabled) {
-			com.swaydy.opencraft.debug.DebugLog.disable();
+			com.swaydy.opencraft.logging.DebugLog.disable();
 		}
 		helper.succeed();
 	}
@@ -2231,7 +2587,7 @@ public class OpenCraftGameTests {
 								(int) helper.getTick());
 					}
 					if (interrupted[0]) {
-						com.swaydy.opencraft.debug.DebugLog.log("test",
+						com.swaydy.opencraft.logging.DebugLog.log("test",
 								"中断成功：首问被中止，第二条提问正常处理并回复");
 					}
 				})

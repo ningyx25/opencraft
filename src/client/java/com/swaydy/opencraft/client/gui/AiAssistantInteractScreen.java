@@ -214,10 +214,17 @@ public class AiAssistantInteractScreen extends Screen {
 		return super.keyPressed(event);
 	}
 
+	/**
+	 * 覆写 renderBackground，避免游戏循环单独调 Screen.renderBackground() 触发模糊着色器崩溃
+	 * （1.21.11 "Can only blur once per frame"）。
+	 */
+	@Override
+	public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+		this.renderTransparentBackground(graphics);
+	}
+
 	@Override
 	public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-		// 透明背景：屏幕背后的游戏画面仍可见
-		this.renderTransparentBackground(graphics);
 		super.render(graphics, mouseX, mouseY, partialTick);
 		renderConversation(graphics);
 		// 输入框下方一行小字：模型 + Agent 预设 + 操作提示
@@ -258,13 +265,27 @@ public class AiAssistantInteractScreen extends Screen {
 			// 打字机 reveal 光标：流式回复末尾加 ▍
 			lines.addAll(this.font.split(Component.literal(this.streaming + "▍"), maxWidth));
 		}
-		// 只显示最近的若干行（对话区 = 标题下方到输入框上方）
+		// 对话区范围：标题下方 (y=26) 到输入框上方
 		int inputY = this.height - this.layout.getFooterHeight() - 34;
-		int maxLines = Math.max(3, (inputY - 40) / 9);
+		int panelTop = 26;
+		int panelBottom = inputY - 4;
+		int panelLeft = 8;
+		int panelRight = this.width - 8;
+
+		// 半透明深色背景面板（始终绘制，哪怕对话为空也给界面一个视觉基底）
+		graphics.fill(panelLeft, panelTop, panelRight, panelBottom, 0xBB000000);
+		// 细描边（比背景稍浅一档）
+		graphics.fill(panelLeft, panelTop, panelRight, panelTop + 1, 0xFF444444);
+		graphics.fill(panelLeft, panelBottom - 1, panelRight, panelBottom, 0xFF444444);
+		graphics.fill(panelLeft, panelTop, panelLeft + 1, panelBottom, 0xFF444444);
+		graphics.fill(panelRight - 1, panelTop, panelRight, panelBottom, 0xFF444444);
+
+		// 只显示最近的若干行（对话区内边距 4px）
+		int maxLines = Math.max(3, (panelBottom - panelTop - 8) / 9);
 		int from = Math.max(0, lines.size() - maxLines);
-		int y = 32;
+		int y = panelTop + 4;
 		for (int i = from; i < lines.size(); i++) {
-			graphics.drawString(this.font, lines.get(i), 12, y, 0xFFFFFFFF);
+			graphics.drawString(this.font, lines.get(i), panelLeft + 4, y, 0xFFFFFFFF);
 			y += 9;
 		}
 	}

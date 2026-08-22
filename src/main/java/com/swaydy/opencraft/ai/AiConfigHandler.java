@@ -68,7 +68,7 @@ public final class AiConfigHandler {
 		blockEntity.applyData(data);
 		OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 更新了方块({})的 AI 配置",
 				player.getName().getString(), pos.toShortString());
-		com.swaydy.opencraft.debug.DebugLog.log("config",
+		com.swaydy.opencraft.logging.DebugLog.log("config",
 				"玩家 {} 保存了方块 {} 的配置（模型={}，名字={}，agent={}，baseUrl={}）",
 				player.getName().getString(), pos.toShortString(),
 				blockEntity.getConfig().model, blockEntity.getConfig().effectiveName(),
@@ -101,11 +101,11 @@ public final class AiConfigHandler {
 		AiAssistant assistant = AssistantFacade.summon(player, bindPos);
 		if (assistant == null) {
 			player.sendSystemMessage(Component.translatable("command.opencraft.summon.failed"));
-			com.swaydy.opencraft.debug.DebugLog.log("summon",
+			com.swaydy.opencraft.logging.DebugLog.log("summon",
 					"配置界面召唤失败（方块 {}）", pos.toShortString());
 			return;
 		}
-		com.swaydy.opencraft.debug.DebugLog.log("summon",
+		com.swaydy.opencraft.logging.DebugLog.log("summon",
 				"配置界面：玩家 {} 用方块 {} 召唤了助手", player.getName().getString(),
 				pos.toShortString());
 		// 新绑定方块亮起（若有其他助手仍绑定旧方块，由实体 remove 兜底熄灭）
@@ -140,7 +140,7 @@ public final class AiConfigHandler {
 		}
 		if (AssistantFacade.dismiss(existing)) {
 			player.sendSystemMessage(Component.translatable("command.opencraft.dismiss.success"));
-			com.swaydy.opencraft.debug.DebugLog.log("summon",
+			com.swaydy.opencraft.logging.DebugLog.log("summon",
 					"配置界面：玩家 {} 送走了方块 {} 绑定的助手", player.getName().getString(),
 					pos.toShortString());
 		}

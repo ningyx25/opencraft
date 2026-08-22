@@ -289,20 +289,20 @@ public final class ModCommands {
 
 	private static int debugStatus(CommandSourceStack source) {
 		source.sendSuccess(() -> Component.literal(
-				"调试模式: " + (com.swaydy.opencraft.debug.DebugLog.isEnabled() ? "开" : "关")
-						+ " | 日志文件: " + com.swaydy.opencraft.debug.DebugLog.logFilePath()), false);
+				"调试模式: " + (com.swaydy.opencraft.logging.DebugLog.isEnabled() ? "开" : "关")
+						+ " | 日志文件: " + com.swaydy.opencraft.logging.DebugLog.logFilePath()), false);
 		return 1;
 	}
 
 	private static int debugSet(CommandSourceStack source, boolean on) {
 		if (on) {
-			com.swaydy.opencraft.debug.DebugLog.enable();
+			com.swaydy.opencraft.logging.DebugLog.enable();
 		} else {
-			com.swaydy.opencraft.debug.DebugLog.disable();
+			com.swaydy.opencraft.logging.DebugLog.disable();
 		}
 		source.sendSuccess(() -> Component.literal(
 				"调试模式已" + (on ? "开启" : "关闭")
-						+ (on ? "，日志写入: " + com.swaydy.opencraft.debug.DebugLog.logFilePath() : "")), false);
+						+ (on ? "，日志写入: " + com.swaydy.opencraft.logging.DebugLog.logFilePath() : "")), false);
 		return 1;
 	}
 

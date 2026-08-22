@@ -43,8 +43,21 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 玩家形态插件：让“假玩家”助手像普通玩家一样行动——用真实的
- * {@code ServerPlayerGameMode}（破坏/放置/交互）与真实 PlayerInventory（合成/递物）。
+ * 玩家形态插件：让“假玩家”助手的每个动作都走原版真实玩家的操作链路——
+ * <ul>
+ * <li><b>挖掘</b>：真实客户端-服务端流程（{@code START_DESTROY_BLOCK} → 服务器按
+ *     工具速度推进破坏进度 → {@code STOP_DESTROY_BLOCK} 校验后破坏并按工具判定掉落），
+ *     挖掘耗时与真实玩家完全一致（木镐挖石头 ≈1.15s；工具不对就是抠不动）；</li>
+ * <li><b>放置/交互</b>：{@code ServerPlayerGameMode.useItemOn}（贴面放置、方块先交互）；</li>
+ * <li><b>合成</b>：真实配方书流程——在随身 2×2 背包菜单或工作台 3×3 {@code CraftingMenu}
+ *     里 {@code handlePlacement} 自动摆料 + shift 点结果（{@code quickMoveStack}）逐次
+ *     消耗材料，关菜单退回余料；</li>
+ * <li><b>物品移动/装备</b>：在助手自己的 {@code InventoryMenu} 里按真实点击交换
+ *     （护甲部位校验/穿戴回调/音效全原版）；丢弃走原版 {@code Player.drop}（朝看向抛出）；
+ *     热键栏切换走 {@code setSelectedSlot}（与原版换手键的服务端处理一致）。</li>
+ * </ul>
+ * 装备/主手变更的客户端同步由 {@code AiAssistantPlayer.tick()} 的 doTick
+ * （LivingEntity 装备检测）自动完成，无需手动广播。
  *
  * 这些是实体形态（PathfinderMob）没有的能力：玩家形态天生拥有普通玩家的一切，
  * “可以不用，但不能没有”。工具全部在服务端线程执行；移动/挖掘/放置是异步的
@@ -79,6 +92,9 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		placeProps.add("z", ToolSchema.prop("integer", "Z coordinate of the block to place against"));
 		placeProps.add("face", ToolSchema.prop("string",
 				"Which face to place on: up/down/north/south/east/west (default up)"));
+		placeProps.add("sneak", ToolSchema.prop("boolean",
+				"True to place like shift-clicking (place against functional blocks such as chests/furnaces "
+						+ "instead of opening them). Default false."));
 		JsonObject craftProps = new JsonObject();
 		craftProps.add("item", ToolSchema.prop("string",
 				"Item id to craft, e.g. minecraft:diamond_block."));
@@ -86,6 +102,14 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		JsonObject listProps = new JsonObject();
 		listProps.add("whose", ToolSchema.prop("string",
 				"Whose inventory to view: \"self\" (the assistant, default) or \"player\" (the owner)."));
+		JsonObject moveProps = new JsonObject();
+		moveProps.add("from", ToolSchema.prop("string",
+				"Source slot: a number 0–35 (main inventory) or a name: mainhand (= currently selected hotbar slot), offhand, helmet, chestplate, leggings, boots."));
+		moveProps.add("to", ToolSchema.prop("string",
+				"Destination slot: same format as from, or -1 to drop the item on the ground (like pressing Q). The two slots swap contents."));
+		JsonObject hotbarProps = new JsonObject();
+		hotbarProps.add("slot", ToolSchema.prop("integer",
+				"Hotbar slot to select as the main hand (0–8, where 0 is the leftmost slot)."));
 		JsonObject handProps = new JsonObject();
 		handProps.add("item", ToolSchema.prop("string", "Item id, e.g. minecraft:cobblestone."));
 		handProps.add("amount", ToolSchema.prop("integer", "Amount (default 1)."));
@@ -102,7 +126,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 						ToolSchema.object(gotoProps, "x", "y", "z"),
 						this::gotoTool),
 				new ToolDefinition("player_stop",
-						"Cancel the assistant's current movement and make it stop.",
+						"Cancel the assistant's current movement and mining, making it stop.",
 						ToolSchema.object(new JsonObject()),
 						this::stopTool),
 				new ToolDefinition("player_jump",
@@ -146,6 +170,19 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 						"List the items in the assistant's (or the owner's) player inventory (36 slots + equipment + offhand).",
 						ToolSchema.object(listProps),
 						this::listInventory),
+				new ToolDefinition("player_item_move",
+						"Move (swap) items between any two slots in the assistant's inventory. "
+								+ "Slots: numbers 0–35 for main inventory, or named slots: "
+								+ "mainhand (= currently selected hotbar slot), offhand, helmet, chestplate, leggings, boots. "
+								+ "The two slots swap contents — use this to equip armor/weapons, unequip them, or rearrange items.",
+						ToolSchema.object(moveProps, "from", "to"),
+						this::itemMove),
+				new ToolDefinition("player_hotbar_select",
+						"Select which hotbar slot (0–8) is the main hand. "
+								+ "Slot 0 is leftmost, slot 8 is rightmost. "
+								+ "Use player_item_move to put items into hotbar slots first, then select the slot here.",
+						ToolSchema.object(hotbarProps, "slot"),
+						this::hotbarSelect),
 				new ToolDefinition("player_hand_to_player",
 						"Take an item out of the assistant's inventory and hand it to the owner (goes into the owner's inventory; "
 								+ "drops at the owner's feet if their inventory is full).",
@@ -156,10 +193,16 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	@Override
 	public String systemPromptFragment() {
 		return "[Player form] You have joined the Minecraft server as a real player: with a full player inventory, equipment slots "
-				+ "and player-style actions. player_goto/player_stop move, player_jump jumps (over 1-block steps/small gaps, "
+				+ "and player-style actions. player_goto/player_stop move (stop also cancels mining), player_jump jumps (over 1-block steps/small gaps, "
 				+ "combined with a movement target for a running jump), player_mine/player_place break/place blocks the player way "
-				+ "(drops go straight into the inventory), player_craft crafts from inventory materials (same rules as a player; "
-				+ "3×3 needs a crafting table), player_hand_to_player hands items to the owner, player_inventory/player_look observe "
+				+ "(mining takes real time depending on the tool — pick the right tool; place with sneak=true to place against "
+				+ "chests/furnaces instead of opening them; drops go straight into the inventory), "
+				+ "player_craft crafts from inventory materials (same rules as a player; "
+				+ "3×3 needs a crafting table), player_item_move swaps items between any two slots in the inventory "
+				+ "(slots 0–35 = main inventory, named slots: mainhand/offhand/helmet/chestplate/leggings/boots; "
+				+ "use -1 as destination to drop the item on the ground like pressing Q), "
+				+ "player_hotbar_select picks which hotbar slot (0–8) is the main hand, "
+				+ "player_hand_to_player hands items to the owner, player_inventory/player_look observe "
 				+ "state and surroundings, player_find finds things by keyword/ID and returns exact coordinates "
 				+ "(always player_find first to get coordinates — don't guess). Observe before acting and confirm after acting; "
 				+ "tool results begin with [tool success/failure] — read the marker first; never assume a tool succeeded; "
@@ -220,7 +263,8 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			return ToolResult.error("Tool player_stop requires a player-form assistant.");
 		}
 		a.movement().stop();
-		return ToolResult.ok("Movement stopped.");
+		a.movement().cancelMining(); // player_stop 语义是"全部停下"：连挖掘一起取消
+		return ToolResult.ok("Movement and mining stopped.");
 	}
 
 	private ToolResult jump(ToolContext ctx, JsonObject args) {
@@ -426,11 +470,21 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				&& cfgBlock.pos().equals(pos)) {
 			return ToolResult.error("That is my config block (AI Logo Block); can't mine it.");
 		}
-		// 走到方块旁，到达后用真实的 ServerPlayerGameMode.destroyBlock 破坏
+		// 原版规则预检：当前主手工具的破坏进度（挖掘耗时 = 1/进度 tick，与真实玩家一致）。
+		// 过慢（>30s）直接拒绝——真玩家也会放弃去换工具，别让助手对着黑曜石徒手抠。
+		float perTick = state.getDestroyProgress(a, level, pos);
+		if (perTick <= 0.0F || perTick < 1.0F / 600.0F) {
+			return ToolResult.error("(" + x + "," + y + "," + z + ") is too hard for my current main-hand tool "
+					+ "(would take over 30s, same as a player). Equip a proper tool "
+					+ "(player_hotbar_select) and try again.");
+		}
+		int seconds = Math.max(1, Math.round(1.0F / perTick / 20.0F));
+		// 走到方块旁，到达后按真实玩家的挖掘流程（START → 按工具速度推进 → STOP）
 		a.movement().moveTo(new Vec3(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5),
 				a.getConfig().speed, true);
-		a.movement().whenArrived(() -> doBreak(a, level, pos));
-		return ToolResult.ok("Walking over to mine (" + x + "," + y + "," + z + ") as a player; "
+		a.movement().whenArrived(() -> a.movement().startMining(a, level, pos));
+		return ToolResult.ok("Walking over to mine (" + x + "," + y + "," + z + ") as a player. "
+				+ "Digging takes ~" + seconds + "s with my current tool (real mining speed); "
 				+ "drops will fall out and be auto-picked into the inventory.");
 	}
 
@@ -470,13 +524,14 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		Vec3 hitLoc = Vec3.atCenterOf(anchor).add(
 				face.getStepX() * 0.5, face.getStepY() * 0.5, face.getStepZ() * 0.5);
 		BlockHitResult hit = new BlockHitResult(hitLoc, face, anchor, false);
+		boolean sneak = t.boolOf("sneak", false);
 		if (a.getEyePosition().distanceTo(hitLoc) <= REACH) {
-			return ToolResult.ok(doPlace(a, level, mainHand, hit));
+			return ToolResult.ok(doPlace(a, level, mainHand, hit, sneak));
 		}
 		// 太远：先走到放置位置旁，到达后再放
 		a.movement().moveTo(new Vec3(target.getX() + 0.5, target.getY(), target.getZ() + 0.5),
 				a.getConfig().speed, true);
-		a.movement().whenArrived(() -> doPlace(a, level, a.getMainHandItem(), hit));
+		a.movement().whenArrived(() -> doPlace(a, level, a.getMainHandItem(), hit, sneak));
 		return ToolResult.ok("Walking to the placement spot to place the main-hand item at (" + target.getX() + ","
 				+ target.getY() + "," + target.getZ() + ").");
 	}
@@ -496,7 +551,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		ServerLevel level = ctx.level();
 		RegistryAccess registryAccess = level.registryAccess();
 		Inventory inv = a.getInventory();
-		boolean hasWorkbench = hasWorkbenchNearby(a);
+		BlockPos workbench = findWorkbenchNearby(a);
 		boolean sawWorkbenchRecipe = false;
 
 		for (RecipeHolder<?> holder : level.recipeAccess().getRecipes()) {
@@ -507,33 +562,42 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			if (result.isEmpty() || !result.is(item)) {
 				continue;
 			}
-			if (needsWorkbench(recipe)) {
-				if (!hasWorkbench) {
-					sawWorkbenchRecipe = true;
-					continue;
+			if (needsWorkbench(recipe) && workbench == null) {
+				sawWorkbenchRecipe = true;
+				continue;
+			}
+			// 原版配方书流程（与真实玩家在配方书里点合成完全一致）：
+			// 1) 在正确的菜单里 handlePlacement 自动摆料（2×2 用随身背包菜单，
+			//    3×3 用工作台的 CraftingMenu——必须旁边真有工作台）；
+			// 2) shift 点结果槽（quickMoveStack）：取走产物、按配方消耗材料；
+			//    循环到数量够或材料用尽；
+			// 3) removed 关菜单：网格里剩的材料退回背包。
+			net.minecraft.world.inventory.RecipeBookMenu menu = needsWorkbench(recipe)
+					? new net.minecraft.world.inventory.CraftingMenu(0, inv,
+							net.minecraft.world.inventory.ContainerLevelAccess.create(level, workbench))
+					: a.inventoryMenu;
+			int crafted = 0;
+			while (crafted < amount) {
+				menu.handlePlacement(false, false, holder, level, inv);
+				if (menu.slots.get(0).getItem().isEmpty()) {
+					break; // 摆料失败：材料不足（或配方放不进该网格）
 				}
+				ItemStack out = menu.quickMoveStack(a, 0);
+				if (out.isEmpty()) {
+					break;
+				}
+				crafted += out.getCount();
 			}
-			GridMatch match = tryFillGrid(recipe, inv);
-			if (match == null) {
-				continue;
+			menu.removed(a);
+			if (crafted > 0) {
+				com.swaydy.opencraft.logging.DebugLog.log("player_action",
+						"玩家形态助手按配方书流程合成 {} ×{}（菜单 {}）",
+						shortName(item.value().getDescriptionId()), crafted,
+						menu == a.inventoryMenu ? "随身 2×2" : "工作台 3×3");
+				return ToolResult.ok("Crafted " + shortName(item.value().getDescriptionId()) + " ×"
+						+ crafted + " (put into the assistant's inventory)"
+						+ (crafted < amount ? ". Only enough materials for " + crafted : "") + ".");
 			}
-			CraftingInput input = CraftingInput.of(match.width, match.height, match.grid);
-			if (!recipe.matches(input, level)) {
-				continue;
-			}
-			int perCraft = recipe.assemble(input, registryAccess).getCount();
-			int sets = match.maxSets(amount, inv);
-			match.consume(inv, sets);
-			ItemStack crafted = recipe.assemble(input, registryAccess).copy();
-			crafted.setCount(Math.min(perCraft * sets, crafted.getMaxStackSize()));
-			if (!inv.add(crafted)) {
-				// 背包放不下：掉落在助手脚边（玩家式）
-				level.addFreshEntity(new ItemEntity(level,
-						a.getX(), a.getY() + 1.0, a.getZ(), crafted));
-			}
-			return ToolResult.ok("Crafted " + shortName(item.value().getDescriptionId()) + " ×"
-					+ crafted.getCount() + " (put into the assistant's inventory)"
-					+ (sets < amount ? ". Only enough materials for " + sets + " set(s)" : "") + ".");
 		}
 		if (sawWorkbenchRecipe) {
 			return ToolResult.error("Crafting " + shortName(item.value().getDescriptionId())
@@ -555,6 +619,228 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			return ToolResult.ok("Owner inventory: " + formatPlayerInventory(ctx.owner().getInventory()));
 		}
 		return ToolResult.ok("Assistant inventory: " + formatPlayerInventory(a.getInventory()));
+	}
+
+	private ToolResult itemMove(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("Tool player_item_move requires a player-form assistant.");
+		}
+		ToolArgs t = new ToolArgs(args);
+		String fromStr = t.strOf("from", "").trim();
+		String toStr   = t.strOf("to",   "").trim();
+		if (fromStr.isEmpty() || toStr.isEmpty()) {
+			return ToolResult.error("Both 'from' and 'to' slots are required.");
+		}
+
+		Inventory inv = a.getInventory();
+
+		// 解析槽位：数字 → 主背包，名字 → 装备槽，-1 → 丢弃
+		SlotRef from = parseSlot(fromStr);
+		SlotRef to   = "-1".equals(toStr) ? null : parseSlot(toStr);
+		if (from == null) return ToolResult.error("Unknown slot \"" + fromStr + "\". Use 0–35 or: mainhand, offhand, helmet, chestplate, leggings, boots.");
+		if (!"-1".equals(toStr) && to == null) return ToolResult.error("Unknown slot \"" + toStr + "\". Use 0–35, -1 (drop), or: mainhand, offhand, helmet, chestplate, leggings, boots.");
+
+		// -1：把 from 槽的物品全部丢到地上（原版 Player.drop：朝看向抛出，同 Q 键）
+		if ("-1".equals(toStr)) {
+			ItemStack toDrop = from.get(a, inv).copy();
+			if (toDrop.isEmpty()) return ToolResult.error("Slot " + fromStr + " is empty, nothing to drop.");
+			from.set(a, inv, ItemStack.EMPTY);
+			a.drop(toDrop, false);
+			com.swaydy.opencraft.logging.DebugLog.log("player_action",
+					"玩家形态助手丢弃 {} × {} [{}]",
+					shortName(toDrop.getItem().getDescriptionId()), toDrop.getCount(), fromStr);
+			return ToolResult.ok("Dropped " + toDrop.getCount() + "× "
+					+ shortName(toDrop.getItem().getDescriptionId()) + " from slot " + fromStr + ".");
+		}
+
+		// 交换：走真实玩家路径——在自己的背包菜单（InventoryMenu）里三次点击
+		//（拿起 from → 放到 to（光标交换）→ 放回 from），护甲部位校验/穿戴回调/
+		// 音效全部是原版逻辑；装备变更由 doTick 的装备检测自动同步给其他玩家
+		Integer fromMenu = menuSlotIndex(a, fromStr);
+		Integer toMenu = menuSlotIndex(a, toStr);
+		if (fromMenu == null || toMenu == null) {
+			return ToolResult.error("Unknown slot. Use 0–35 or: mainhand, offhand, helmet, chestplate, leggings, boots.");
+		}
+		ItemStack stackFrom = a.inventoryMenu.getSlot(fromMenu).getItem().copy();
+		ItemStack stackTo = a.inventoryMenu.getSlot(toMenu).getItem().copy();
+		if (stackFrom.isEmpty() && stackTo.isEmpty()) {
+			return ToolResult.error("Both slots are empty; nothing to move.");
+		}
+		net.minecraft.world.inventory.InventoryMenu menu = a.inventoryMenu;
+		menu.clicked(fromMenu, 0, net.minecraft.world.inventory.ClickType.PICKUP, a); // 拿起 from
+		menu.clicked(toMenu, 0, net.minecraft.world.inventory.ClickType.PICKUP, a);   // 放到 to（交换）
+		menu.clicked(fromMenu, 0, net.minecraft.world.inventory.ClickType.PICKUP, a); // 放回 from
+
+		// 以点击后的真实内容为准汇报：原版 mayPlace 可能拒绝放置（如剑放进头盔槽），
+		// 三次点击的净效果是“什么都没动”——和真实玩家一样，不能误报“已交换”
+		ItemStack afterFrom = menu.getSlot(fromMenu).getItem().copy();
+		ItemStack afterTo = menu.getSlot(toMenu).getItem().copy();
+		boolean moved = !ItemStack.matches(afterFrom, stackFrom) || !ItemStack.matches(afterTo, stackTo);
+
+		com.swaydy.opencraft.logging.DebugLog.log("player_action",
+				"玩家形态助手移动物品 {} [{}] ↔ {} [{}]（背包菜单点击，实际生效={}）",
+				stackFrom.isEmpty() ? "empty" : shortName(stackFrom.getItem().getDescriptionId()), fromStr,
+				stackTo.isEmpty()   ? "empty" : shortName(stackTo.getItem().getDescriptionId()),   toStr,
+				moved);
+
+		String fromName = afterFrom.isEmpty() ? "empty" : shortName(afterFrom.getItem().getDescriptionId());
+		String toName   = afterTo.isEmpty()   ? "empty" : shortName(afterTo.getItem().getDescriptionId());
+		if (!moved) {
+			return ToolResult.error("Nothing moved: the vanilla inventory rejected it "
+					+ "(e.g. armor slots only accept matching armor). [" + fromStr + "] and [" + toStr
+					+ "] are unchanged (" + fromName + " / " + toName + ").");
+		}
+		return ToolResult.ok("Swapped: [" + fromStr + "] " + fromName + " ↔ [" + toStr + "] " + toName + ".");
+	}
+
+	private ToolResult hotbarSelect(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("Tool player_hotbar_select requires a player-form assistant.");
+		}
+		ToolArgs t = new ToolArgs(args);
+		int slot = t.intOf("slot", -1);
+		if (slot < 0 || slot > 8) {
+			return ToolResult.error("Slot must be 0–8 (hotbar slots).");
+		}
+		// 与原版 ServerboundSetCarriedItemPacket 的服务端处理一致（setSelectedSlot）；
+		// 主手物品变更由 doTick 的装备检测自动同步给其他玩家
+		a.getInventory().setSelectedSlot(slot);
+		com.swaydy.opencraft.logging.DebugLog.log("player_action",
+				"玩家形态助手切换主手槽位 → {}", slot);
+		ItemStack held = a.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.MAINHAND);
+		return ToolResult.ok("Selected hotbar slot " + slot + " as main hand"
+				+ (held.isEmpty() ? " (empty)."
+						: " (holding " + shortName(held.getItem().getDescriptionId()) + ")."));
+	}
+
+	/**
+	 * 槽位名/数字 → 助手自己的背包菜单（InventoryMenu）槽位索引：
+	 * 结果 0 | 合成 1-4 | 护甲 5-8（头/胸/腿/靴）| 主背包 9-35（容器 9-35）| 快捷栏 36-44（容器 0-8）| 副手 45。
+	 */
+	private static Integer menuSlotIndex(AiAssistantPlayer a, String s) {
+		try {
+			int idx = Integer.parseInt(s);
+			if (idx < 0 || idx >= MAIN_SLOTS) {
+				return null;
+			}
+			// 容器索引：0-8 是快捷栏（菜单 36-44），9-35 是主背包（菜单索引同号）
+			return idx < 9 ? 36 + idx : idx;
+		} catch (NumberFormatException ignored) {
+			// 命名槽位
+		}
+		return switch (s.toLowerCase(java.util.Locale.ROOT)) {
+			case "mainhand", "main_hand", "main" -> 36 + a.getInventory().getSelectedSlot();
+			case "offhand", "off_hand", "off" -> 45;
+			case "helmet", "head" -> 5;
+			case "chestplate", "chest" -> 6;
+			case "leggings", "legs" -> 7;
+			case "boots", "feet" -> 8;
+			default -> null;
+		};
+	}
+
+	/** 槽位引用：主背包格（index）或装备槽（equipSlot）。 */
+	private static final class SlotRef {
+		final int index;                                          // ≥0 → 主背包
+		final net.minecraft.world.entity.EquipmentSlot equipSlot; // null → 主背包
+
+		SlotRef(int index) { this.index = index; this.equipSlot = null; }
+		SlotRef(net.minecraft.world.entity.EquipmentSlot s) { this.index = -1; this.equipSlot = s; }
+
+		ItemStack get(AiAssistantPlayer a, Inventory inv) {
+			return equipSlot != null ? a.getItemBySlot(equipSlot) : inv.getItem(index);
+		}
+		void set(AiAssistantPlayer a, Inventory inv, ItemStack stack) {
+			if (equipSlot != null) a.setItemSlot(equipSlot, stack);
+			else inv.setItem(index, stack);
+		}
+	}
+
+	private static SlotRef parseSlot(String s) {
+		// 数字 → 主背包
+		try {
+			int idx = Integer.parseInt(s);
+			if (idx >= 0 && idx < MAIN_SLOTS) return new SlotRef(idx);
+			return null;
+		} catch (NumberFormatException ignored) {}
+		// 命名装备槽
+		net.minecraft.world.entity.EquipmentSlot eq =
+				resolveEquipmentSlot(s.toLowerCase(java.util.Locale.ROOT), ItemStack.EMPTY);
+		return eq != null ? new SlotRef(eq) : null;
+	}
+
+	/** 附近（水平 5 格/上下 3 格）最近的工作台位置；没有返回 null（3×3 合成必须真站在它旁）。 */
+	private static BlockPos findWorkbenchNearby(AiAssistantPlayer a) {
+		if (!(a.level() instanceof ServerLevel level)) {
+			return null;
+		}
+		BlockPos center = a.blockPosition();
+		BlockPos best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (int dx = -5; dx <= 5; dx++) {
+			for (int dy = -3; dy <= 3; dy++) {
+				for (int dz = -5; dz <= 5; dz++) {
+					BlockPos p = center.offset(dx, dy, dz);
+					if (!level.getBlockState(p).is(net.minecraft.world.level.block.Blocks.CRAFTING_TABLE)) {
+						continue;
+					}
+					double d = center.distSqr(p);
+					if (d < bestDist) {
+						bestDist = d;
+						best = p;
+					}
+				}
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * 解析目标装备槽：优先按名字，否则按物品类型自动检测（实现了 Equipable 的护甲
+	 * 自动定位正确槽；其余默认主手）。
+	 */
+	private static net.minecraft.world.entity.EquipmentSlot resolveEquipmentSlot(
+			String slotName, ItemStack stack) {
+		if (!slotName.isEmpty()) {
+			return switch (slotName) {
+				case "mainhand", "main_hand", "main" ->
+						net.minecraft.world.entity.EquipmentSlot.MAINHAND;
+				case "offhand", "off_hand", "off" ->
+						net.minecraft.world.entity.EquipmentSlot.OFFHAND;
+				case "helmet", "head" ->
+						net.minecraft.world.entity.EquipmentSlot.HEAD;
+				case "chestplate", "chest" ->
+						net.minecraft.world.entity.EquipmentSlot.CHEST;
+				case "leggings", "legs" ->
+						net.minecraft.world.entity.EquipmentSlot.LEGS;
+				case "boots", "feet" ->
+						net.minecraft.world.entity.EquipmentSlot.FEET;
+				default -> null;
+			};
+		}
+		// 按物品 ID 路径自动检测（helmet/chestplate/leggings/boots/shield → 对应槽；其余 → 主手）
+		if (!stack.isEmpty()) {
+			String path = stack.getItem().builtInRegistryHolder().key().identifier().getPath();
+			if (path.contains("helmet") || path.contains("cap") || path.contains("hood")) {
+				return net.minecraft.world.entity.EquipmentSlot.HEAD;
+			}
+			if (path.contains("chestplate") || path.contains("tunic") || path.contains("jacket")) {
+				return net.minecraft.world.entity.EquipmentSlot.CHEST;
+			}
+			if (path.contains("leggings") || path.contains("pants")) {
+				return net.minecraft.world.entity.EquipmentSlot.LEGS;
+			}
+			if (path.contains("boots") || path.contains("shoes")) {
+				return net.minecraft.world.entity.EquipmentSlot.FEET;
+			}
+			if (path.contains("shield")) {
+				return net.minecraft.world.entity.EquipmentSlot.OFFHAND;
+			}
+		}
+		// 默认：主手（武器/工具/其他）
+		return net.minecraft.world.entity.EquipmentSlot.MAINHAND;
 	}
 
 	private ToolResult handToPlayer(ToolContext ctx, JsonObject args) {
@@ -695,36 +981,34 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return sb.length() == 0 ? "here" : sb.toString();
 	}
 
-	/** 到达后执行真正的玩家式破坏（ServerPlayerGameMode.destroyBlock）。 */
-	private static void doBreak(AiAssistantPlayer a, ServerLevel level, BlockPos pos) {
-		
-		BlockState state = level.getBlockState(pos);
-		if (state.isAir() || a.isRemoved()) {
-			return;
-		}
-		
-		boolean ok = a.gameMode.destroyBlock(pos);
-		com.swaydy.opencraft.debug.DebugLog.log("player_action",
-				"玩家形态助手 destroyBlock({}, {}, {}) → {}", pos.getX(), pos.getY(), pos.getZ(), ok);
-		if (ok) {
-			level.playSound(null, pos, net.minecraft.sounds.SoundEvents.STONE_BREAK,
-					net.minecraft.sounds.SoundSource.BLOCKS, 0.8F, 1.0F);
-		}
-	}
-
 	/** 执行真正的玩家式放置（ServerPlayerGameMode.useItemOn）。 */
 	private static String doPlace(AiAssistantPlayer a, ServerLevel level, ItemStack item,
-	                              BlockHitResult hit) {
+	                              BlockHitResult hit, boolean sneak) {
 		if (a.isRemoved() || item.isEmpty()) {
 			return "The assistant is gone or the main hand is empty; cannot place.";
 		}
-		
-		InteractionResult result = a.gameMode.useItemOn(a, level, item, InteractionHand.MAIN_HAND, hit);
 		BlockPos target = hit.getBlockPos().relative(hit.getDirection());
-		boolean placed = result.consumesAction()
-				&& !level.getBlockState(target).isAir();
-		com.swaydy.opencraft.debug.DebugLog.log("player_action",
-				"玩家形态助手 useItemOn({}, {}, {}) → {}", target.getX(), target.getY(), target.getZ(), result);
+		// 记录放置前主手物品数量，用于判断物品是否被消耗（比仅查块状态更可靠）
+		int countBefore = a.getMainHandItem().getCount();
+		// 潜行放置（原版 useItemOn 的 shift 分支：跳过方块交互直接用物品，
+		// 才能“对着箱子/熔炉放方块”而不是打开它们）；完成后恢复
+		boolean wasSneaking = a.isShiftKeyDown();
+		if (sneak) {
+			a.setShiftKeyDown(true);
+		}
+		InteractionResult result;
+		try {
+			result = a.gameMode.useItemOn(a, level, item, InteractionHand.MAIN_HAND, hit);
+		} finally {
+			a.setShiftKeyDown(wasSneaking);
+		}
+		int countAfter = a.getMainHandItem().getCount();
+		// 物品减少 OR 目标位置出现方块 → 放置成功（两条件取其一，防止某些方块
+		// 落在非 target 坐标导致漏报；若物品被消耗就相信游戏的结果）
+		boolean placed = countAfter < countBefore || !level.getBlockState(target).isAir();
+		com.swaydy.opencraft.logging.DebugLog.log("player_action",
+				"玩家形态助手 useItemOn({}, {}, {}) → {} (before={} after={})",
+				target.getX(), target.getY(), target.getZ(), result, countBefore, countAfter);
 		return placed ? "Placed the main-hand item at (" + target.getX() + "," + target.getY() + "," + target.getZ() + ")."
 				: "Placement had no effect (result " + result + "); the item may not be placeable or the spot is occupied.";
 	}
@@ -744,117 +1028,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			return recipe.placementInfo().ingredients().size() > 4;
 		}
 		return false;
-	}
-
-	private static boolean hasWorkbenchNearby(AiAssistantPlayer a) {
-		if (!(a.level() instanceof ServerLevel level)) {
-			return false;
-		}
-		BlockPos center = a.blockPosition();
-		for (int dx = -5; dx <= 5; dx++) {
-			for (int dy = -3; dy <= 3; dy++) {
-				for (int dz = -5; dz <= 5; dz++) {
-					if (level.getBlockState(center.offset(dx, dy, dz))
-							.is(net.minecraft.world.level.block.Blocks.CRAFTING_TABLE)) {
-						return true;
-					}
-				}
-			}
-		}
-		return false;
-	}
-
-	private static GridMatch tryFillGrid(CraftingRecipe recipe, Inventory inv) {
-		if (recipe instanceof ShapedRecipe shaped) {
-			int w = shaped.getWidth();
-			int h = shaped.getHeight();
-			return fill(w, h, recipe.placementInfo().ingredients(), inv);
-		}
-		if (recipe instanceof ShapelessRecipe shapeless) {
-			List<Ingredient> ingredients = recipe.placementInfo().ingredients();
-			return fill(ingredients.size(), 1, ingredients, inv);
-		}
-		return null;
-	}
-
-	private static GridMatch fill(int w, int h, List<Ingredient> ingredients, Inventory inv) {
-		int cells = w * h;
-		if (ingredients.size() < cells) {
-			return null;
-		}
-		List<ItemStack> grid = new ArrayList<>(cells);
-		for (int i = 0; i < cells; i++) {
-			grid.add(ItemStack.EMPTY);
-		}
-		int[] slotPerCell = new int[cells];
-		Arrays.fill(slotPerCell, -1);
-		int[] usedPerSlot = new int[inv.getContainerSize()];
-		for (int c = 0; c < cells; c++) {
-			Ingredient ingredient = ingredients.get(c);
-			if (ingredient.isEmpty()) {
-				continue;
-			}
-			int slot = findSlot(ingredient, inv, usedPerSlot);
-			if (slot < 0) {
-				return null;
-			}
-			usedPerSlot[slot]++;
-			grid.set(c, inv.getItem(slot).copyWithCount(1));
-			slotPerCell[c] = slot;
-		}
-		return new GridMatch(grid, slotPerCell, w, h);
-	}
-
-	private static int findSlot(Ingredient ingredient, Inventory inv, int[] usedPerSlot) {
-		for (int i = 0; i < MAIN_SLOTS; i++) {
-			ItemStack stack = inv.getItem(i);
-			if (stack.isEmpty() || usedPerSlot[i] >= stack.getCount()) {
-				continue;
-			}
-			if (ingredient.test(stack)) {
-				return i;
-			}
-		}
-		return -1;
-	}
-
-	/** 一次成功的网格匹配：网格内容 + 每个格子对应的背包槽位。 */
-	private static final class GridMatch {
-		final List<ItemStack> grid;
-		final int[] slotPerCell;
-		final int width;
-		final int height;
-
-		GridMatch(List<ItemStack> grid, int[] slotPerCell, int width, int height) {
-			this.grid = grid;
-			this.slotPerCell = slotPerCell;
-			this.width = width;
-			this.height = height;
-		}
-
-		int maxSets(int amount, Inventory inv) {
-			int[] usagePerSlot = new int[inv.getContainerSize()];
-			for (int slot : slotPerCell) {
-				if (slot >= 0) {
-					usagePerSlot[slot]++;
-				}
-			}
-			int sets = amount;
-			for (int slot = 0; slot < inv.getContainerSize(); slot++) {
-				if (usagePerSlot[slot] > 0) {
-					sets = Math.min(sets, inv.getItem(slot).getCount() / usagePerSlot[slot]);
-				}
-			}
-			return Math.max(1, sets);
-		}
-
-		void consume(Inventory inv, int sets) {
-			for (int slot : slotPerCell) {
-				if (slot >= 0) {
-					inv.removeItem(slot, sets);
-				}
-			}
-		}
 	}
 
 	// ------------------------------------------------------------------

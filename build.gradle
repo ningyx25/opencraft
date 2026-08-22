@@ -29,6 +29,8 @@ configurations {
 }
 
 loom {
+	accessWidenerPath = file("src/main/resources/opencraft.accesswidener")
+
 	splitEnvironmentSourceSets()
 
 	runs {

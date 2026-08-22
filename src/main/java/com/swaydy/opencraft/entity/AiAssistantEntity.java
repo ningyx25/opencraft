@@ -8,6 +8,7 @@ import com.swaydy.opencraft.block.AiLogoBlockEntity;
 import com.swaydy.opencraft.block.ModBlocks;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
+import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
@@ -42,7 +43,7 @@ import java.util.UUID;
  * 召唤后停留在原地，只受显式指令（goto/挖掘任务等）驱动。
  *
  * - 被玩家右键绑定后成为该玩家的专属助手；
- * - 右键（绑定后）给主人打开互动界面（聊天 / 送走）；
+ * - 右键（绑定后）给主人打开双面板背包界面（左助手背包 / 右玩家背包，原版 E 背包外观）；
  * - 主人、配置方块引用都会写入存档，重新进入世界后仍然有效；
  * - **像普通生存玩家一样拥有完整背包与装备**：36 格背包（{@link #INVENTORY_SIZE}）
  *   自动拾取地上的物品/挖掘掉落物；头盔/胸甲/护腿/靴子/手/副手装备槽由
@@ -81,7 +82,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 	/**
 	 * 拾取范围（水平方向各方向的格数）：比玩家略大，因为助手不会主动走到每个物品上，
 	 * 且挖掘掉落物落地后可能滑动 1~2 格——范围太小会捡不到滑出去的掉落物。
-	 * 拾取时通过 take+onItemPickup 广播“物品飞向助手”的动画，视觉上很自然。
+	 * 拾取时通过 take+onItemPickup 广播"物品飞向助手"的动画，视觉上很自然。
 	 */
 	private static final double PICKUP_RANGE_XZ = 2.5;
 	private static final double PICKUP_RANGE_Y = 0.6;
@@ -235,7 +236,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 	}
 
 	/**
-	 * 显示名：服务端实时取“绑定方块配置的名字”（改名即时生效），格式 “名字 (x,y,z)”
+	 * 显示名：服务端实时取"绑定方块配置的名字"（改名即时生效），格式 "名字 (x,y,z)"
 	 * 以区分多个助手；客户端/无绑定时回退到召唤时设置的 customName（super）。
 	 */
 	@Override
@@ -273,7 +274,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 			getNavigation().stop();
 		}
 		this.currentTask = task;
-		com.swaydy.opencraft.debug.DebugLog.log("task",
+		com.swaydy.opencraft.logging.DebugLog.log("task",
 				"助手下达新任务: {}（tick {}）",
 				task == null ? "null" : task.describe(), tickCount);
 	}
@@ -281,7 +282,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 	/** 任务终结时由 {@link TaskHostGoal} 调用：清空当前任务（不再驱动）。 */
 	public void completeCurrentTask() {
 		if (currentTask != null) {
-			com.swaydy.opencraft.debug.DebugLog.log("task",
+			com.swaydy.opencraft.logging.DebugLog.log("task",
 					"任务结束: {}（完成={} 失败={}，tick {}）",
 					currentTask.describe(), currentTask.isDone(), currentTask.isFailed(), tickCount);
 			getNavigation().stop();
@@ -292,7 +293,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 	/** 取消当前任务（如新任务到达、助手被送走）。 */
 	public void cancelCurrentTask() {
 		if (currentTask != null) {
-			com.swaydy.opencraft.debug.DebugLog.log("task", "任务被取消: {}（tick {}）",
+			com.swaydy.opencraft.logging.DebugLog.log("task", "任务被取消: {}（tick {}）",
 					currentTask.describe(), tickCount);
 			getNavigation().stop();
 			this.currentTask = null;
@@ -368,7 +369,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 			item.discard();
 			return;
 		}
-		// 物品名要在 setCount 归零前记录（setCount(0) 会把栈变成“空气”）
+		// 物品名要在 setCount 归零前记录（setCount(0) 会把栈变成"空气"）
 		String itemName = stack.getHoverName().getString();
 		// 合并进背包（内部会优先并入已有堆叠，再占空槽）
 		if (!stack.isEmpty()) {
@@ -377,7 +378,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 		}
 		int taken = count - stack.getCount();
 		if (taken > 0) {
-			com.swaydy.opencraft.debug.DebugLog.log("pickup",
+			com.swaydy.opencraft.logging.DebugLog.log("pickup",
 					"助手拾取了 {}×{}（位置 {}, {}, {}）", itemName, taken,
 					(int) getX(), (int) getY(), (int) getZ());
 			this.take(item, taken);
@@ -389,7 +390,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 	}
 
 	/**
-	 * 自动为挖掘选择背包里“最快”的工具并换到主手（玩家式自动换镐）。
+	 * 自动为挖掘选择背包里"最快"的工具并换到主手（玩家式自动换镐）。
 	 * 没有更快工具时不改动主手。旧主手物品放回背包。
 	 */
 	public void autoSelectMiningTool(net.minecraft.world.level.block.state.BlockState state) {
@@ -438,11 +439,11 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 			player.displayClientMessage(Component.translatable("entity.opencraft.ai_assistant.bind"),
 					true);
 			OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 绑定了 AI 助手", player.getName().getString());
-			com.swaydy.opencraft.debug.DebugLog.log("bind",
+			com.swaydy.opencraft.logging.DebugLog.log("bind",
 					"玩家 {} 右键绑定了助手（实体 ID {}）", player.getName().getString(), getId());
 		} else if (ownerUuid.equals(player.getUUID())) {
-			// 主人右键：打开“互动界面”（和这个助手聊天 / 送走）
-			openInteractScreen((ServerPlayer) player);
+			// 主人右键：打开助手背包界面（左侧助手背包 + 右侧玩家背包，原版 E 背包布局）
+			openInventoryScreen((ServerPlayer) player);
 		} else {
 			player.displayClientMessage(Component.translatable("entity.opencraft.ai_assistant.not_owner"),
 					true);
@@ -450,12 +451,29 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 		return InteractionResult.SUCCESS;
 	}
 
-	/** 给主人发送互动界面数据（打开/刷新右键互动 GUI）。 */
-	private void openInteractScreen(ServerPlayer player) {
-		com.swaydy.opencraft.ai.AiBlockConfig config = getConfig();
-		String model = config.model == null ? "" : config.model;
-		String agent = config.agent == null ? "general_agent" : config.agent;
-		// 聊天回复的 S2C 事件按“绑定方块坐标”路由回互动界面，因此把方块坐标一起下发
+	/** 右键主人：打开助手的双面板背包界面（左半=助手按 E 的背包，右半=玩家自己的）。 */
+	private void openInventoryScreen(ServerPlayer player) {
+		try {
+			player.openMenu(new SimpleMenuProvider(
+					(id, playerInv, p) -> new com.swaydy.opencraft.inventory.AssistantInventoryMenu(
+							id, playerInv, this.inventory, this, () -> !this.isRemoved()),
+					getDisplayName()));
+		} catch (Exception e) {
+			// 模拟连接等场景打开失败：静默忽略
+			OpenCraftMod.LOGGER.debug("[OpenCraft] 打开背包界面失败（可能是模拟连接）: {}", e.toString());
+			return;
+		}
+		sendInventoryScreenEntityId(player);
+	}
+
+	/**
+	 * 把助手实体 ID 发给客户端（复用 {@code AssistantInteractPayload} 通道，紧随打开包
+	 * 按序到达）：背包界面左侧要用原版 {@code renderEntityInInventory} 渲染这个实体的模型。
+	 */
+	private void sendInventoryScreenEntityId(ServerPlayer player) {
+		AiBlockConfig config = getConfig();
+		String model = config == null || config.model == null ? "" : config.model;
+		String agent = config == null || config.agent == null ? "general_agent" : config.agent;
 		GlobalPos block = getConfigBlock();
 		BlockPos blockPos = block == null ? this.blockPosition() : block.pos();
 		ResourceKey<Level> dimension = block == null ? this.level().dimension() : block.dimension();
@@ -465,8 +483,9 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 							this.getId(), getDisplayName().getString(), true, model,
 							agent, blockPos, dimension));
 		} catch (Exception e) {
-			// 模拟连接等场景发送失败：静默忽略（与配置界面一致）
-			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送互动界面数据失败（可能是模拟连接）: {}", e.toString());
+			// 模拟连接等场景发送失败：静默忽略（只是少了模型渲染，界面不受影响）
+			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送背包界面实体 ID 失败（可能是模拟连接）: {}",
+					e.toString());
 		}
 	}
 
@@ -491,7 +510,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 			// 这也能清除刷怪蛋 / 旧存档遗留的无绑定助手（约 2 秒内）。
 			GlobalPos block = getConfigBlock();
 			if (block == null) {
-				com.swaydy.opencraft.debug.DebugLog.log("summon",
+				com.swaydy.opencraft.logging.DebugLog.log("summon",
 						"安全网：无绑定方块的（实体形态）助手被清除（tick {}）", tickCount);
 				this.discard();
 				return;
@@ -499,7 +518,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 			if (this.level() instanceof ServerLevel level) {
 				ServerLevel target = level.getServer().getLevel(block.dimension());
 				if (target == null || !target.getBlockState(block.pos()).is(ModBlocks.AI_LOGO_BLOCK)) {
-					com.swaydy.opencraft.debug.DebugLog.log("summon",
+					com.swaydy.opencraft.logging.DebugLog.log("summon",
 							"安全网：绑定方块 {} 已消失，（实体形态）助手被清除",
 							block.pos().toShortString());
 					this.discard();
@@ -559,7 +578,7 @@ public class AiAssistantEntity extends PathfinderMob implements com.swaydy.openc
 				setItemSlot(slot, ItemStack.EMPTY);
 			}
 		}
-		com.swaydy.opencraft.debug.DebugLog.log("death",
+		com.swaydy.opencraft.logging.DebugLog.log("death",
 				"助手死亡，掉落物品共 {} 个（背包+装备）", dropped);
 	}
 

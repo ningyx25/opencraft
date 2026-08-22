@@ -1,4 +1,4 @@
-package com.swaydy.opencraft.debug;
+package com.swaydy.opencraft.logging;
 
 import com.swaydy.opencraft.OpenCraftMod;
 import net.fabricmc.loader.api.FabricLoader;

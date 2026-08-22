@@ -1,0 +1,5 @@
+accessWidener v2 named
+
+# CraftingMenu.slotChangedCraftingGrid — 原版"合成格变动→匹配配方→填结果槽"逻辑，
+# 双面板背包菜单（AssistantInventoryMenu）为助手侧第二套合成网格直接复用
+accessible method net/minecraft/world/inventory/CraftingMenu slotChangedCraftingGrid (Lnet/minecraft/world/inventory/AbstractContainerMenu;Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/inventory/CraftingContainer;Lnet/minecraft/world/inventory/ResultContainer;Lnet/minecraft/world/item/crafting/RecipeHolder;)V
