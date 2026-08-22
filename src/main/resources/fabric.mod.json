@@ -25,13 +25,6 @@
 			"com.swaydy.opencraft.test.OpenCraftGameTests"
 		]
 	},
-	"mixins": [
-		"opencraft.mixins.json",
-		{
-			"config": "opencraft.client.mixins.json",
-			"environment": "client"
-		}
-	],
 	"accessWidener": "opencraft.accesswidener",
 	"depends": {
 		"fabricloader": ">=0.19.3",

@@ -37,14 +37,4 @@ public record AiConfigData(
 	public static AiConfigData fromJson(String json) {
 		return GSON.fromJson(json, AiConfigData.class);
 	}
-
-	/** 从方块配置构建。注意：apiKey 恒为空串（不发送密钥），apiKeySet 反映是否已配置。 */
-	public static AiConfigData fromConfig(AiBlockConfig config) {
-		return config.toData();
-	}
-
-	/** 套用到方块配置对象。apiKey 只在 apiKeyChanged 时采用（留空 = 清除密钥）。 */
-	public void applyTo(AiBlockConfig config) {
-		config.applyData(this);
-	}
 }

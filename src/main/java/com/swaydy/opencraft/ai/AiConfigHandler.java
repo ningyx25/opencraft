@@ -278,11 +278,6 @@ public final class AiConfigHandler {
 		return null;
 	}
 
-	/** 在指定区域里找一个 AI 徽标方块作为配置来源；找不到返回 null。 */
-	public static GlobalPos findNearestConfigBlock(ServerLevel level, BlockPos center, int radius) {
-		return findNearestConfigBlock(level, center, radius, false);
-	}
-
 	/**
 	 * 在指定区域里找一个 AI 徽标方块作为配置来源；找不到返回 null。
 	 * unboundOnly 为 true 时只找“还没有任何助手绑定”的方块（多助手规则：一方块一助手）。

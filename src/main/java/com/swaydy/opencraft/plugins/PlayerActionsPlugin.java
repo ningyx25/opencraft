@@ -24,7 +24,6 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.CraftingInput;
 import net.minecraft.world.item.crafting.CraftingRecipe;
-import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.item.crafting.ShapelessRecipe;
@@ -36,7 +35,6 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,7 +57,7 @@ import java.util.Set;
  * 装备/主手变更的客户端同步由 {@code AiAssistantPlayer.tick()} 的 doTick
  * （LivingEntity 装备检测）自动完成，无需手动广播。
  *
- * 这些是实体形态（PathfinderMob）没有的能力：玩家形态天生拥有普通玩家的一切，
+ * 助手天生拥有普通玩家的一切，
  * “可以不用，但不能没有”。工具全部在服务端线程执行；移动/挖掘/放置是异步的
  * （下达指令立即返回，助手自己走过去执行，模型用 look 观察结果）。
  */
@@ -319,7 +317,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				if (i > 0) {
 					sb.append(", ");
 				}
-				sb.append(shortName(e.getKey())).append("×").append(e.getValue());
+				sb.append(AiCompanionService.shortName(e.getKey())).append("×").append(e.getValue());
 				i++;
 			}
 		}
@@ -339,7 +337,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				double dist = Math.round(a.distanceTo(e) * 10.0) / 10.0;
 				String type = e instanceof Player ? "Player"
 						: e instanceof Monster ? "Monster"
-						: e instanceof ItemEntity ? "Dropped item" : shortName(e.getType().getDescriptionId());
+						: e instanceof ItemEntity ? "Dropped item" : AiCompanionService.shortName(e.getType().getDescriptionId());
 				// 带精确坐标 + 方位：模型据此才能判断“东西在哪”
 				sb.append(type).append(" ").append(e.blockPosition().toShortString()).append(" ")
 						.append(bearingTo(pos, e.blockPosition())).append("(").append(dist).append(" blocks) ")
@@ -410,7 +408,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				}
 				String label = e instanceof Player ? "Player"
 						: e instanceof Monster ? "Monster"
-						: e instanceof ItemEntity ? "Dropped item" : shortName(e.getType().getDescriptionId());
+						: e instanceof ItemEntity ? "Dropped item" : AiCompanionService.shortName(e.getType().getDescriptionId());
 				lines.add(formatTarget(e.blockPosition(), label, a));
 				n++;
 			}
@@ -445,7 +443,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		}
 		ServerLevel level = ctx.level();
 		BlockPos pos = new BlockPos(x, y, z);
-		// 安全校验（与实体版挖掘一致）
+		// 安全校验
 		if (level != ctx.owner().level()) {
 			return ToolResult.error("Can only mine blocks in the dimension the owner is currently in.");
 		}
@@ -592,19 +590,19 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			if (crafted > 0) {
 				com.swaydy.opencraft.logging.DebugLog.log("player_action",
 						"玩家形态助手按配方书流程合成 {} ×{}（菜单 {}）",
-						shortName(item.value().getDescriptionId()), crafted,
+						AiCompanionService.shortName(item.value().getDescriptionId()), crafted,
 						menu == a.inventoryMenu ? "随身 2×2" : "工作台 3×3");
-				return ToolResult.ok("Crafted " + shortName(item.value().getDescriptionId()) + " ×"
+				return ToolResult.ok("Crafted " + AiCompanionService.shortName(item.value().getDescriptionId()) + " ×"
 						+ crafted + " (put into the assistant's inventory)"
 						+ (crafted < amount ? ". Only enough materials for " + crafted : "") + ".");
 			}
 		}
 		if (sawWorkbenchRecipe) {
-			return ToolResult.error("Crafting " + shortName(item.value().getDescriptionId())
+			return ToolResult.error("Crafting " + AiCompanionService.shortName(item.value().getDescriptionId())
 					+ " requires a crafting table (3×3 grid, same as a player). Walk to a crafting table first and try again.");
 		}
 		return ToolResult.error("Cannot craft "
-				+ shortName(item.value().getDescriptionId()) + " from the materials in my inventory. "
+				+ AiCompanionService.shortName(item.value().getDescriptionId()) + " from the materials in my inventory. "
 				+ "Not enough materials or no recipe.");
 	}
 
@@ -649,9 +647,9 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			a.drop(toDrop, false);
 			com.swaydy.opencraft.logging.DebugLog.log("player_action",
 					"玩家形态助手丢弃 {} × {} [{}]",
-					shortName(toDrop.getItem().getDescriptionId()), toDrop.getCount(), fromStr);
+					AiCompanionService.shortName(toDrop.getItem().getDescriptionId()), toDrop.getCount(), fromStr);
 			return ToolResult.ok("Dropped " + toDrop.getCount() + "× "
-					+ shortName(toDrop.getItem().getDescriptionId()) + " from slot " + fromStr + ".");
+					+ AiCompanionService.shortName(toDrop.getItem().getDescriptionId()) + " from slot " + fromStr + ".");
 		}
 
 		// 交换：走真实玩家路径——在自己的背包菜单（InventoryMenu）里三次点击
@@ -680,12 +678,12 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 
 		com.swaydy.opencraft.logging.DebugLog.log("player_action",
 				"玩家形态助手移动物品 {} [{}] ↔ {} [{}]（背包菜单点击，实际生效={}）",
-				stackFrom.isEmpty() ? "empty" : shortName(stackFrom.getItem().getDescriptionId()), fromStr,
-				stackTo.isEmpty()   ? "empty" : shortName(stackTo.getItem().getDescriptionId()),   toStr,
+				stackFrom.isEmpty() ? "empty" : AiCompanionService.shortName(stackFrom.getItem().getDescriptionId()), fromStr,
+				stackTo.isEmpty()   ? "empty" : AiCompanionService.shortName(stackTo.getItem().getDescriptionId()),   toStr,
 				moved);
 
-		String fromName = afterFrom.isEmpty() ? "empty" : shortName(afterFrom.getItem().getDescriptionId());
-		String toName   = afterTo.isEmpty()   ? "empty" : shortName(afterTo.getItem().getDescriptionId());
+		String fromName = afterFrom.isEmpty() ? "empty" : AiCompanionService.shortName(afterFrom.getItem().getDescriptionId());
+		String toName   = afterTo.isEmpty()   ? "empty" : AiCompanionService.shortName(afterTo.getItem().getDescriptionId());
 		if (!moved) {
 			return ToolResult.error("Nothing moved: the vanilla inventory rejected it "
 					+ "(e.g. armor slots only accept matching armor). [" + fromStr + "] and [" + toStr
@@ -712,7 +710,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		ItemStack held = a.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.MAINHAND);
 		return ToolResult.ok("Selected hotbar slot " + slot + " as main hand"
 				+ (held.isEmpty() ? " (empty)."
-						: " (holding " + shortName(held.getItem().getDescriptionId()) + ")."));
+						: " (holding " + AiCompanionService.shortName(held.getItem().getDescriptionId()) + ")."));
 	}
 
 	/**
@@ -874,10 +872,10 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			}
 		}
 		if (given == 0) {
-			return ToolResult.error("The assistant's inventory has no " + shortName(item.value().getDescriptionId())
+			return ToolResult.error("The assistant's inventory has no " + AiCompanionService.shortName(item.value().getDescriptionId())
 					+ "; can't hand it to you.");
 		}
-		return ToolResult.ok("Handed you " + shortName(item.value().getDescriptionId()) + " ×" + given + ".");
+		return ToolResult.ok("Handed you " + AiCompanionService.shortName(item.value().getDescriptionId()) + " ×" + given + ".");
 	}
 
 
@@ -960,7 +958,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		double dist = Math.round(Math.sqrt(a.distanceToSqr(
 				pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5)) * 10.0) / 10.0;
 		return "(" + pos.getX() + "," + pos.getY() + "," + pos.getZ() + ") "
-				+ bearingTo(a.blockPosition(), pos) + " distance " + dist + " blocks(" + shortName(descId) + ")";
+				+ bearingTo(a.blockPosition(), pos) + " distance " + dist + " blocks(" + AiCompanionService.shortName(descId) + ")";
 	}
 
 	/** 从 / 到目标的方位（东南西北格数；原地返回 here）。 */
@@ -1061,7 +1059,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			if (i >= MAIN_SLOTS) {
 				sb.append(slotName(i)).append("=");
 			}
-			sb.append(shortName(stack.getItem().getDescriptionId())).append("×").append(stack.getCount());
+			sb.append(AiCompanionService.shortName(stack.getItem().getDescriptionId())).append("×").append(stack.getCount());
 			shown++;
 			if (shown >= CONTEXT_MAX_ITEMS) {
 				sb.append(" …");
@@ -1086,13 +1084,5 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			case 42 -> "saddle";
 			default -> "items";
 		};
-	}
-
-	private static String shortName(String key) {
-		if (key == null) {
-			return "?";
-		}
-		int idx = key.lastIndexOf('.');
-		return idx < 0 ? key : key.substring(idx + 1);
 	}
 }

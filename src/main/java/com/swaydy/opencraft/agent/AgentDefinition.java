@@ -84,15 +84,6 @@ public record AgentDefinition(String id, String displayName, List<AssistantPlugi
 		return sb.toString();
 	}
 
-	/** 该预设注册到助手实体上的 Goal（按插件顺序）。 */
-	public void registerGoals(com.swaydy.opencraft.entity.AiAssistantEntity assistant) {
-		if (plugins != null) {
-			for (AssistantPlugin plugin : plugins) {
-				plugin.registerGoals(assistant);
-			}
-		}
-	}
-
 	/** 该预设暴露给模型的工具列表（OpenAI tools schema，每个都是 {"type":"function",...}）。 */
 	public List<com.google.gson.JsonObject> toolsJson() {
 		List<com.google.gson.JsonObject> result = new ArrayList<>();

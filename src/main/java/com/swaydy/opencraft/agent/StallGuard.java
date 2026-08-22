@@ -19,12 +19,8 @@ public final class StallGuard {
 	/** 默认阈值：连续 {@value #DEFAULT_STALL_LIMIT} 轮纯观察 → 提醒一次。 */
 	private static final int DEFAULT_STALL_LIMIT = 3;
 
-	/**
-	 * 只读工具集合：调用这些工具不会改变世界/背包状态，纯观察。
-	 * 同时覆盖玩家形态（player_look/player_inventory）与实体形态遗留（look_around/inspect_block）。
-	 */
-	private static final Set<String> READ_ONLY_TOOLS = Set.of(
-			"player_look", "look_around", "player_inventory", "inspect_block");
+	/** 只读工具集合：调用这些工具不会改变世界/背包状态，纯观察。 */
+	private static final Set<String> READ_ONLY_TOOLS = Set.of("player_look", "player_inventory");
 
 	private final int stallLimit;
 	private int streak = 0;

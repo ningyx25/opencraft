@@ -10,18 +10,16 @@ import net.minecraft.world.level.Level;
 import java.util.UUID;
 
 /**
- * AI 助手的统一抽象，覆盖两种“身体”形态：
- * - {@code player}：真正的 ServerPlayer 假玩家（{@link com.swaydy.opencraft.assistant.player.AiAssistantPlayer}），
- *   像多人联机客户端一样进服，拥有完整玩家背包/游戏模式/玩家式动作——**当前唯一的助手形态**；
- * - {@code entity}：PathfinderMob 底座（{@link com.swaydy.opencraft.entity.AiAssistantEntity}），
- *   仅旧存档遗留兼容。
+ * AI 助手的统一抽象。当前唯一实现是玩家形态
+ * {@link com.swaydy.opencraft.assistant.player.AiAssistantPlayer}：
+ * 真正的 ServerPlayer 假玩家，像多人联机客户端一样进服，拥有完整玩家背包/
+ * 游戏模式/玩家式动作。
  *
- * Agentic loop、对话、历史、命令、界面只依赖这里的“身体无关”方法；
- * 身体专属能力（背包格数、任务、Goal）由各形态自己的实现/插件提供。
+ * Agentic loop、对话、历史、命令、界面只依赖这里的“身体无关”方法。
  *
  * <p><b>重映射注意事项</b>：凡是委托 {@link Entity} 实现的方法（{@link #level()}/
  * {@link #isAlive()}/{@link #isRemoved()}/{@link #blockPosition()}/{@link #getDisplayName()}）
- * 一律写成 {@code default} 方法并以 {@code (Entity) this} 委托——不能写成抽象方法让实体类继承：
+ * 一律写成 {@code default} 方法并以 {@code (Entity) this} 委托——不能写成抽象方法让实现类继承：
  * Loom 把模组代码重映射到中间名（intermediary）时，接口里与 Minecraft 类同名的抽象方法
  * 可能被映射成与实体类继承方法不一致的符号，生产环境会抛
  * {@link java.lang.AbstractMethodError}（dev/mojmap 命名下一切正常，gametest 测不出来；
@@ -58,28 +56,14 @@ public interface AiAssistant {
 		return ((Entity) this).blockPosition();
 	}
 
-	/** 显示名（实体版 = 配置名字 + 方块坐标，玩家版 = 玩家名/配置名字；委托实体实现，见类注释）。 */
+	/** 显示名（玩家名/配置名字；委托实体实现，见类注释）。 */
 	default Component getDisplayName() {
 		return ((Entity) this).getDisplayName();
 	}
 
-	/** 形态 id：{@code "player"}（假玩家/客户端形态）或 {@code "entity"}（PathfinderMob 底座）。 */
-	String formId();
+	/** 是否处于跟随模式（默认跟随；玩家下达指令后退出，指令完成回到跟随）。 */
+	boolean isFollowing();
 
-	/**
-	 * 是否处于跟随模式（默认跟随；玩家下达指令后退出，指令完成回到跟随）。
-	 * 默认实现 = 不跟随（legacy 实体形态是纯聊天伴侣，永不跟随）；
-	 * 玩家形态（{@link com.swaydy.opencraft.assistant.player.AiAssistantPlayer}）覆写为真实状态。
-	 */
-	default boolean isFollowing() {
-		return false;
-	}
-
-	/**
-	 * 设置跟随模式。默认实现 = no-op（legacy 实体形态不跟随）；
-	 * 玩家形态覆写为写自己的字段。
-	 */
-	default void setFollowing(boolean following) {
-		// no-op for legacy entity form
-	}
+	/** 设置跟随模式。 */
+	void setFollowing(boolean following);
 }

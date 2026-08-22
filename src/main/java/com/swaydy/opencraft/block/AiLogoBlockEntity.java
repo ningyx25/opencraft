@@ -2,7 +2,6 @@ package com.swaydy.opencraft.block;
 
 import com.swaydy.opencraft.ai.AiBlockConfig;
 import com.swaydy.opencraft.ai.AiConfigData;
-import com.swaydy.opencraft.entity.AiAssistantEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.server.level.ServerLevel;
@@ -27,10 +26,6 @@ public class AiLogoBlockEntity extends BlockEntity {
 
 	public AiLogoBlockEntity(BlockPos pos, BlockState state) {
 		super(ModBlockEntities.AI_LOGO_BLOCK, pos, state);
-	}
-
-	public AiLogoBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
-		super(type, pos, state);
 	}
 
 	public AiBlockConfig getConfig() {
@@ -61,7 +56,7 @@ public class AiLogoBlockEntity extends BlockEntity {
 	}
 
 	/**
-	 * 方块被破坏/替换（含活塞推动离开本格）时调用：所有绑定此方块的 AI 助手随之消失。
+	 * 方块被破坏/替换（含活塞推动离开本格）时调用：绑定此方块的 AI 助手随之消失。
 	 *
 	 * 注意：不能重写 setRemoved() 并在其中调用 level.getBlockState()——
 	 * setRemoved 在区块卸载/世界保存阶段也会触发，getBlockState 会等待主线程加载
@@ -77,18 +72,16 @@ public class AiLogoBlockEntity extends BlockEntity {
 			return;
 		}
 		GlobalPos boundPos = GlobalPos.of(this.level.dimension(), this.worldPosition);
-		java.util.List<AiAssistantEntity> bound =
-				com.swaydy.opencraft.entity.ModEntities.findAssistantsBoundTo(serverLevel, boundPos);
-		if (!bound.isEmpty()) {
+		com.swaydy.opencraft.assistant.AiAssistant bound =
+				com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(serverLevel, boundPos);
+		if (bound != null) {
 			com.swaydy.opencraft.OpenCraftMod.LOGGER.info(
-					"[OpenCraft] AI 徽标方块({})被移除，{} 个绑定的助手随之消失",
-					this.worldPosition.toShortString(), bound.size());
+					"[OpenCraft] AI 徽标方块({})被移除，绑定的助手随之消失",
+					this.worldPosition.toShortString());
 			com.swaydy.opencraft.logging.DebugLog.log("summon",
-					"AI 徽标方块 {} 被移除，{} 个绑定的（实体形态）助手随之消失，并清除该方块记忆",
-					this.worldPosition.toShortString(), bound.size());
-			for (AiAssistantEntity assistant : bound) {
-				assistant.discard();
-			}
+					"AI 徽标方块 {} 被移除，绑定的助手随之消失，并清除该方块记忆",
+					this.worldPosition.toShortString());
+			com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bound);
 			// 方块没了，绑定它的助手的对话记忆一并清除
 			com.swaydy.opencraft.ai.AiCompanionService.resetHistory(boundPos);
 		}

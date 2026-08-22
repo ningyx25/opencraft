@@ -34,20 +34,22 @@ https://github.com/user-attachments/assets/c4a91eff-5ded-4788-9cba-8ecffc6c3d61
 
 | 预设 | 插件 | 最大工具轮次 |
 |---|---|---|
-| `chat_agent`（纯聊天） | 助手控制 | 1 |
-| `general_agent`（全能，默认） | 助手控制 + 玩家动作 | 8 |
+| `chat_agent`（纯聊天） | 助手控制 | 3 |
+| `general_agent`（全能，默认） | 助手控制 + 玩家动作 | 250 |
 
 玩家动作工具（`general_agent` 专属，全部以真实玩家方式执行）：
 
 | 工具 | 作用 |
 |---|---|
-| `player_goto` / `player_stop` | 走到指定坐标 / 停止移动 |
+| `player_goto` / `player_stop` / `player_jump` | 走到指定坐标 / 停止移动 / 跳一下 |
 | `player_look` | 观察周围：坐标、朝向、附近方块/实体/掉落物、背包摘要 |
+| `player_find` | 按关键词找方块/实体/掉落物，返回精确坐标 + 方位 + 距离 |
 | `player_mine` | 走到方块旁用 `ServerPlayerGameMode.destroyBlock` 破坏，掉落物自动拾取 |
 | `player_place` | 用主手物品以 `useItemOn` 贴着指定面放置方块 |
 | `player_craft` | 按玩家规则合成（2×2 随时可合，3×3 需附近有工作台） |
 | `player_inventory` | 查看自己或主人的背包与装备 |
 | `player_hand_to_player` | 从背包取物品递给主人（背包满则掉在主人脚边） |
+| `teleport_to_player` | 瞬间传送到主人身边（支持跨维度，所有预设可用） |
 
 **Agentic loop 健壮性**：自动退避重试网络错误；检测重复工具调用死循环并打断；工具结果超长自动裁剪；对话历史过长时 LLM 压缩为摘要；破坏性操作前向玩家提问确认（`/opencraft answer` 回复，90 秒超时后按合理假设继续）；多步任务自动列计划并实时更新进度。
 
@@ -90,6 +92,7 @@ https://github.com/user-attachments/assets/c4a91eff-5ded-4788-9cba-8ecffc6c3d61
 | `/opencraft ask <消息>` | 与最近的助手对话 |
 | `/opencraft ask <名字> <消息>` | 与指定助手对话（Tab 补全名字） |
 | `/opencraft answer <回答>` | 回答助手提出的确认问题 |
+| `/opencraft interrupt`（别名 `stop`） | 中断最近助手正在执行的任务 |
 | `/opencraft summon` | 召唤助手（绑定最近的未绑定方块） |
 | `/opencraft dismiss [all]` | 送走最近 / 全部助手 |
 | `/opencraft status` | 列出全部助手及配置状态 |
@@ -131,25 +134,22 @@ https://github.com/user-attachments/assets/c4a91eff-5ded-4788-9cba-8ecffc6c3d61
 ```
 src/
 ├── main/java/com/swaydy/opencraft/
-│   ├── OpenCraftMod.java          # 模组入口，注册方块/实体/命令/网络包
+│   ├── OpenCraftMod.java          # 模组入口，注册方块/命令/网络包
 │   ├── agent/                     # Agent 框架：AgentRuntime、预设注册、插件接口
 │   ├── assistant/                 # 助手抽象：AiAssistant 统一接口、AssistantFacade、
 │   │                              #   player/（AiAssistantPlayer 真 ServerPlayer bot）
 │   ├── plugins/                   # 内置插件：助手控制、移动、感知、挖掘、物品、合成
 │   ├── presets/                   # Agent 预设：chat_agent、general_agent
 │   ├── ai/                        # LLM 客户端（SSE 流式 + 工具调用）、配置模型
-│   ├── entity/                    # 旧存档遗留实体形态（PathfinderMob）
 │   ├── block/                     # AI 徽标方块与方块实体
 │   ├── command/                   # /opencraft 指令
 │   ├── inventory/                 # 右键助手的双面板背包菜单（AssistantInventoryMenu）
 │   ├── net/                       # 自定义网络包
-│   ├── mixin/                     # 通用 mixin
 │   └── test/                      # Fabric 游戏测试
 ├── client/java/com/swaydy/opencraft/client/
 │   ├── OpenCraftModClient.java    # 客户端入口
 │   ├── gui/                       # 配置界面（4 页 Tab）、右键助手的双面板背包界面
-│   ├── render/                    # 助手实体渲染器
-│   └── mixin/                     # 客户端 mixin
+│   └── render/                    # 助手实体渲染器、世界内流式浮层
 └── main/resources/                # fabric.mod.json、语言文件、贴图、配方、战利品表
 ```
 

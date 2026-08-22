@@ -1,11 +1,8 @@
 package com.swaydy.opencraft.client;
 
 import com.swaydy.opencraft.ai.AiConfigData;
-import com.swaydy.opencraft.client.gui.AiAssistantInteractScreen;
 import com.swaydy.opencraft.client.gui.AiConfigScreen;
-import com.swaydy.opencraft.client.render.AiAssistantRenderer;
 import com.swaydy.opencraft.client.render.AssistantStreamOverlay;
-import com.swaydy.opencraft.entity.ModEntities;
 import com.swaydy.opencraft.net.AiConfigPayloads;
 import com.swaydy.opencraft.net.AssistantPayloads;
 import com.swaydy.opencraft.net.AssistantStreamPayloads;
@@ -16,15 +13,10 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.entity.EntityRenderers;
 
 public class OpenCraftModClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
-		// 注册 AI 助手的渲染器（EntityRenderers.register 通过 Fabric 的
-		// transitive access widener 开放给模组使用）
-		EntityRenderers.register(ModEntities.AI_ASSISTANT, AiAssistantRenderer::new);
-
 		// 注册双面板助手背包界面（与 MenuType 绑定，原版框架会自动在 S2C 打开包时调用）
 		MenuScreens.register(ModMenuTypes.ASSISTANT_INVENTORY, AssistantInventoryScreen::new);
 
@@ -55,16 +47,13 @@ public class OpenCraftModClient implements ClientModInitializer {
 					}
 				}));
 
-		// 接收聊天窗口事件：转发给配置界面聊天窗口，或（按绑定方块坐标匹配）右键互动界面
+		// 接收聊天窗口事件：转发给配置界面聊天窗口
 		ClientPlayNetworking.registerGlobalReceiver(
 				AiConfigPayloads.AiConfigChatEventPayload.TYPE,
 				(payload, context) -> context.client().execute(() -> {
 					if (context.client().screen instanceof AiConfigScreen screen) {
 						screen.handleChatEvent(payload.kind(), payload.text(),
 								payload.pos(), payload.dimension());
-					} else if (context.client().screen instanceof AiAssistantInteractScreen interact
-							&& interact.matchesBlock(payload.pos(), payload.dimension())) {
-						interact.handleChatEvent(payload.kind(), payload.text());
 					}
 				}));
 

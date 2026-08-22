@@ -61,14 +61,6 @@ public final class AgentRegistry {
 		PLUGINS.put(plugin.id(), plugin);
 	}
 
-	public static AssistantPlugin plugin(String id) {
-		return PLUGINS.get(id);
-	}
-
-	public static List<AssistantPlugin> plugins() {
-		return new ArrayList<>(PLUGINS.values());
-	}
-
 	// ------------------------------------------------------------------
 	// Agent 预设
 	// ------------------------------------------------------------------

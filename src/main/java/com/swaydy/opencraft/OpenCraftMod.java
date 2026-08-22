@@ -2,23 +2,17 @@ package com.swaydy.opencraft;
 
 import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.ai.AiConfigHandler;
-import com.swaydy.opencraft.assistant.AiAssistant;
-import com.swaydy.opencraft.assistant.AssistantFacade;
 import com.swaydy.opencraft.block.ModBlockEntities;
 import com.swaydy.opencraft.block.ModBlocks;
 import com.swaydy.opencraft.command.ModCommands;
-import com.swaydy.opencraft.entity.ModEntities;
 import com.swaydy.opencraft.net.AiConfigPayloads;
 import com.swaydy.opencraft.net.AssistantPayloads;
 import com.swaydy.opencraft.net.AssistantStreamPayloads;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
-import net.minecraft.core.GlobalPos;
-import net.minecraft.network.chat.Component;
-import net.minecraft.server.level.ServerPlayer;
-
 import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerPlayer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,9 +56,6 @@ public class OpenCraftMod implements ModInitializer {
 
 		// AI 徽标方块的方块实体（配置载体）注册
 		ModBlockEntities.register();
-
-		// AI 助手实体 + 刷怪蛋 + 属性注册
-		ModEntities.register();
 
 		// AI 插件系统 + Agent 预设注册表（插件、预设、agentic loop）
 		com.swaydy.opencraft.agent.AgentRegistry.init();
@@ -152,54 +143,11 @@ public class OpenCraftMod implements ModInitializer {
 				AssistantStreamPayloads.AssistantStreamPayload.TYPE,
 				AssistantStreamPayloads.AssistantStreamPayload.STREAM_CODEC);
 
-		// 右键 AI 助手互动网络包：注册类型 + 聊天/送走接收器（跟随/待命模式已整体移除）
-		PayloadTypeRegistry.playC2S().register(
-				AssistantPayloads.AssistantChatPayload.TYPE,
-				AssistantPayloads.AssistantChatPayload.STREAM_CODEC);
-		PayloadTypeRegistry.playC2S().register(
-				AssistantPayloads.AssistantDismissPayload.TYPE,
-				AssistantPayloads.AssistantDismissPayload.STREAM_CODEC);
+		// 右键 AI 助手打开背包界面后，把助手实体 ID 发给客户端（S2C，
+		// 界面左侧用原版 renderEntityInInventory 渲染助手模型，见 AssistantPayloads）
 		PayloadTypeRegistry.playS2C().register(
 				AssistantPayloads.AssistantInteractPayload.TYPE,
 				AssistantPayloads.AssistantInteractPayload.STREAM_CODEC);
-		ServerPlayNetworking.registerGlobalReceiver(
-				AssistantPayloads.AssistantChatPayload.TYPE,
-				(payload, context) -> context.server().execute(() -> {
-					ServerPlayer player = context.player();
-					AiAssistant assistant =
-							AssistantFacade.resolveOwned(player, payload.entityId());
-					if (assistant == null) {
-						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
-						return;
-					}
-					String message = payload.message().trim();
-					if (message.isEmpty()) {
-						player.sendSystemMessage(Component.translatable("command.opencraft.ask.blank"));
-						return;
-					}
-					GlobalPos block = assistant.getConfigBlock();
-					if (block == null) {
-						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
-						return;
-					}
-					// GUI 模式：回复以流式增量/完整回复事件回传互动界面（私人会话，不广播世界聊天）
-					AiCompanionService.askGui(player, assistant, message,
-							block.pos(), block.dimension());
-				}));
-		ServerPlayNetworking.registerGlobalReceiver(
-				AssistantPayloads.AssistantDismissPayload.TYPE,
-				(payload, context) -> context.server().execute(() -> {
-					ServerPlayer player = context.player();
-					AiAssistant assistant =
-							AssistantFacade.resolveOwned(player, payload.entityId());
-					if (assistant == null) {
-						player.sendSystemMessage(Component.translatable("command.opencraft.interact.gone"));
-						return;
-					}
-					if (AssistantFacade.dismiss(assistant)) {
-						player.sendSystemMessage(Component.translatable("command.opencraft.dismiss.success"));
-					}
-				}));
 	}
 
 	public static Identifier id(String path) {

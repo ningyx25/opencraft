@@ -14,7 +14,7 @@ import net.minecraft.world.phys.Vec3;
  *
  * ServerPlayer 在服务端不自动应用输入/重力——服务器信任客户端的移动包（handleMovePlayer），
  * 因此这里直接驱动位置：每 tick 用 {@code move(MoverType.PLAYER, delta)} 带碰撞地移动，
- * 自己施加重力/跳跃（跳过 1 格障碍），长时间卡住直接传送（与实体版助手的传送回退一致）。
+ * 自己施加重力/跳跃（跳过 1 格障碍），长时间卡住直接传送回退。
  *
  * <p><b>关键细节</b>：
  * - <b>着地判定不依赖 {@code Entity.onGround}</b>：bot 没有客户端移动包，纯水平 move()
@@ -205,10 +205,6 @@ public final class PlayerMovementController {
 				"开始挖掘 {}（{} tick ≈ {}s，进度 {}/tick）",
 				pos.toShortString(), ticksNeeded, Math.round(ticksNeeded / 20.0 * 10) / 10.0, perTick);
 		return ticksNeeded;
-	}
-
-	public boolean isMining() {
-		return this.miningPos != null;
 	}
 
 	/** 中断挖掘（像客户端松开破坏键：发 ABORT，清破坏进度动画）。 */

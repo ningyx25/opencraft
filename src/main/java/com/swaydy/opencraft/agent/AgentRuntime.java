@@ -51,7 +51,7 @@ import java.util.stream.Collectors;
  * - 工具执行、历史写入、聊天广播一律 {@code server.executeIfPossible} 回服务端线程；
  * - 工具执行完成后由服务端线程把「继续下一轮请求」的任务交回工作线程池；
  * - 长任务（寻路、挖掘）不在工具调用里阻塞——工具只下达指令（设置任务/Goal）,立即返回；
- *   模型通过后续 {@code look_around} 观察结果。
+ *   模型通过后续 {@code player_look} 等观察工具获取结果。
  *
  * <p>每轮流程:
  * 1. 组装消息:system（预设 persona + 插件提示词 + 游戏上下文 + 插件上下文）+ 历史 + user；
@@ -198,7 +198,7 @@ public final class AgentRuntime {
 
 	/**
 	 * 玩家下达指令时调用:助手退出跟随模式,并停掉在途的跟随移动
-	 * （否则退出后仍会朝最后一个跟随目标走）。legacy 实体形态是 no-op。
+	 * （否则退出后仍会朝最后一个跟随目标走）。
 	 */
 	private static void beginTask(AiAssistant assistant) {
 		if (assistant == null) {
@@ -211,7 +211,7 @@ public final class AgentRuntime {
 		}
 	}
 
-	/** 指令完成时调用:助手回到跟随模式（legacy 实体形态是 no-op）。 */
+	/** 指令完成时调用:助手回到跟随模式。 */
 	private static void endTask(AiAssistant assistant) {
 		if (assistant == null) {
 			return;

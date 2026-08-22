@@ -32,7 +32,7 @@ import java.util.concurrent.CompletableFuture;
  *   /opencraft interrupt            —— 中断「最近的」助手当前正在进行的任务（卡住时可立即重新提问）
  *   /opencraft help                 —— 显示帮助
  *
- * 多助手规则：每个 AI 徽标方块最多绑定一个助手（实体形态或玩家形态，见 AssistantFacade），
+ * 多助手规则：每个 AI 徽标方块最多绑定一个助手（见 AssistantFacade），
  * 一个玩家可以同时拥有多个助手（各绑定不同的方块）。配置只保存在游戏内的 AI 徽标方块里。
  */
 public final class ModCommands {
@@ -257,9 +257,8 @@ public final class ModCommands {
 			String blockLabel = block == null ? config.effectiveName()
 					: config.effectiveName() + " (" + block.pos().toShortString() + ")";
 			String status = String.format(
-					"  [%s] 形态: %s | 模型: %s | API Key: %s | 记忆: %d 条",
+					"  [%s] 模型: %s | API Key: %s | 记忆: %d 条",
 					blockLabel,
-					assistant.formId(),
 					config.model,
 					config.apiKey.isEmpty() ? "未设置" : "已设置",
 					AiCompanionService.historySize(block));

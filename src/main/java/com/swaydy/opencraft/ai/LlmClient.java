@@ -22,7 +22,6 @@ import com.openai.models.chat.completions.ChatCompletionMessageFunctionToolCall;
 import com.openai.models.chat.completions.ChatCompletionMessageParam;
 import com.openai.models.chat.completions.ChatCompletionMessageToolCall;
 import com.openai.models.chat.completions.ChatCompletionStreamOptions;
-import com.openai.models.chat.completions.ChatCompletionSystemMessageParam;
 import com.openai.models.chat.completions.ChatCompletionTool;
 import com.openai.models.chat.completions.ChatCompletionToolMessageParam;
 import com.openai.models.chat.completions.ChatCompletionUserMessageParam;
@@ -213,10 +212,6 @@ public final class LlmClient {
 			return new Message(Role.USER, List.of(new TextBlock(text)));
 		}
 
-		public static Message user(List<Block> content) {
-			return new Message(Role.USER, content);
-		}
-
 		public static Message assistant(String text) {
 			return new Message(Role.ASSISTANT, List.of(new TextBlock(text)));
 		}
@@ -384,10 +379,6 @@ public final class LlmClient {
 		public static FinishReason error(String code) {
 			return new FinishReason(FinishKind.ERROR, code);
 		}
-
-		public static FinishReason aborted() {
-			return new FinishReason(FinishKind.ABORTED, null);
-		}
 	}
 
 	/** 终端 chunk：每个调用恰好一个；失败（ERROR/ABORTED）时携带 {@link LlmFailure}。 */
@@ -453,14 +444,8 @@ public final class LlmClient {
 		public static final String EMPTY_RESPONSE = "EMPTY_RESPONSE";
 		/** 响应无法解析（非瞬时）。 */
 		public static final String MALFORMED_RESPONSE = "MALFORMED_RESPONSE";
-		/** 流提前关闭。 */
-		public static final String STREAM_CLOSED = "STREAM_CLOSED";
-		/** 凭据已提供但无法使用（格式非法，区别于 MISSING_CREDENTIAL）。 */
+		/** 凭据已提供但无法使用（格式非法）。 */
 		public static final String INVALID_CREDENTIAL = "INVALID_CREDENTIAL";
-		/** 未提供凭据（本 mod 以占位 key 处理，通常不会出现）。 */
-		public static final String MISSING_CREDENTIAL = "MISSING_CREDENTIAL";
-		/** 内容类型不受支持。 */
-		public static final String UNSUPPORTED_CONTENT = "UNSUPPORTED_CONTENT";
 		/**
 		 * mod 专有：SSE 读取看门狗——服务端拿到连接后长时间不吐数据。判为<b>不可重试</b>
 		 * （重试只会再次白等，快速失败让玩家重问/中断）。dsh 把 idle 超时归入 TIMEOUT，

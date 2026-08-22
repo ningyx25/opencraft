@@ -7,8 +7,6 @@ import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.ai.AiConfigHandler;
 import com.swaydy.opencraft.block.AiLogoBlockEntity;
 import com.swaydy.opencraft.block.ModBlocks;
-import com.swaydy.opencraft.entity.AiAssistantEntity;
-import com.swaydy.opencraft.entity.ModEntities;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
@@ -35,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 玩家形态助手（假玩家）的注册表与生命周期：召唤/送走/查找/每 tick 安全状态/安全网。
  *
- * 与实体版（ModEntities + AiCompanionService）并行：每个 AI 徽标方块至多绑定一个助手
+ * 每个 AI 徽标方块至多绑定一个助手
  * （跨形态统一判定，见 {@link com.swaydy.opencraft.assistant.AssistantFacade}）。
  * **默认跟随主人**：同维度内走近（超过跟随距离走、很近停、太远瞬移），主人跨维度时
  * 每 40 tick 跟随传送；玩家下达指令后助手退出跟随专注执行，指令完成自动回到跟随。
@@ -134,7 +132,7 @@ public final class PlayerAssistantService {
 	}
 
 	/**
-	 * 用指定 AI 徽标方块召唤（并绑定）玩家形态助手；方块已被任何形态助手绑定/占用时返回 null。
+	 * 用指定 AI 徽标方块召唤（并绑定）玩家形态助手；方块已被绑定/占用时返回 null。
 	 *
 	 * 流程：确定性 UUID（按方块）→ 建 ServerPlayer → 载入旧存档（如有）→ 摆安全出生点 →
 	 * {@code PlayerList.placeNewPlayer(黑洞连接, player, CommonListenerCookie)} 正式进服 →
@@ -153,20 +151,7 @@ public final class PlayerAssistantService {
 					block.pos().toShortString());
 			return null;
 		}
-		// 一方块一助手（跨形态）：已被实体形态助手绑定 → 拒绝
-		AiAssistantEntity entityBound = ModEntities.findAssistantBoundTo(blockLevel, block);
-		if (entityBound != null) {
-			if (owner.getUUID().equals(entityBound.getOwnerUuid())) {
-				com.swaydy.opencraft.logging.DebugLog.log("summon",
-						"拒绝召唤：{} 仍绑定实体形态助手（先送走旧形态才能切换）",
-						block.pos().toShortString());
-				return null; // 已是实体形态（需先送走实体形态才能切换）
-			}
-			com.swaydy.opencraft.logging.DebugLog.log("summon",
-					"拒绝召唤：{} 已被其他玩家的实体形态助手绑定", block.pos().toShortString());
-			return null; // 他人占用
-		}
-		// 幂等：已召唤自己的玩家形态助手 → 直接返回
+		// 幂等：已召唤自己的玩家形态助手 → 直接返回；被他人绑定 → 拒绝（一方块一助手）
 		AiAssistantPlayer existing = findBoundTo(block);
 		if (existing != null) {
 			return owner.getUUID().equals(existing.getOwnerUuid()) ? existing : null;
@@ -302,11 +287,6 @@ public final class PlayerAssistantService {
 		return any;
 	}
 
-	/** 某方块是否绑定了玩家形态助手。 */
-	public static boolean isBlockBound(GlobalPos block) {
-		return findBoundTo(block) != null;
-	}
-
 	// ------------------------------------------------------------------
 	// 每 tick / 慢 tick（由 AiAssistantPlayer.tick 调用，服务端线程）
 	// ------------------------------------------------------------------
@@ -339,7 +319,7 @@ public final class PlayerAssistantService {
 		if (owner instanceof ServerPlayer ownerSp && ownerSp.level() == player.level()) {
 			double dist = player.distanceTo(ownerSp);
 			if (dist > TELEPORT_DISTANCE) {
-				// 太远：直接传送回主人身边（与实体版/旧版跟随一致）
+				// 太远：直接传送回主人身边
 				Vec3 safe = AiCompanionService.findSafeSpawnPos((ServerLevel) player.level(),
 						new Vec3(ownerSp.getX() + 1.5, ownerSp.getY(), ownerSp.getZ() + 1.5));
 				player.teleportTo(safe.x, safe.y, safe.z);
@@ -366,7 +346,7 @@ public final class PlayerAssistantService {
 		}
 		GlobalPos block = player.getConfigBlock();
 		if (block == null || player.isBoundBlockGone()) {
-			// 无绑定 / 绑定方块已消失 → 送走并清空该方块记忆（与实体版安全网一致）
+			// 无绑定 / 绑定方块已消失 → 送走并清空该方块记忆（安全网）
 			GlobalPos gone = block;
 			com.swaydy.opencraft.logging.DebugLog.log("summon",
 					"安全网：玩家形态助手绑定方块{}已消失，送走并清空记忆",

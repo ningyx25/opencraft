@@ -4,7 +4,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.Container;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractCraftingMenu;
@@ -33,12 +32,11 @@ import java.util.function.BooleanSupplier;
  *     {@link CraftingMenu#slotChangedCraftingGrid}；</li>
  * <li>主背包 + 快捷栏：原版 {@code addStandardInventorySlots}（两侧各一次）；</li>
  * <li>护甲/副手：<b>双端对称、容器绑定</b>（原版 {@code InventoryMenu} 的做法）——
- *     玩家形态助手（真 ServerPlayer）与查看者玩家都用 {@link PlayerEquipmentSlot}
+ *     助手（真 ServerPlayer）与查看者玩家都用 {@link PlayerEquipmentSlot}
  *     绑各自 {@code Inventory} 的原版装备索引（护甲 39-i、副手 40），客户端同步
  *     只写容器、不触碰实体装备 API（实体 API 只在服务端有意义，客户端调用会走进
- *     原版 onEquipItem 的 ServerLevel 强转直接闪退——这就是"右键助手崩溃"的根因）；
- *     旧存档实体形态（PathfinderMob，装备不是 Container）服务端用
- *     {@link EquipmentSlotSlot} 适配器，客户端退化为占位容器槽、由槽位同步填充。</li>
+ *     原版 onEquipItem 的 ServerLevel 强转直接闪退）；客户端工厂（无真实 Inventory）
+ *     退化为占位容器槽、由槽位同步填充。</li>
  * </ul>
  *
  * <p>槽位索引（每侧 46 格，右面板 = 左面板 x 偏移 {@link #RIGHT_PANEL_X}）：
@@ -81,9 +79,7 @@ public class AssistantInventoryMenu extends AbstractCraftingMenu {
 	private final Container assistantInventory;
 	private final TransientCraftingContainer assistantCraftSlots;
 	private final ResultContainer assistantResultSlots = new ResultContainer();
-	/** 实体形态助手（服务端构造时传入；玩家形态与客户端为 null，装备槽走容器/占位）。 */
-	private final LivingEntity equipmentEntity;
-	/** 实体形态装备槽的客户端占位容器（头盔/胸/腿/靴/副手，内容来自槽位同步）。 */
+	/** 客户端工厂构造时的助手装备占位容器（头盔/胸/腿/靴/副手，内容来自槽位同步）。 */
 	private final Container assistantEquipmentFallback;
 	private final BooleanSupplier valid;
 
@@ -91,23 +87,20 @@ public class AssistantInventoryMenu extends AbstractCraftingMenu {
 	 * 客户端侧构造器（MenuType 工厂）：助手侧内容经原版槽位同步协议自动填充。
 	 */
 	public AssistantInventoryMenu(int syncId, Inventory playerInventory) {
-		this(syncId, playerInventory, new SimpleContainer(ASSISTANT_SLOTS), null, () -> true);
+		this(syncId, playerInventory, new SimpleContainer(ASSISTANT_SLOTS), () -> true);
 	}
 
 	/**
-	 * 服务端侧构造器：传入助手真实容器（玩家形态为 {@code Inventory}、实体形态为
-	 * {@code SimpleContainer(36)}）、实体形态的实体引用、有效性检查（助手被送走/死亡
-	 * 时自动关闭界面，防止往已销毁的背包里塞物品）。
+	 * 服务端侧构造器：传入助手真实容器（{@code Inventory}）与有效性检查
+	 * （助手被送走/死亡时自动关闭界面，防止往已销毁的背包里塞物品）。
 	 */
 	public AssistantInventoryMenu(int syncId, Inventory playerInventory,
-	                              Container assistantInventory, LivingEntity equipmentEntity,
-	                              BooleanSupplier valid) {
+	                              Container assistantInventory, BooleanSupplier valid) {
 		// 基类自带 2×2 合成网格（craftSlots/resultSlots）——用作右面板（玩家侧）的合成区
 		super(ModMenuTypes.ASSISTANT_INVENTORY, syncId, 2, 2);
 		checkContainerSize(assistantInventory, ASSISTANT_SLOTS);
 		this.owner = playerInventory.player;
 		this.assistantInventory = assistantInventory;
-		this.equipmentEntity = equipmentEntity;
 		this.valid = valid;
 		this.assistantEquipmentFallback = new SimpleContainer(5); // 头盔/胸/腿/靴/副手
 		this.assistantCraftSlots = new TransientCraftingContainer(this, 2, 2);
@@ -125,13 +118,14 @@ public class AssistantInventoryMenu extends AbstractCraftingMenu {
 			}
 		}
 		if (assistantInventory instanceof Inventory assistantPlayerInv) {
-			// 玩家形态助手：装备就是它 Inventory 的原版索引——与真实玩家按 E 完全一致
+			// 服务端：助手装备就是它 Inventory 的原版索引——与真实玩家按 E 完全一致
 			this.addPlayerEquipmentSlots(assistantPlayerInv, 0);
 		} else {
+			// 客户端工厂：无真实 Inventory，用占位容器槽承接槽位同步
 			for (int i = 0; i < ARMOR_SLOTS.length; i++) {
-				this.addSlot(this.equipmentSlot(ARMOR_SLOTS[i], 8, 8 + i * 18, i));
+				this.addSlot(new Slot(this.assistantEquipmentFallback, i, 8, 8 + i * 18));
 			}
-			this.addSlot(this.equipmentSlot(EquipmentSlot.OFFHAND, 77, 62, 4));
+			this.addSlot(new Slot(this.assistantEquipmentFallback, 4, 77, 62));
 		}
 		this.addStandardInventorySlots(assistantInventory, 8, 84);
 
@@ -167,13 +161,6 @@ public class AssistantInventoryMenu extends AbstractCraftingMenu {
 			case FEET -> InventoryMenu.EMPTY_ARMOR_SLOT_BOOTS;
 			default -> null;
 		};
-	}
-
-	/** 实体形态（PathfinderMob）的装备槽：服务端绑实体装备，客户端退化为占位容器槽。 */
-	private Slot equipmentSlot(EquipmentSlot equipmentSlot, int x, int y, int fallbackIndex) {
-		return this.equipmentEntity != null
-				? new EquipmentSlotSlot(this.equipmentEntity, equipmentSlot, x, y)
-				: new Slot(this.assistantEquipmentFallback, fallbackIndex, x, y);
 	}
 
 	/**
@@ -328,71 +315,6 @@ public class AssistantInventoryMenu extends AbstractCraftingMenu {
 		@Override
 		public net.minecraft.resources.Identifier getNoItemIcon() {
 			return this.emptyIcon;
-		}
-	}
-
-	// ------------------------------------------------------------------
-	// 实体形态装备槽适配器（仅服务端存在）
-	// ------------------------------------------------------------------
-
-	/**
-	 * 把 {@link LivingEntity} 的原生装备槽（{@code getItemBySlot}/{@code setItemSlot}）
-	 * 适配成菜单槽，用于旧存档实体形态助手（PathfinderMob——装备不是 Container）。
-	 * 只在服务端构造（客户端用占位容器槽），装备变更由实体自身每 tick 的
-	 * {@code LivingEntity.tick → detectEquipmentUpdates} 自动同步。
-	 */
-	public static class EquipmentSlotSlot extends Slot {
-		private final LivingEntity entity;
-		private final EquipmentSlot equipmentSlot;
-
-		public EquipmentSlotSlot(LivingEntity entity, EquipmentSlot equipmentSlot, int x, int y) {
-			// Slot 需要一个容器；本槽位所有读写都覆写为走实体装备，容器本身不被使用
-			super(new SimpleContainer(1), 0, x, y);
-			this.entity = entity;
-			this.equipmentSlot = equipmentSlot;
-		}
-
-		@Override
-		public ItemStack getItem() {
-			return this.entity.getItemBySlot(this.equipmentSlot);
-		}
-
-		@Override
-		public void set(ItemStack stack) {
-			this.entity.setItemSlot(this.equipmentSlot, stack);
-			this.setChanged();
-		}
-
-		@Override
-		public ItemStack remove(int amount) {
-			// 走 set()（正规路径）；不能对 getItem() 的原栈 split 了事
-			ItemStack current = this.getItem();
-			int takenCount = Math.min(amount, current.getCount());
-			ItemStack taken = current.copyWithCount(takenCount);
-			int remainingCount = current.getCount() - takenCount;
-			this.set(remainingCount <= 0 ? ItemStack.EMPTY : current.copyWithCount(remainingCount));
-			return taken;
-		}
-
-		@Override
-		public boolean mayPlace(ItemStack stack) {
-			return this.equipmentSlot == EquipmentSlot.OFFHAND
-					|| this.entity.isEquippableInSlot(stack, this.equipmentSlot);
-		}
-
-		@Override
-		public boolean isActive() {
-			return this.entity.canUseSlot(this.equipmentSlot);
-		}
-
-		@Override
-		public int getMaxStackSize() {
-			return 1;
-		}
-
-		@Override
-		public int getMaxStackSize(ItemStack stack) {
-			return 1;
 		}
 	}
 }

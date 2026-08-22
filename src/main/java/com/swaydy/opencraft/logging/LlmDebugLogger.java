@@ -15,7 +15,6 @@ import com.swaydy.opencraft.ai.LlmClient.TextBlock;
 import com.swaydy.opencraft.ai.LlmClient.ToolCallBlock;
 import com.swaydy.opencraft.ai.LlmClient.ToolResultBlock;
 import com.swaydy.opencraft.ai.LlmClient.ToolSchema;
-import com.swaydy.opencraft.logging.DebugLog;
 
 import java.util.ArrayList;
 import java.util.List;
