@@ -60,9 +60,9 @@ class AgentLoopGuardsTest {
 		guard.observe("player_goto", "{\"x\":1,\"y\":2,\"z\":3}");
 		guard.observe("player_goto", "{\"x\":1,\"y\":2,\"z\":3}");
 		// 换工具 → 链条重置
-		guard.observe("player_look", "{}");
-		assertNull(guard.observe("player_look", "{}"));
-		assertNotNull(guard.observe("player_look", "{}"), "player_look 自己连续 3 次才提醒");
+		guard.observe("player_find", "{\"target\":\"log\"}");
+		assertNull(guard.observe("player_find", "{\"target\":\"log\"}"));
+		assertNotNull(guard.observe("player_find", "{\"target\":\"log\"}"), "player_find 自己连续 3 次才提醒");
 	}
 
 	@Test
@@ -183,8 +183,8 @@ class AgentLoopGuardsTest {
 
 	@Test
 	void prunerTagsResultWithStatus() {
-		String ok = ToolResultPruner.toModelText("player_look", true, "position: x=1");
-		assertTrue(ok.startsWith("[player_look success] "), "成功结果应带成功标记: " + ok);
+		String ok = ToolResultPruner.toModelText("player_find", true, "position: x=1");
+		assertTrue(ok.startsWith("[player_find success] "), "成功结果应带成功标记: " + ok);
 		String fail = ToolResultPruner.toModelText("player_mine", false, "target too far from owner");
 		assertTrue(fail.startsWith("[player_mine failure] "), "失败结果应带失败标记: " + fail);
 		// 长结果：标记头保留 + 正文裁剪
@@ -192,8 +192,8 @@ class AgentLoopGuardsTest {
 		for (int i = 0; i < 5000; i++) {
 			sb.append('x');
 		}
-		String tagged = ToolResultPruner.toModelText("player_look", true, sb.toString());
-		assertTrue(tagged.startsWith("[player_look success] "));
+		String tagged = ToolResultPruner.toModelText("player_find", true, sb.toString());
+		assertTrue(tagged.startsWith("[player_find success] "));
 		assertTrue(tagged.length() < 2000);
 	}
 
@@ -212,9 +212,11 @@ class AgentLoopGuardsTest {
 		TaskPlan plan = TaskPlan.fromJson(args);
 		assertNotNull(plan, "合法计划应解析成功");
 		String formatted = plan.format();
-		assertTrue(formatted.contains("1. ⏳ Walk to the cave"), "进行中步骤带 ⏳: " + formatted);
-		assertTrue(formatted.contains("2. ⬜ Mine 5 iron ore"), "待办步骤带 ⬜");
-		assertTrue(formatted.contains("3. ✅ Craft an iron ingot"), "完成步骤带 ✅");
+		assertTrue(formatted.contains("\"content\":\"Walk to the cave\""), "JSON 含步骤内容: " + formatted);
+		assertTrue(formatted.contains("\"status\":\"in_progress\""), "含进行中状态");
+		assertTrue(formatted.contains("\"content\":\"Mine 5 iron ore\""), "含待办步骤");
+		assertTrue(formatted.contains("\"content\":\"Craft an iron ingot\""), "含完成步骤");
+		assertTrue(formatted.contains("\"status\":\"completed\""), "含完成状态");
 		assertEquals("3 steps (1 done, 1 in progress, 1 pending)", plan.summary());
 	}
 
@@ -254,12 +256,12 @@ class AgentLoopGuardsTest {
 	void stallGuardNudgesAfterRepeatedReadOnlyRounds() {
 		StallGuard guard = new StallGuard(3);
 		// 前两轮纯观察：不触发
-		assertNull(guard.observe(java.util.List.of("player_look"), false), "第 1 轮观察不应触发");
-		assertNull(guard.observe(java.util.List.of("player_look", "player_inventory"), false),
+		assertNull(guard.observe(java.util.List.of("player_find"), false), "第 1 轮观察不应触发");
+		assertNull(guard.observe(java.util.List.of("player_find"), false),
 				"第 2 轮观察不应触发");
 		assertEquals(2, guard.streak());
 		// 第三轮纯观察：触发提醒
-		String nudge = guard.observe(java.util.List.of("player_inventory"), false);
+		String nudge = guard.observe(java.util.List.of("player_find"), false);
 		assertNotNull(nudge, "第 3 轮纯观察应触发停滞提醒");
 		assertTrue(nudge.toLowerCase().contains("stall"), "提醒应包含停滞提示");
 	}
@@ -267,26 +269,26 @@ class AgentLoopGuardsTest {
 	@Test
 	void stallGuardResetsOnStateChangingAction() {
 		StallGuard guard = new StallGuard(3);
-		guard.observe(java.util.List.of("player_look"), false);
-		guard.observe(java.util.List.of("player_look"), false);
+		guard.observe(java.util.List.of("player_find"), false);
+		guard.observe(java.util.List.of("player_find"), false);
 		// 出现真实动作（即使只是下达指令）：重置，不再累计
 		assertNull(guard.observe(java.util.List.of("player_goto"), true), "真实动作轮返回 null 并重置");
 		assertEquals(0, guard.streak(), "真实动作后停滞计数应归零");
 		// 重置后重新观察也能再次触发（bumped 已清除）
-		guard.observe(java.util.List.of("player_look"), false);
-		guard.observe(java.util.List.of("player_look"), false);
-		assertNotNull(guard.observe(java.util.List.of("player_look"), false),
+		guard.observe(java.util.List.of("player_find"), false);
+		guard.observe(java.util.List.of("player_find"), false);
+		assertNotNull(guard.observe(java.util.List.of("player_find"), false),
 				"重置后再次连续观察应能再次触发");
 	}
 
 	@Test
 	void stallGuardOnlyBumpsOnceUntilReset() {
 		StallGuard guard = new StallGuard(2);
-		assertNull(guard.observe(java.util.List.of("player_look"), false));
-		assertNotNull(guard.observe(java.util.List.of("player_inventory"), false),
+		assertNull(guard.observe(java.util.List.of("player_find"), false));
+		assertNotNull(guard.observe(java.util.List.of("player_find"), false),
 				"第 2 轮应触发");
 		// 已触发后再观察：不再重复提醒（bumped 防刷）
-		assertNull(guard.observe(java.util.List.of("player_look"), false), "bumped 后不再重复提醒");
+		assertNull(guard.observe(java.util.List.of("player_find"), false), "bumped 后不再重复提醒");
 		assertEquals(3, guard.streak(), "计数继续增长（便于日志）");
 	}
 }

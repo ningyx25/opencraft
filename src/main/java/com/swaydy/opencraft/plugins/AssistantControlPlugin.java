@@ -31,9 +31,12 @@ public class AssistantControlPlugin implements AssistantPlugin {
 
 	@Override
 	public String systemPromptFragment() {
-		return "You normally follow the owner automatically (wherever the owner goes, you go); when the owner gives you a task, "
-				+ "you stop following and focus on executing it, then automatically resume following once the task is done. "
-				+ "You can also use teleport_to_player to teleport to the owner's side.";
+		return """
+				## Auto Follow
+
+				You normally follow the owner automatically (wherever the owner goes, you go); when the owner gives you a task,
+				you stop following and focus on executing it, then automatically resume following once the task is done.
+				You can also use `teleport_to_player` to teleport to the owner's side.""";
 	}
 
 	private ToolResult teleport(ToolContext ctx, JsonObject args) {

@@ -6,7 +6,7 @@
 |---|---|---|---|
 | `AssistantPlugin.java` | — | 插件接口（SPI） | 「万物皆插件」的能力单元接口：可贡献工具（`tools()`）、system 提示词片段、游戏上下文片段；助手能力 = 其预设装配的插件之和。原在 `agent/` 包，已移入本包。 |
 | `AssistantControlPlugin.java` | `assistant_control` | 通用（所有预设都装） | 基础控制插件：`teleport_to_player` —— 让助手瞬间传送到主人身边（支持跨维度）。跟随/待命模式已移除，故无 `set_mode` 工具 |
-| `PlayerActionsPlugin.java` | `player_actions` | 玩家动作 | 玩家式动作插件，核心能力：`player_goto`（移动）/`player_stop`（停下）/`player_jump`（跳跃）/`player_look`（观察）/`player_find`（按关键词找东西返回精确坐标+方位+距离）/`player_mine`（用真实 `ServerPlayerGameMode.destroyBlock` 挖掘）/`player_place`（`useItemOn` 放置）/`player_craft`（用玩家背包按玩家规则合成）/`player_inventory`（背包/装备清单）/`player_hand_to_player`（递物给主人）。另通过 `gameContextFragment` 每轮注入「助手状态 + 环境摘要」 |
+| `PlayerActionsPlugin.java` | `player_actions` | 玩家动作 | 玩家式动作插件，核心能力：`player_goto`（移动）/`player_stop`（停下）/`player_jump`（跳跃）/`player_find`（按关键词找东西返回精确坐标+方位+距离）/`player_mine`（用真实 `ServerPlayerGameMode.destroyBlock` 挖掘）/`player_place`（`useItemOn` 放置）/`player_craft`（用玩家背包按玩家规则合成）/`player_item_move`（背包/装备槽位交换与丢弃）/`player_hotbar_select`（选主手快捷栏）/`player_hand_to_player`（递物给主人）。观察类信息（坐标/环境/近旁方块/附近实体/背包装备）为所有预设共需的核心上下文，由 `agent/Prompts` 的 **Assistant State** JSON 段每轮直接注入 system，不占工具调用（原 `player_look`/`player_inventory` 已因此移除） |
 | `ToolContext.java` | — | 工具类型 | 一次工具调用的执行上下文（record）：server / assistant（形态无关的 AiAssistant）/ owner（提问玩家）/ level；提供 `assistantPlayer()` 便捷强转。原在 `agent/` 包，已移入本包。 |
 | `ToolDefinition.java` | — | 工具类型 | 单项工具定义（record）：工具名 + 给模型的说明 + 参数 JSON Schema + 执行器（服务端线程运行，返回 `ToolResult`）。原在 `agent/` 包，已移入本包。 |
 | `ToolResult.java` | — | 工具类型 | 工具执行结果（record）：ok（成功/失败）+ 给模型看的结果文本（失败时模型据此自我纠正）；提供 `ok()`/`error()` 工厂方法。原在 `agent/` 包，已移入本包。 |

@@ -51,10 +51,11 @@ import java.util.stream.Collectors;
  * - 工具执行、历史写入、聊天广播一律 {@code server.executeIfPossible} 回服务端线程；
  * - 工具执行完成后由服务端线程把「继续下一轮请求」的任务交回工作线程池；
  * - 长任务（寻路、挖掘）不在工具调用里阻塞——工具只下达指令（设置任务/Goal）,立即返回；
- *   模型通过后续 {@code player_look} 等观察工具获取结果。
+ *   模型从每轮刷新的 Assistant State 上下文（及 player_find 定向查找）获取结果。
  *
  * <p>每轮流程:
- * 1. 组装消息:system（预设 persona + 插件提示词 + 游戏上下文 + 插件上下文）+ 历史 + user；
+ * 1. 组装消息:system（人设:基础 + 名字 + 预设 persona + 插件提示词 + 玩家状态 + 助手状态 + 插件状态,
+ *    由 {@link Prompts} 统一组装）+ 历史 + user；
  * 2. 工作线程 LlmClient.stream（带 tools）；文本 delta 走打字机 reveal；
  *    瞬时失败/空响应 → 按退避策略重试（最多 2 次）；
  * 3. 流结束:
@@ -87,18 +88,9 @@ public final class AgentRuntime {
 	private static final String TOOL_TASK_PLAN = "task_plan";
 
 	/**
-	 * 所有预设共享的基础人设（非配置,随代码内置）:简短友好 + 用玩家语言。
-	 * 具体"怎么做事/何时用工具"由各预设的 personaPrompt 与插件提示词决定。
+	 * 所有预设共享的基础人设、名字指令、玩家/助手状态段与 system 整段组装
+	 * 已集中到 {@link Prompts}（非插件提示词统一管理）。
 	 */
-	private static final String BASE_PERSONA = """
-			You are an AI game assistant living in Minecraft, accompanying the player through adventures, building, and survival —
-			a reliable and slightly humorous friend. Keep replies short (usually no more than 3~4 sentences) and answer in the language the player uses.""";
-
-	/** 历史压缩的指令（拼在旧消息区段之后,要求模型只输出摘要正文）。 */
-	private static final String COMPACT_INSTRUCTION = """
-			Please compress the chat history between you and the player above into a short memory summary (within 150 words).
-			Keep: important information about the player (name, needs, agreements, progress, todos), things you promised, unfinished tasks, key coordinates/items.
-			No small talk, no line-by-line retelling — only distilled key points. Output only the summary text, with no prefix or formatting.""";
 
 	/** 进行中的 loop 标记:按"助手绑定的方块"键控,保证同一助手同时只有一个 loop 在跑。 */
 	private static final Map<GlobalPos, Boolean> RUNNING = new ConcurrentHashMap<>();
@@ -290,10 +282,10 @@ public final class AgentRuntime {
 				return null; // 区段太小,不值得压缩
 			}
 			List<LlmClient.Message> messages = new ArrayList<>(region);
-			messages.add(LlmClient.Message.user(COMPACT_INSTRUCTION));
+			messages.add(LlmClient.Message.user(Prompts.COMPACT_INSTRUCTION));
 			LlmClient.Request request = new LlmClient.Request(
 					config.baseUrl, config.apiKey, config.model,
-					buildPersona(config, agent), messages, null,
+					Prompts.persona(config, agent), messages, null,
 					Math.min(0.5, config.temperature), null, null, config.timeoutSeconds);
 			LlmClient.ChatResult resp = LlmClient.chat(request);
 			if (!resp.ok()) {
@@ -361,7 +353,7 @@ public final class AgentRuntime {
 		}
 		// 每轮重建 system（保持单条 system 开头约束,让游戏上下文/「当前任务计划」每轮都是
 		// 最新的,而不是提问那一刻的静态快照）并存入 ctx,供总结轮/提问恢复复用
-		ctx.system = buildSystemWithPlan(ctx);
+		ctx.system = Prompts.systemWithPlan(ctx.config, ctx.agent, ctx.player, ctx.assistant, ctx.planText);
 		// 插件工具 + 核心工具（ask_player / task_plan,随每个请求附加）→ 新词汇 ToolSchema
 		List<com.google.gson.JsonObject> toolJson = new ArrayList<>(ctx.agent.toolsJson());
 		toolJson.addAll(coreToolSchemas());
@@ -1073,54 +1065,6 @@ public final class AgentRuntime {
 		com.swaydy.opencraft.logging.DebugLog.log("interrupt",
 				"方块 {} 的助手任务被玩家中断", key.pos().toShortString());
 		return true;
-	}
-
-	// ------------------------------------------------------------------
-	// 提示词组装
-	// ------------------------------------------------------------------
-
-	private static String buildSystem(AiBlockConfig config, AgentDefinition agent,
-	                                  ServerPlayer player, AiAssistant assistant) {
-		// 单条 system 文本:人设（基础 + 预设 persona + 名字） + 插件能力提示 + 游戏上下文 + 插件上下文
-		StringBuilder sb = new StringBuilder();
-		sb.append(buildPersona(config, agent));
-		String frags = agent.systemPromptFragments();
-		if (!frags.isBlank()) {
-			sb.append('\n').append(frags);
-		}
-		sb.append('\n').append(AiCompanionService.buildGameContext(player));
-		ToolContext ctx = new ToolContext(player.level().getServer(), assistant, player,
-				(ServerLevel) player.level());
-		String ctxFrags = agent.gameContextFragments(ctx);
-		if (!ctxFrags.isBlank()) {
-			sb.append('\n').append(ctxFrags);
-		}
-		return sb.toString();
-	}
-
-	/** 在基础 system 上追加当前任务计划（供每轮重建 system,保持单条 system 开头约束）。 */
-	private static String buildSystemWithPlan(LoopContext ctx) {
-		String base = buildSystem(ctx.config, ctx.agent, ctx.player, ctx.assistant);
-		if (ctx.planText == null || ctx.planText.isBlank()) {
-			return base;
-		}
-		return base + "\n\n[Current Task Plan]\n" + ctx.planText;
-	}
-
-	/**
-	 * 组装"人设 + 名字"的 system 文本（供对话与打招呼共用）:
-	 * 基础人设 + 预设 personaPrompt + 【名字】指令。不再有玩家可编辑的系统提示词——
-	 * 人设完全由 Agent 预设决定。
-	 */
-	public static String buildPersona(AiBlockConfig config, AgentDefinition agent) {
-		StringBuilder sb = new StringBuilder();
-		sb.append(BASE_PERSONA);
-		if (agent != null && agent.personaPrompt() != null && !agent.personaPrompt().isBlank()) {
-			sb.append('\n').append(agent.personaPrompt());
-		}
-		sb.append("\n\n[Name] Your name is ").append(config.effectiveName())
-				.append(". Always refer to yourself by this name and use no other.");
-		return sb.toString();
 	}
 
 	// ------------------------------------------------------------------

@@ -5,8 +5,9 @@ import java.util.Set;
 
 /**
  * 停滞守卫：打断「连续多轮只做纯观察、而世界/背包状态毫无变化」的死循环
- * （例如模型反复 player_look / player_inventory 却拿不出结论、也不下达真实动作，
- * 在慢/弱 API 下尤其常见，表现为一次提问跑很多轮却不收束）。
+ * （例如模型反复 player_find 却拿不出结论、也不下达真实动作，
+ * 在慢/弱 API 下尤其常见，表现为一次提问跑很多轮却不收束；
+ * 常规观察信息已由 Assistant State 上下文每轮自带,不占工具调用）。
  *
  * <p>达到阈值（默认连续 3 轮纯观察）注入一次提醒，让模型二选一：给出结论结束任务，
  * 或执行真实动作（先 player_find 拿精确坐标再动手）。继续空转则由 maxToolRounds
@@ -20,7 +21,7 @@ public final class StallGuard {
 	private static final int DEFAULT_STALL_LIMIT = 3;
 
 	/** 只读工具集合：调用这些工具不会改变世界/背包状态，纯观察。 */
-	private static final Set<String> READ_ONLY_TOOLS = Set.of("player_look", "player_inventory");
+	private static final Set<String> READ_ONLY_TOOLS = Set.of("player_find");
 
 	private final int stallLimit;
 	private int streak = 0;
@@ -79,11 +80,11 @@ public final class StallGuard {
 
 	private static String nudge(int rounds) {
 		return "[Stall warning] You have spent " + rounds + " consecutive rounds using only observation tools "
-				+ "(player_look / player_inventory) while the world and inventory state have not changed — "
-				+ "this task is making no progress. Immediately choose one: "
-				+ "① wrap up by explaining the situation to the player in one or two sentences and end the task (stop calling tools); "
-				+ "② perform a real action: first use player_find to get the exact coordinates of the target, "
-				+ "then act with player_goto / player_mine / player_place. "
+				+ "(player_find) while the world and inventory state have not changed — "
+				+ "this task is making no progress. Immediately choose one:\n"
+				+ "- **wrap up**: explain the situation to the player in one or two sentences and end the task (stop calling tools);\n"
+				+ "- **act**: use the coordinates you already have (or `player_find` once), "
+				+ "then act with `player_goto` / `player_mine` / `player_place`.\n"
 				+ "Do not keep repeating observation tools.";
 	}
 }

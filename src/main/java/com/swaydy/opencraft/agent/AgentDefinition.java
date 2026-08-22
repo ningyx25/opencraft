@@ -50,7 +50,7 @@ public record AgentDefinition(String id, String displayName, List<AssistantPlugi
 		return map;
 	}
 
-	/** 汇总各插件的 system 提示词片段（非空片段按插件顺序用换行拼成一段）。 */
+	/** 汇总各插件的 system 提示词片段（非空片段按插件顺序用空行拼成 Markdown 小节序列）。 */
 	public String systemPromptFragments() {
 		StringBuilder sb = new StringBuilder();
 		if (plugins != null) {
@@ -58,7 +58,7 @@ public record AgentDefinition(String id, String displayName, List<AssistantPlugi
 				String frag = plugin.systemPromptFragment();
 				if (frag != null && !frag.isBlank()) {
 					if (sb.length() > 0) {
-						sb.append('\n');
+						sb.append("\n\n");
 					}
 					sb.append(frag);
 				}
@@ -67,7 +67,7 @@ public record AgentDefinition(String id, String displayName, List<AssistantPlugi
 		return sb.toString();
 	}
 
-	/** 汇总各插件的游戏上下文片段（按插件顺序，非空片段拼成一段）。 */
+	/** 汇总各插件的游戏上下文片段（按插件顺序，非空片段用空行拼成 Markdown 小节序列）。 */
 	public String gameContextFragments(ToolContext ctx) {
 		StringBuilder sb = new StringBuilder();
 		if (plugins != null) {
@@ -75,7 +75,7 @@ public record AgentDefinition(String id, String displayName, List<AssistantPlugi
 				String frag = plugin.gameContextFragment(ctx);
 				if (frag != null && !frag.isBlank()) {
 					if (sb.length() > 0) {
-						sb.append('\n');
+						sb.append("\n\n");
 					}
 					sb.append(frag);
 				}

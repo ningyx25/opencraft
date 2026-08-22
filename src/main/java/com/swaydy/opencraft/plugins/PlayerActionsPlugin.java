@@ -35,7 +35,6 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -59,13 +58,12 @@ import java.util.Set;
  *
  * 助手天生拥有普通玩家的一切，
  * “可以不用，但不能没有”。工具全部在服务端线程执行；移动/挖掘/放置是异步的
- * （下达指令立即返回，助手自己走过去执行，模型用 look 观察结果）。
+ * （下达指令立即返回，助手自己走过去执行，模型从每轮刷新的 Assistant State
+ * 上下文观察结果——观察类信息不占工具调用）。
  */
 public class PlayerActionsPlugin implements AssistantPlugin {
 	/** 玩家交互/破坏/放置的默认触及距离（格）。 */
 	private static final double REACH = 4.5;
-	/** 上下文里最多列出的物品种类数（防止 system 过长）。 */
-	private static final int CONTEXT_MAX_ITEMS = 16;
 	/** 玩家主背包格数（36：27 普通 + 9 快捷栏；装备槽由 1.21.11 的 EntityEquipment 管理）。 */
 	private static final int MAIN_SLOTS = 36;
 
@@ -97,9 +95,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		craftProps.add("item", ToolSchema.prop("string",
 				"Item id to craft, e.g. minecraft:diamond_block."));
 		craftProps.add("amount", ToolSchema.prop("integer", "Amount to craft (default 1)."));
-		JsonObject listProps = new JsonObject();
-		listProps.add("whose", ToolSchema.prop("string",
-				"Whose inventory to view: \"self\" (the assistant, default) or \"player\" (the owner)."));
 		JsonObject moveProps = new JsonObject();
 		moveProps.add("from", ToolSchema.prop("string",
 				"Source slot: a number 0–35 (main inventory) or a name: mainhand (= currently selected hotbar slot), offhand, helmet, chestplate, leggings, boots."));
@@ -111,8 +106,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		JsonObject handProps = new JsonObject();
 		handProps.add("item", ToolSchema.prop("string", "Item id, e.g. minecraft:cobblestone."));
 		handProps.add("amount", ToolSchema.prop("integer", "Amount (default 1)."));
-		JsonObject lookProps = new JsonObject();
-		lookProps.add("radius", ToolSchema.prop("integer", "Observation radius (default 8, max 16)."));
 		JsonObject findProps = new JsonObject();
 		findProps.add("target", ToolSchema.prop("string",
 				"What to find: a block/item ID (minecraft:oak_log, oak_log) or a keyword (log, chest, iron, player, monster…)."));
@@ -120,7 +113,8 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return List.of(
 				new ToolDefinition("player_goto",
 						"Have the assistant (as a player) walk to the given coordinates (absolute x,y,z). Movement is asynchronous: "
-								+ "the call returns immediately and the assistant walks over by itself; then use player_look to check arrival.",
+								+ "the call returns immediately and the assistant walks over by itself; your position is refreshed "
+								+ "in the Assistant State context every round.",
 						ToolSchema.object(gotoProps, "x", "y", "z"),
 						this::gotoTool),
 				new ToolDefinition("player_stop",
@@ -132,12 +126,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 								+ "for a running jump; only takes effect when on the ground).",
 						ToolSchema.object(new JsonObject()),
 						this::jump),
-				new ToolDefinition("player_look",
-						"Observe the assistant's surroundings: coordinates, facing, nearby blocks (counted by type), "
-								+ "nearby players/monsters/dropped items (with distance), whether it is moving, and inventory/equipment summary. "
-								+ "Observe before acting, and observe again to confirm after acting.",
-						ToolSchema.object(lookProps),
-						this::lookAround),
 				new ToolDefinition("player_find",
 						"Find things around the assistant by keyword/ID, returning exact coordinates + bearing "
 								+ "(how many blocks east/south/west/north) + distance. "
@@ -149,13 +137,14 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				new ToolDefinition("player_mine",
 						"Have the assistant (as a player) mine the block at the given coordinates: walk up to it and break it with the "
 								+ "main-hand tool like a player; drops fall out as items and are auto-picked into the assistant's inventory. "
-								+ "Asynchronous: returns immediately; confirm later with player_look. Cannot mine air, bedrock, or containers (chests/furnaces etc.).",
+								+ "Asynchronous: returns immediately; the result shows in the next rounds' Assistant State context. "
+								+ "Cannot mine air, bedrock, or containers (chests/furnaces etc.).",
 						ToolSchema.object(mineProps, "x", "y", "z"),
 						this::mine),
 				new ToolDefinition("player_place",
 						"Have the assistant (as a player) place a block at the given position with its main-hand item: place it against the "
 								+ "face of the block at (x,y,z). Requires a placeable item in the main hand (e.g. stone/planks). "
-								+ "Asynchronous: if far away it walks over first, then places; confirm later with player_look.",
+								+ "Asynchronous: if far away it walks over first, then places; the result shows in the next rounds' Assistant State context.",
 						ToolSchema.object(placeProps, "x", "y", "z"),
 						this::place),
 				new ToolDefinition("player_craft",
@@ -164,10 +153,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 								+ "Products go into the assistant's inventory; later you can hand them to the owner with player_hand_to_player.",
 						ToolSchema.object(craftProps, "item"),
 						this::craft),
-				new ToolDefinition("player_inventory",
-						"List the items in the assistant's (or the owner's) player inventory (36 slots + equipment + offhand).",
-						ToolSchema.object(listProps),
-						this::listInventory),
 				new ToolDefinition("player_item_move",
 						"Move (swap) items between any two slots in the assistant's inventory. "
 								+ "Slots: numbers 0–35 for main inventory, or named slots: "
@@ -190,45 +175,30 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 
 	@Override
 	public String systemPromptFragment() {
-		return "[Player form] You have joined the Minecraft server as a real player: with a full player inventory, equipment slots "
-				+ "and player-style actions. player_goto/player_stop move (stop also cancels mining), player_jump jumps (over 1-block steps/small gaps, "
-				+ "combined with a movement target for a running jump), player_mine/player_place break/place blocks the player way "
-				+ "(mining takes real time depending on the tool — pick the right tool; place with sneak=true to place against "
-				+ "chests/furnaces instead of opening them; drops go straight into the inventory), "
-				+ "player_craft crafts from inventory materials (same rules as a player; "
-				+ "3×3 needs a crafting table), player_item_move swaps items between any two slots in the inventory "
-				+ "(slots 0–35 = main inventory, named slots: mainhand/offhand/helmet/chestplate/leggings/boots; "
-				+ "use -1 as destination to drop the item on the ground like pressing Q), "
-				+ "player_hotbar_select picks which hotbar slot (0–8) is the main hand, "
-				+ "player_hand_to_player hands items to the owner, player_inventory/player_look observe "
-				+ "state and surroundings, player_find finds things by keyword/ID and returns exact coordinates "
-				+ "(always player_find first to get coordinates — don't guess). Observe before acting and confirm after acting; "
-				+ "tool results begin with [tool success/failure] — read the marker first; never assume a tool succeeded; "
-				+ "on failure try a different approach rather than retrying identically.";
+		return """
+				## Player Form
+
+				You have joined the Minecraft server as a real player: full player inventory, equipment slots, and player-style actions.
+
+				- **`player_goto` / `player_stop`** — walk to coordinates / stop (stop also cancels mining)
+				- **`player_jump`** — jump over 1-block steps or small gaps (combine with a movement target for a running jump)
+				- **`player_mine` / `player_place`** — break/place blocks the player way (mining takes real time depending on the tool — pick the right tool; place with `sneak=true` to place against chests/furnaces instead of opening them; drops go straight into the inventory)
+				- **`player_craft`** — craft from inventory materials (same rules as a player; 3×3 needs a crafting table)
+				- **`player_item_move`** — swap items between any two slots (slots 0–35 = main inventory, named slots: `mainhand`/`offhand`/`helmet`/`chestplate`/`leggings`/`boots`; `-1` as destination drops the item like pressing Q)
+				- **`player_hotbar_select`** — pick which hotbar slot (0–8) is the main hand
+				- **`player_hand_to_player`** — hand an item to the owner
+				- **`player_find`** — find things by keyword/ID and return exact coordinates (always use it first to get coordinates — don't guess)
+
+				Your own state and inventory are provided automatically in the **Assistant State** JSON of the system context every round
+				(position, facing, movement, nearby blocks, block type counts, nearby entities, per-slot inventory with durability) —
+				no observation tool call is needed; never call tools just to re-check what the context already shows.
+
+				Tool results begin with `[tool success/failure]` — read the marker first; never assume a tool succeeded;
+				on failure try a different approach rather than retrying identically.""";
 	}
 
-	@Override
-	public String gameContextFragment(ToolContext ctx) {
-		AiAssistantPlayer a = ctx.assistantPlayer();
-		if (a == null) {
-			return null;
-		}
-		StringBuilder sb = new StringBuilder();
-		sb.append("[Assistant state] position: x=").append(Math.round(a.getX()))
-				.append(", y=").append(Math.round(a.getY()))
-				.append(", z=").append(Math.round(a.getZ()))
-				.append(", facing: ").append(AiCompanionService.facingName(a.getYRot()));
-		sb.append(a.movement().isMoving() ? " | moving" : " | still");
-		ServerLevel level = ctx.level();
-		if (a.level() instanceof ServerLevel al) {
-			level = al;
-		}
-		if (level != null) {
-			sb.append(" | ").append(AiCompanionService.environmentCapsule(level, a.blockPosition(), 16));
-		}
-		sb.append(" | form: player");
-		return sb.toString();
-	}
+	// gameContextFragment 不再覆写:助手状态段（坐标/朝向/移动/环境/近旁方块）是任何预设
+	// 都需要的核心上下文,由 agent.Prompts.system 直接组装,不走插件的扩展点。
 
 	// ------------------------------------------------------------------
 	// 工具实现
@@ -252,7 +222,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 					+ "move in steps or pick a closer target.");
 		}
 		a.movement().moveTo(new Vec3(x + 0.5, y, z + 0.5), a.getConfig().speed, true);
-		return ToolResult.ok("Heading to (" + x + "," + y + "," + z + "). Use player_look to confirm arrival.");
+		return ToolResult.ok("Heading to (" + x + "," + y + "," + z + "). Your position is refreshed in the Assistant State context every round.");
 	}
 
 	private ToolResult stopTool(ToolContext ctx, JsonObject args) {
@@ -275,81 +245,9 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				: ToolResult.error("Cannot jump right now: in mid-air or flying; land first and try again.");
 	}
 
-	private ToolResult lookAround(ToolContext ctx, JsonObject args) {
-		AiAssistantPlayer a = ctx.assistantPlayer();
-		if (a == null) {
-			return ToolResult.error("Tool player_look requires a player-form assistant.");
-		}
-		ToolArgs t = new ToolArgs(args);
-		int radius = Math.max(1, Math.min(16, t.intOf("radius", 8)));
-		ServerLevel level = ctx.level();
-		BlockPos pos = a.blockPosition();
-
-		StringBuilder sb = new StringBuilder();
-		sb.append("position: x=").append(pos.getX()).append(", y=").append(pos.getY())
-				.append(", z=").append(pos.getZ());
-		sb.append(", facing: ").append(AiCompanionService.facingName(a.getYRot()));
-		sb.append(", movement: ").append(a.movement().isMoving() ? "moving" : "still");
-		sb.append(" | ").append(AiCompanionService.environmentCapsule(level, pos, 0));
-
-		Map<String, Integer> blockCounts = new LinkedHashMap<>();
-		for (int dx = -radius; dx <= radius; dx++) {
-			for (int dz = -radius; dz <= radius; dz++) {
-				for (int dy = -radius; dy <= radius; dy += 2) {
-					BlockState state = level.getBlockState(pos.offset(dx, dy, dz));
-					if (state.isAir()) {
-						continue;
-					}
-					blockCounts.merge(state.getBlock().getDescriptionId(), 1, Integer::sum);
-				}
-			}
-		}
-		if (blockCounts.isEmpty()) {
-			sb.append(". Almost no blocks within ").append(radius).append(" blocks.");
-		} else {
-			sb.append(". Nearby blocks: ");
-			int i = 0;
-			for (Map.Entry<String, Integer> e : blockCounts.entrySet()) {
-				if (i >= 8) {
-					sb.append("…");
-					break;
-				}
-				if (i > 0) {
-					sb.append(", ");
-				}
-				sb.append(AiCompanionService.shortName(e.getKey())).append("×").append(e.getValue());
-				i++;
-			}
-		}
-
-		AABB box = new AABB(pos).inflate(radius);
-		List<Entity> entities = level.getEntities((Entity) null, box,
-				e -> e != a && e.isAlive()
-						&& (e instanceof LivingEntity || e instanceof ItemEntity));
-		if (!entities.isEmpty()) {
-			sb.append(". Nearby entities: ");
-			int count = 0;
-			for (Entity e : entities) {
-				if (count >= 10) {
-					sb.append("…");
-					break;
-				}
-				double dist = Math.round(a.distanceTo(e) * 10.0) / 10.0;
-				String type = e instanceof Player ? "Player"
-						: e instanceof Monster ? "Monster"
-						: e instanceof ItemEntity ? "Dropped item" : AiCompanionService.shortName(e.getType().getDescriptionId());
-				// 带精确坐标 + 方位：模型据此才能判断“东西在哪”
-				sb.append(type).append(" ").append(e.blockPosition().toShortString()).append(" ")
-						.append(bearingTo(pos, e.blockPosition())).append("(").append(dist).append(" blocks) ")
-						.append(" ");
-				count++;
-			}
-		} else {
-			sb.append(". No other entities nearby.");
-		}
-		sb.append(" | inventory: ").append(formatBackpack(a));
-		return ToolResult.ok(sb.toString());
-	}
+	// player_look/player_inventory 已移除:坐标/朝向/移动、近旁方块（带坐标）、大范围方块计数、
+	// 附近实体（带坐标/方位/距离）、背包/装备清单全部由 agent.Prompts 的 Assistant State
+	// 每轮注入 system 上下文,模型无需再调用观察类工具（定向找坐标仍用 player_find）。
 
 	/**
 	 * 按关键词/ID 找方块或实体，返回【精确坐标 + 方位 + 距离】——模型据此才能判断
@@ -604,19 +502,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return ToolResult.error("Cannot craft "
 				+ AiCompanionService.shortName(item.value().getDescriptionId()) + " from the materials in my inventory. "
 				+ "Not enough materials or no recipe.");
-	}
-
-	private ToolResult listInventory(ToolContext ctx, JsonObject args) {
-		AiAssistantPlayer a = ctx.assistantPlayer();
-		if (a == null) {
-			return ToolResult.error("Tool player_inventory requires a player-form assistant.");
-		}
-		ToolArgs t = new ToolArgs(args);
-		String whose = t.strOf("whose", "self").toLowerCase(java.util.Locale.ROOT);
-		if (whose.equals("player")) {
-			return ToolResult.ok("Owner inventory: " + formatPlayerInventory(ctx.owner().getInventory()));
-		}
-		return ToolResult.ok("Assistant inventory: " + formatPlayerInventory(a.getInventory()));
 	}
 
 	private ToolResult itemMove(ToolContext ctx, JsonObject args) {
@@ -958,25 +843,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		double dist = Math.round(Math.sqrt(a.distanceToSqr(
 				pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5)) * 10.0) / 10.0;
 		return "(" + pos.getX() + "," + pos.getY() + "," + pos.getZ() + ") "
-				+ bearingTo(a.blockPosition(), pos) + " distance " + dist + " blocks(" + AiCompanionService.shortName(descId) + ")";
-	}
-
-	/** 从 / 到目标的方位（东南西北格数；原地返回 here）。 */
-	private static String bearingTo(BlockPos from, BlockPos to) {
-		int dx = to.getX() - from.getX();
-		int dz = to.getZ() - from.getZ();
-		StringBuilder sb = new StringBuilder();
-		if (dx > 0) {
-			sb.append(dx).append(" east");
-		} else if (dx < 0) {
-			sb.append(-dx).append(" west");
-		}
-		if (dz > 0) {
-			sb.append(dz).append(" south");
-		} else if (dz < 0) {
-			sb.append(-dz).append(" north");
-		}
-		return sb.length() == 0 ? "here" : sb.toString();
+				+ AiCompanionService.bearingTo(a.blockPosition(), pos) + " distance " + dist + " blocks(" + AiCompanionService.shortName(descId) + ")";
 	}
 
 	/** 执行真正的玩家式放置（ServerPlayerGameMode.useItemOn）。 */
@@ -1041,48 +908,6 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			case "east" -> Direction.EAST;
 			case "west" -> Direction.WEST;
 			default -> null;
-		};
-	}
-
-	/** 玩家背包摘要（36 主背包 + 装备/副手/身体/坐骑鞍）。 */
-	private static String formatPlayerInventory(Inventory inv) {
-		StringBuilder sb = new StringBuilder();
-		int shown = 0;
-		for (int i = 0; i < inv.getContainerSize(); i++) {
-			ItemStack stack = inv.getItem(i);
-			if (stack.isEmpty()) {
-				continue;
-			}
-			if (shown > 0) {
-				sb.append(", ");
-			}
-			if (i >= MAIN_SLOTS) {
-				sb.append(slotName(i)).append("=");
-			}
-			sb.append(AiCompanionService.shortName(stack.getItem().getDescriptionId())).append("×").append(stack.getCount());
-			shown++;
-			if (shown >= CONTEXT_MAX_ITEMS) {
-				sb.append(" …");
-				break;
-			}
-		}
-		return shown == 0 ? "empty" : sb.toString();
-	}
-
-	private static String formatBackpack(AiAssistantPlayer a) {
-		return formatPlayerInventory(a.getInventory());
-	}
-
-	private static String slotName(int index) {
-		return switch (index) {
-			case 36 -> "boots";
-			case 37 -> "leggings";
-			case 38 -> "chestplate";
-			case 39 -> "helmet";
-			case 40 -> "offhand";
-			case 41 -> "body";
-			case 42 -> "saddle";
-			default -> "items";
 		};
 	}
 }

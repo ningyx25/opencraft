@@ -3,7 +3,7 @@ package com.swaydy.opencraft.agent;
 /**
  * 工具结果文本裁剪器（参考 deepseek-harness 的 {@code compaction-tool-result-pruner} 插件）。
  *
- * <p>长工具结果（如 player_look 的环境/背包清单）会撑大每轮请求的上下文；
+ * <p>长工具结果（如 player_find 的目标清单）会撑大每轮请求的上下文；
  * 超过上限时保留头部 + 尾部、中间以省略标记替换——关键信息（开头摘要、结尾错误原因）
  * 不丢失，上下文增长有界。纯 Java、无 Minecraft 依赖，便于 JUnit 单测。
  */
@@ -23,7 +23,7 @@ public final class ToolResultPruner {
 	 * 统一以 {@code [工具名 成功/失败]} 标记开头（模型先读标记再读内容），
 	 * 超长内容按 头/尾 保留裁剪。
 	 *
-	 * @param toolName 工具名（如 "player_look"）
+	 * @param toolName 工具名（如 "player_find"）
 	 * @param ok       执行是否成功
 	 * @param message  工具返回的结果文本
 	 */

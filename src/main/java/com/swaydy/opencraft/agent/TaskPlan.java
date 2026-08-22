@@ -70,20 +70,18 @@ public final class TaskPlan {
 		return new TaskPlan(out);
 	}
 
-	/** 给模型看的计划正文（注入 system 上下文用）：编号 + 状态标记 + 内容。 */
+	/** 给模型看的计划正文（注入 system 上下文用,结构化提示词的数据段）:紧凑 JSON steps 数组。 */
 	public String format() {
-		StringBuilder sb = new StringBuilder();
-		for (int i = 0; i < steps.size(); i++) {
-			Step s = steps.get(i);
-			String mark = switch (s.status()) {
-				case "in_progress" -> "⏳";
-				case "completed" -> "✅";
-				default -> "⬜";
-			};
-			sb.append(i + 1).append(". ").append(mark).append(' ').append(s.content()).append('\n');
+		JsonArray arr = new JsonArray();
+		for (Step s : steps) {
+			JsonObject o = new JsonObject();
+			o.addProperty("content", s.content());
+			o.addProperty("status", s.status());
+			arr.add(o);
 		}
-		String out = sb.toString();
-		return out.endsWith("\n") ? out.substring(0, out.length() - 1) : out;
+		JsonObject root = new JsonObject();
+		root.add("steps", arr);
+		return root.toString();
 	}
 
 	/** 简短摘要（工具结果回显 + 日志）：N step(s)（完成 M，进行中 K，待办 L）。 */

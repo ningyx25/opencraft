@@ -8,7 +8,8 @@ import java.util.List;
  * “万物皆插件”：助手的能力 = 其 Agent 预设装配的插件之和。一个插件可以：
  * - 贡献工具（{@link #tools()}，模型通过 function calling 调用）；
  * - 贡献 system 提示词片段（{@link #systemPromptFragment()}，告诉模型有哪些工具、怎么用）；
- * - 贡献游戏上下文片段（{@link #gameContextFragment(ToolContext)}，当前状态/正在执行的任务）。
+ * - 贡献游戏上下文片段（{@link #gameContextFragment(ToolContext)}，插件自有的状态/进度，
+ *   如冷却、任务队列；玩家/助手基础状态由核心的 agent.Prompts 统一提供，不在此贡献）。
  *
  * 插件按约定遵守的运行时规则：
  * - 工具在服务端线程执行、不阻塞主线程（长任务只下达指令，立即返回）；
@@ -28,7 +29,7 @@ public interface AssistantPlugin {
 		return null;
 	}
 
-	/** 追加到游戏上下文的状态片段（如助手当前坐标/正在执行的任务）；可为 null。 */
+	/** 追加到游戏上下文的插件自有状态片段（如冷却/任务队列等插件维护的状态）；可为 null。玩家/助手基础状态由核心提供。 */
 	default String gameContextFragment(ToolContext ctx) {
 		return null;
 	}

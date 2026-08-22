@@ -25,13 +25,8 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.effect.MobEffectInstance;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -324,84 +319,9 @@ public final class AiCompanionService {
 		}
 	}
 
-	/**
-	 * 构造“玩家当前游戏状态 + 环境”上下文，帮助模型给出贴合游戏的回答。
-	 * 每轮请求都会重建（见 {@code AgentRuntime.runRound} 对 messages[0] 的刷新），
-	 * 因此位置/天气/装备等都是最新的，不是提问那一刻的静态快照。
-	 */
-	public static String buildGameContext(ServerPlayer player) {
-		try {
-			Level level = player.level();
-			long dayTime = level.getDayTime();
-			long day = dayTime / 24000 + 1;
-			long timeOfDay = dayTime % 24000;
-			int hour = (int) ((timeOfDay / 1000 + 6) % 24);
-			int minute = (int) ((timeOfDay % 1000) / 100 * 6);
-			BlockPos pos = player.blockPosition();
-			String phase = phaseOfTime(timeOfDay);
-			ItemStack mainHand = player.getMainHandItem();
-			String itemName = mainHand.isEmpty() ? "empty hand" : mainHand.getHoverName().getString();
-
-			// 身体状态：水下/氧气/着火
-			String body = "normal";
-			if (player.isUnderWater()) {
-				body = "underwater (air " + player.getAirSupply() + "/" + player.getMaxAirSupply() + ")";
-			} else if (player.getAirSupply() < player.getMaxAirSupply()) {
-				body = "air " + player.getAirSupply() + "/" + player.getMaxAirSupply();
-			}
-			if (player.isOnFire()) {
-				body += ", on fire";
-			}
-
-			return String.format("""
-					[Player's current game state]
-					Player name: %s
-					Dimension: %s
-					Position: x=%d, y=%d, z=%d (facing %s)
-					%s
-					Time: Day %d %02d:%02d (%s)
-					Health: %.0f/20 | Hunger: %d/20 | XP level: %d | Game mode: %s
-					Body: %s
-					Effects: %s
-					Equipment: %s
-					Looking at: %s
-					Main hand: %s
-					""",
-					player.getName().getString(),
-					level.dimension().identifier(),
-					pos.getX(), pos.getY(), pos.getZ(), facingName(player.getYRot()),
-					environmentCapsule(level, pos, 16),
-					day, hour, minute, phase,
-					player.getHealth(),
-					player.getFoodData().getFoodLevel(),
-					player.experienceLevel,
-					player.gameMode.getGameModeForPlayer().name(),
-					body,
-					effectsSummary(player),
-					equipmentSummary(player),
-					lookingAt(level, player),
-					itemName);
-		} catch (Exception e) {
-			return "[Player's current game state] unavailable";
-		}
-	}
-
-	/** 一天内时刻（24000 tick）→ 时段名。 */
-	private static String phaseOfTime(long timeOfDay) {
-		if (timeOfDay < 6000) {
-			return "dawn";
-		}
-		if (timeOfDay < 11000) {
-			return "day";
-		}
-		if (timeOfDay < 13000) {
-			return "dusk";
-		}
-		if (timeOfDay < 18000) {
-			return "night";
-		}
-		return "deep night";
-	}
+	// 玩家当前游戏状态上下文（原 buildGameContext 及其专用辅助）已移至 agent/Prompts.playerState——
+	// 非插件提示词（Markdown + JSON 数据段）统一集中在该类管理;此处仅保留玩家/助手
+	// 共用的 facingName/bearingTo/shortName 等显示工具。
 
 	/** 面向方位：yaw → 东南西北（双形态通用显示）。 */
 	public static String facingName(float yaw) {
@@ -414,134 +334,22 @@ public final class AiCompanionService {
 		};
 	}
 
-	/** 装备摘要（36 主背包之后的装备/副手/身体/坐骑鞍槽位所戴物品）；无装备返回「无」。 */
-	static String equipmentSummary(ServerPlayer player) {
-		net.minecraft.world.entity.player.Inventory inv = player.getInventory();
+	/** 从 / 到目标的方位（东南西北格数；原地返回 here）。 */
+	public static String bearingTo(BlockPos from, BlockPos to) {
+		int dx = to.getX() - from.getX();
+		int dz = to.getZ() - from.getZ();
 		StringBuilder sb = new StringBuilder();
-		for (int i = 36; i < inv.getContainerSize(); i++) {
-			ItemStack s = inv.getItem(i);
-			if (s.isEmpty()) {
-				continue;
-			}
-			if (sb.length() > 0) {
-				sb.append(", ");
-			}
-			sb.append(shortName(s.getItem().getDescriptionId())).append("(").append(equipmentSlotLabel(i)).append(")");
+		if (dx > 0) {
+			sb.append(dx).append(" east");
+		} else if (dx < 0) {
+			sb.append(-dx).append(" west");
 		}
-		return sb.length() == 0 ? "none" : sb.toString();
-	}
-
-	private static String equipmentSlotLabel(int index) {
-		return switch (index) {
-			case 36 -> "feet";
-			case 37 -> "legs";
-			case 38 -> "chest";
-			case 39 -> "head";
-			case 40 -> "offhand";
-			case 41 -> "body";
-			case 42 -> "saddle";
-			default -> "equipment";
-		};
-	}
-
-	/** 状态效果摘要（最多 3 个，含 等级(时长s)）；无效果返回「无」。 */
-	static String effectsSummary(ServerPlayer player) {
-		List<MobEffectInstance> effects = new ArrayList<>(player.getActiveEffects());
-		if (effects.isEmpty()) {
-			return "none";
+		if (dz > 0) {
+			sb.append(dz).append(" south");
+		} else if (dz < 0) {
+			sb.append(-dz).append(" north");
 		}
-		StringBuilder sb = new StringBuilder();
-		int n = 0;
-		for (MobEffectInstance e : effects) {
-			if (n >= 3) {
-				sb.append("…");
-				break;
-			}
-			if (n > 0) {
-				sb.append(", ");
-			}
-			sb.append(shortName(e.getEffect().value().getDescriptionId()));
-			int amp = e.getAmplifier();
-			if (amp > 0) {
-				sb.append(romanNumeral(amp + 1));
-			}
-			sb.append("(").append(Math.max(1, e.getDuration() / 20)).append("s)");
-			n++;
-		}
-		return sb.toString();
-	}
-
-	private static String romanNumeral(int x) {
-		return switch (x) {
-			case 2 -> "II";
-			case 3 -> "III";
-			case 4 -> "IV";
-			default -> "";
-		};
-	}
-
-	/** 玩家视线命中的方块（10 格射线，含距离）；未命中返回「无」。 */
-	static String lookingAt(Level level, ServerPlayer player) {
-		try {
-			Vec3 eye = player.getEyePosition();
-			Vec3 look = player.getLookAngle();
-			BlockHitResult hit = level.clip(new ClipContext(
-					eye, eye.add(look.scale(10.0)),
-					ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-			if (hit.getType() != net.minecraft.world.phys.HitResult.Type.BLOCK) {
-				return "none";
-			}
-			double dist = Math.round(player.position().distanceTo(hit.getLocation()) * 10.0) / 10.0;
-			return shortName(level.getBlockState(hit.getBlockPos()).getBlock().getDescriptionId())
-					+ " (" + dist + " blocks away)";
-		} catch (Exception e) {
-			return "none";
-		}
-	}
-
-	/**
-	 * 紧凑环境摘要（群系/气候/降水/天气/亮度/脚下方块/附近怪物）：
-	 * {@code 群系: 平原（温和/有降水） | 天气: 晴朗 | 亮度: 大晴 | 脚下: grass_block | 附近怪物: 0}。
-	 * 玩家状态与助手自身状态共用，不重复实现。
-	 *
-	 * @param hostileRadius 附近怪物统计半径；<1 表示不统计
-	 */
-	public static String environmentCapsule(Level level, BlockPos pos, int hostileRadius) {
-		try {
-			Holder<Biome> biome = level.getBiome(pos);
-			StringBuilder sb = new StringBuilder();
-			float temp = biome.value().getBaseTemperature();
-			String climate = temp < 0.2 ? "cold" : temp > 0.9 ? "hot" : "mild";
-			String precip = biome.value().hasPrecipitation() ? "rainy" : "dry";
-			sb.append("Environment: biome ").append(biomeName(biome))
-					.append(" (").append(climate).append("/").append(precip).append(")");
-			sb.append(" | weather: ").append(level.isThundering() ? "thunderstorm"
-					: level.isRaining() ? "raining" : "clear");
-			int sky = level.getSkyDarken();
-			sb.append(" | brightness: ").append(sky == 0 ? "bright"
-					: sky >= 15 ? "dark" : "dim(" + sky + ")");
-			sb.append(" | ground: ")
-					.append(shortName(level.getBlockState(pos.below()).getBlock().getDescriptionId()));
-			if (hostileRadius > 0) {
-				int hostiles = level.getEntities((net.minecraft.world.entity.Entity) null,
-						new AABB(pos).inflate(hostileRadius),
-						e -> e instanceof net.minecraft.world.entity.monster.Monster).size();
-				sb.append(" | nearby monsters: ").append(hostiles);
-			}
-			return sb.toString();
-		} catch (Exception e) {
-			return "environment unavailable";
-		}
-	}
-
-	private static String biomeName(Holder<Biome> biome) {
-		try {
-			return biome.unwrapKey()
-					.map(k -> k.identifier().getPath().replace('_', ' '))
-					.orElse(biome.getRegisteredName());
-		} catch (Exception e) {
-			return "unknown";
-		}
+		return sb.length() == 0 ? "here" : sb.toString();
 	}
 
 	/** 描述键后缀短名（block.minecraft.stone → stone）；null/异常返回 ?。 */
