@@ -84,6 +84,16 @@ public final class TaskPlan {
 		return root.toString();
 	}
 
+	/** 是否存在未完成步骤（pending / in_progress）——终止守卫判断"任务是否真的做完"。 */
+	public boolean hasUnfinished() {
+		for (Step s : steps) {
+			if (!s.status().equals("completed")) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** 简短摘要（工具结果回显 + 日志）：N step(s)（完成 M，进行中 K，待办 L）。 */
 	public String summary() {
 		int done = 0;

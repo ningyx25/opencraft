@@ -17,6 +17,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +36,12 @@ import java.util.stream.Collectors;
  *   等瞬时失败按指数退避 + 抖动重试,不把整轮对话变成报错；
  * - <b>重复工具调用守卫</b>（{@link RepeatToolGuard},参考 dsh-repeat-tool-reminder）:
  *   连续相同工具+相同参数达到阈值时注入提醒（先温和后详细）,打断模型的重复死循环；
+ *   <b>goto 轮询豁免</b>（{@link MovementQueries}）:与在途手动移动同目标的重复 goto
+ *   是"等待到达的再确认"而非死循环——不计数,改回一条信息型结果教模型等待；
+ * - <b>延迟动作结果</b>（goto/mine/place,参照 ask_player 的暂停/恢复）:工具只启动动作
+ *   并返回 deferred 结果,循环暂停;移动控制器完成/中止动作时经回调注入 [Event] user 消息
+ *   （到达含 Δy 提示、挖掘含背包差分）自动续轮——一轮 = 一个完整动作,模型无需轮询烧请求;
+ *   超时（45~50s）兜底恢复;
  * - <b>工具结果标记与裁剪</b>（{@link ToolResultPruner},参考 dsh-compaction-tool-result-pruner）:
  *   结果统一以 [工具名 成功/失败] 开头,超长结果保头尾裁中间,上下文增长有界；
  * - <b>每轮工具调用上限</b>（参考 dsh-agent-loop 的 maxParallelToolCalls）:防止一次连发太多调用；
@@ -45,13 +52,18 @@ import java.util.stream.Collectors;
  *   恢复循环；超时（{@link #ASK_TIMEOUT_MS}）未答则按合理假设继续并在回复中说明。
  * - <b>任务计划跟踪</b>（参考 dsh-tool-todo + system-prompt 注入）:模型用核心工具 {@code task_plan}
  *   维护结构化步骤清单（整单替换）,每轮循环把当前计划注入 system 上下文,多步任务不丢失进度。
+ * - <b>终止守卫</b>（{@link TaskCompletionGuard}）:模型输出纯文本时校验「任务真的完成了吗」
+ *   ——计划有未完成步骤或异步动作仍在途则暂缓收尾（最多 2 次）:文本作为中间消息广播给玩家,
+ *   注入提醒续轮——防止"一边走向目标一边说正在赶路"就停了、任务被跟随召回半途而废。
  *
  * <p>线程模型（沿用现有约定）:
  * - HTTP/SSE 读取在工作线程（{@link #EXECUTOR}）,流式增量在那边按打字机节奏 reveal；
  * - 工具执行、历史写入、聊天广播一律 {@code server.executeIfPossible} 回服务端线程；
  * - 工具执行完成后由服务端线程把「继续下一轮请求」的任务交回工作线程池；
  * - 长任务（寻路、挖掘）不在工具调用里阻塞——工具只下达指令（设置任务/Goal）,立即返回；
- *   模型从每轮刷新的 Assistant State 上下文（及 player_find 定向查找）获取结果。
+ *   真实结果由延迟动作机制（[Event] 消息自动续轮）或每轮刷新的 Assistant State 上下文送达；
+ * - 指令收尾时若动作仍在途,跟随恢复延迟到动作空闲（pendingFollowResume,见 keepSafeState）——
+ *   立即恢复会让跟随逻辑把在途动作召回（"走一半掉头回家"）。
  *
  * <p>每轮流程:
  * 1. 组装消息:system（人设:基础 + 名字 + 预设 persona + 插件提示词 + 玩家状态 + 助手状态 + 插件状态,
@@ -103,6 +115,9 @@ public final class AgentRuntime {
 
 	/** 正在等待玩家回答的提问（按助手绑定方块键控；answer 或超时恢复时移除）。 */
 	private static final Map<GlobalPos, PendingAsk> PENDING_ASKS = new ConcurrentHashMap<>();
+
+	/** 等待动作事件的在途异步动作（按助手绑定方块键控；事件/超时/中断时移除）。 */
+	private static final Map<GlobalPos, PendingAction> PENDING_ACTIONS = new ConcurrentHashMap<>();
 
 	private AgentRuntime() {
 	}
@@ -197,28 +212,272 @@ public final class AgentRuntime {
 			return;
 		}
 		assistant.setFollowing(false);
-		if (assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p
-				&& p.movement() != null) {
-			p.movement().stop();
+		if (assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p) {
+			p.setPendingFollowResume(false); // 新指令开始:旧任务的"稍后恢复跟随"作废
+			if (p.movement() != null) {
+				p.movement().stop();
+			}
 		}
 	}
 
-	/** 指令完成时调用:助手回到跟随模式。 */
+	/**
+	 * 指令完成时调用:助手回到跟随模式。若仍有移动/挖掘在途,先标记
+	 * "动作空闲后恢复"——立即恢复会让跟随逻辑覆盖/召回在途动作
+	 * （表现:助手走一半掉头回家）,由 keepSafeState 每 tick 检查空闲再恢复。
+	 */
 	private static void endTask(AiAssistant assistant) {
 		if (assistant == null) {
+			return;
+		}
+		if (assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p
+				&& p.movement() != null && asyncActionInFlight(p)) {
+			p.setPendingFollowResume(true);
+			com.swaydy.opencraft.logging.DebugLog.log("movement",
+					"指令收尾但动作仍在途,跟随恢复延迟到动作空闲");
 			return;
 		}
 		assistant.setFollowing(true);
 	}
 
-	/** 收尾一次 loop:释放忙锁 + 让助手回到跟随模式。 */
+	/** 收尾一次 loop:释放忙锁 + 清理动作事件通道 + 让助手回到跟随模式。 */
 	private static void finishLoop(LoopContext ctx) {
 		if (ctx == null) {
 			return;
 		}
+		// 防御性清理:正常路径 pending 在恢复/收尾前已移除,这里兜底防事件通道悬挂
+		PENDING_ACTIONS.remove(ctx.lockKey);
+		if (ctx.assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p
+				&& p.movement() != null) {
+			p.movement().clearActionCallback();
+		}
 		RUNNING.remove(ctx.lockKey);
 		LIVE.remove(ctx.lockKey);
 		endTask(ctx.assistant);
+	}
+
+	// ------------------------------------------------------------------
+	// 延迟动作结果（goto/mine/place）:动作完成事件自动续轮
+	// （参照 ask_player 的暂停/恢复——工具只启动动作,循环暂停,
+	//   [Event] 消息把真实结果送达后续轮,模型无需轮询烧请求）
+	// ------------------------------------------------------------------
+
+	/** 启动异步动作的工具:goto/mine/place 共用一个移动控制器,一次只能有一个在途。 */
+	private static boolean isAsyncActionTool(String toolName) {
+		return "player_goto".equals(toolName) || "player_mine".equals(toolName)
+				|| "player_place".equals(toolName);
+	}
+
+	/** 动作等待超时:goto/place 45s（含卡住传送）;mine 50s（30s 挖掘上限 + 走路 + 缓冲）。 */
+	private static long actionTimeoutMs(String toolName) {
+		return "player_mine".equals(toolName) ? 50_000L : 45_000L;
+	}
+
+	/**
+	 * 注册一个在途异步动作:给移动控制器装完成回调,循环暂停（本轮不续轮）;
+	 * 动作完成/失败/停止的事件到达时 {@link #resumeWithEvent} 自动续轮,
+	 * 超时未决由 {@link #timeoutAction} 兜底恢复。服务端线程调用。
+	 */
+	private static void registerPendingAction(LoopContext ctx, String toolName,
+	                                            JsonObject args, int round) {
+		MinecraftServer server = ctx.player.level().getServer();
+		PendingAction pa = new PendingAction(ctx, round + 1, server, toolName, parseXyz(args),
+				"player_mine".equals(toolName) ? snapshotInventory(ctx.assistant) : null);
+		PENDING_ACTIONS.put(ctx.lockKey, pa);
+		ctx.pausedByAction = true;
+		if (ctx.assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p
+				&& p.movement() != null) {
+			p.movement().setActionCallback((text, success) -> resumeWithEvent(ctx.lockKey, text, success));
+		}
+		com.swaydy.opencraft.logging.DebugLog.log("tool",
+				"延迟动作注册:{} 目标={},循环暂停等待 [Event]（超时 {}ms）",
+				toolName, pa.target == null ? "?" : pa.target.toShortString(),
+				actionTimeoutMs(toolName));
+		// 注:同批后续工具(如 player_stop)把动作停掉的情况不在这里恢复——
+		// 此刻 tool 结果尚未入列,提前注入 [Event] 会破坏 assistant(tool_calls) →
+		// tool 结果 → 事件的顺序;由 onDone 在结果入列后检查"不在途"再恢复
+		long timeout = actionTimeoutMs(toolName);
+		CompletableFuture.runAsync(() -> {
+			try {
+				Thread.sleep(timeout);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return;
+			}
+			// 捕获 pa 实例:超时只在「当初为之调度的那个动作」仍挂在 map 里时生效
+			// （旧动作的事件早已恢复、map 里已换成新动作时,陈旧超时必须 no-op——
+			//  否则会误杀新动作并关掉它的事件通道,形成伪超时连锁）
+			timeoutAction(ctx.lockKey, pa, server);
+		}, EXECUTOR);
+	}
+
+	/**
+	 * 动作事件恢复循环（移动控制器回调,服务端线程）:移除 pending（与超时/中断互斥）,
+	 * 注入 {@code [Event]} user 消息后从暂停点续轮;挖掘附背包差分（捡到了什么）。
+	 */
+	private static void resumeWithEvent(GlobalPos key, String text, boolean success) {
+		PendingAction pa = PENDING_ACTIONS.remove(key);
+		if (pa == null) {
+			return; // 事件已被超时/中断处理,或重复事件
+		}
+		LoopContext ctx = pa.ctx;
+		if (ctx.cancelled) {
+			return; // 已中断（RUNNING 已清,不再恢复）
+		}
+		if (!isAlive(ctx.assistant)) {
+			RUNNING.remove(ctx.lockKey);
+			LIVE.remove(ctx.lockKey);
+			return;
+		}
+		ctx.pausedByAction = false;
+		StringBuilder event = new StringBuilder("[Event] ").append(pa.toolName)
+				.append(success ? " finished: " : " failed: ").append(text);
+		if ("player_mine".equals(pa.toolName) && pa.inventoryBefore != null) {
+			String diff = ActionEvents.inventoryDiffText(pa.inventoryBefore,
+					snapshotInventory(ctx.assistant));
+			event.append(diff != null ? diff : ActionEvents.noPickupYetNote());
+		}
+		ctx.messages.add(LlmClient.Message.user(event.toString()));
+		com.swaydy.opencraft.logging.DebugLog.log("tool",
+				"动作事件恢复循环:{} → {}", pa.toolName, text);
+		resumeRound(ctx, pa.nextRound);
+	}
+
+	/**
+	 * 超时兜底:动作迟迟没有事件（极端卡死/事件丢失）→ 以超时事件恢复,模型自行决策。
+	 * 两参数 {@code remove(key, pa)}（PendingAction 引用相等）保证只处理「当初为之
+	 * 调度的那个动作」——它已被事件/中断处理、或 map 里已换成新动作时,本超时 no-op,
+	 * 不会误杀新动作/关掉它的事件通道（旧版按 key 删曾造成伪超时连锁）。
+	 */
+	private static void timeoutAction(GlobalPos key, PendingAction pa, MinecraftServer server) {
+		runOnServer(server, () -> {
+			if (!PENDING_ACTIONS.remove(key, pa)) {
+				return; // 陈旧超时:该动作已由事件恢复/中断清理,或已被新动作替换
+			}
+			LoopContext ctx = pa.ctx;
+			if (ctx.cancelled) {
+				return;
+			}
+			ctx.pausedByAction = false;
+			if (ctx.assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p
+					&& p.movement() != null) {
+				// 事件通道关闭;移动可继续走完,模型下一条指令会覆盖或停止它
+				p.movement().clearActionCallback();
+			}
+			String pos = ctx.assistant == null ? "?"
+					: "(" + ctx.assistant.blockPosition().getX() + ","
+							+ ctx.assistant.blockPosition().getY() + ","
+							+ ctx.assistant.blockPosition().getZ() + ")";
+			ctx.messages.add(LlmClient.Message.user(
+					"[Event] " + pa.toolName + " timeout: still not finished after "
+							+ (actionTimeoutMs(pa.toolName) / 1000) + "s (assistant at " + pos
+							+ "). The action may be stuck — take a different approach or stop it with player_stop."));
+			com.swaydy.opencraft.logging.DebugLog.log("tool", "延迟动作超时恢复:{}", pa.toolName);
+			resumeRound(ctx, pa.nextRound);
+		});
+	}
+
+	/** 恢复暂停的循环（ask 回答/动作事件/超时共用）:达步数上限走总结轮,否则正常下一轮。 */
+	private static void resumeRound(LoopContext ctx, int nextRound) {
+		if (nextRound >= ctx.agent.maxToolRounds()) {
+			com.swaydy.opencraft.logging.DebugLog.log("llm",
+					"循环恢复时已达最大行动轮数（{}）,进入最后一轮总结", ctx.agent.maxToolRounds());
+			ctx.messages.add(LlmClient.Message.toolResult("round-limit",
+					"You have reached the maximum number of action rounds for this task (" + ctx.agent.maxToolRounds() + ")."
+							+ " Stop acting now and summarize in one concise sentence what you have accomplished (do not call tools).",
+					true));
+			LlmClient.Request summaryRequest = new LlmClient.Request(
+					ctx.config.baseUrl, ctx.config.apiKey, ctx.config.model,
+					ctx.system, new ArrayList<>(ctx.messages),
+					null, ctx.config.temperature, null, null,
+					ctx.config.timeoutSeconds);
+			streamWithRetry(ctx, nextRound, summaryRequest, true);
+		} else {
+			runRound(ctx, nextRound);
+		}
+	}
+
+	/** 助手背包快照（物品短名→数量）,挖掘动作前后差分用。 */
+	private static Map<String, Integer> snapshotInventory(AiAssistant assistant) {
+		Map<String, Integer> out = new java.util.TreeMap<>();
+		if (!(assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p)) {
+			return out;
+		}
+		var inv = p.getInventory();
+		for (int i = 0; i < inv.getContainerSize(); i++) {
+			var s = inv.getItem(i);
+			if (!s.isEmpty()) {
+				out.merge(AiCompanionService.shortName(s.getItem().getDescriptionId()),
+						s.getCount(), Integer::sum);
+			}
+		}
+		return out;
+	}
+
+	/** 从工具参数取 x/y/z（日志/诊断用）;缺失/非法返回 null。 */
+	private static BlockPos parseXyz(JsonObject args) {
+		if (args == null || !args.has("x") || !args.has("y") || !args.has("z")) {
+			return null;
+		}
+		try {
+			return new BlockPos(args.get("x").getAsInt(), args.get("y").getAsInt(),
+					args.get("z").getAsInt());
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// 终止守卫与异步动作在途判定
+	// ------------------------------------------------------------------
+
+	/**
+	 * 玩家形态助手是否有异步动作在途：手动移动进行中（manual=true 且有目标）
+	 * 或挖掘进行中。终止守卫与延迟动作机制共用。
+	 * 只认手动指令——跟随逻辑产生的移动不是任务动作,不应阻止收尾。
+	 */
+	static boolean asyncActionInFlight(AiAssistant assistant) {
+		if (assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p
+				&& p.movement() != null) {
+			return (p.movement().isMoving() && p.movement().isManual())
+					|| p.movement().isMining();
+		}
+		return false;
+	}
+
+	/**
+	 * 终止守卫触发:把模型的文本当「中间消息」广播给玩家（进度可见）,
+	 * 注入提醒并继续循环（服务端线程调用）。不写历史、不释放忙锁——
+	 * 这些只有真正收尾时才做。
+	 */
+	private static void holdForUnfinishedTask(LoopContext ctx, String interimText,
+	                                           int round, String reminder) {
+		if (interimText != null && !interimText.isBlank()
+				&& ctx.player.level() instanceof ServerLevel sl) {
+			AiCompanionService.speakAsAssistant(sl, ctx.assistant, interimText);
+		}
+		ctx.messages.add(LlmClient.Message.user(reminder));
+		com.swaydy.opencraft.logging.DebugLog.log("llm",
+				"终止守卫:任务未完成,第 {}/{} 次暂缓收尾,注入提醒续轮",
+				ctx.terminalHolds, TaskCompletionGuard.MAX_HOLDS);
+		CompletableFuture.runAsync(() -> runRound(ctx, round + 1), EXECUTOR);
+	}
+
+	/**
+	 * {@code player_goto} 是否与当前在途的手动移动同目标:等待到达期间重复下达
+	 * 同一目标是"再确认"而非"失败死循环"——豁免重复执行与 {@link RepeatToolGuard},
+	 * 由调用方改回一条信息型结果（告诉模型走路需要时间,别烧轮次）。
+	 */
+	private static boolean isRedundantInFlightGoto(AiAssistant assistant, String toolName,
+	                                                JsonObject args) {
+		if (!"player_goto".equals(toolName)
+				|| !(assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p)
+				|| p.movement() == null) {
+			return false;
+		}
+		var m = p.movement();
+		Vec3 t = m.target();
+		return t != null && m.isMoving() && m.isManual()
+				&& MovementQueries.isSameGotoTarget(args, t.x, t.y, t.z, 1.0);
 	}
 
 	// ------------------------------------------------------------------
@@ -449,7 +708,7 @@ public final class AgentRuntime {
 										ToolResultPruner.toModelText(TOOL_ASK_PLAYER, false,
 												"Please provide the question parameter (a short confirmation question for the player)."),
 										true));
-								ctx.messages.addAll(executeTools(ctx, toolCalls));
+								ctx.messages.addAll(executeTools(ctx, toolCalls, round));
 							} else {
 								ctx.messages.add(LlmClient.Message.toolResult(askCall.id(),
 										ToolResultPruner.toModelText(TOOL_ASK_PLAYER, true,
@@ -460,10 +719,20 @@ public final class AgentRuntime {
 							}
 						} else {
 							// 逐个执行工具（服务端线程）,收集 tool 结果消息（含重复调用提醒）
-							ctx.messages.addAll(executeTools(ctx, toolCalls));
+							ctx.messages.addAll(executeTools(ctx, toolCalls, round));
 						}
 						if (paused) {
 							// 已暂停等待玩家回答:不继续下一轮；"正忙"锁保持持有,由 answer/超时 恢复
+							return;
+						}
+						if (ctx.pausedByAction) {
+							// 已注册延迟动作（goto/mine/place）:暂停等待 [Event];
+							// "正忙"锁保持持有,由事件/超时恢复。
+							// 例外:同批后续工具(如 player_stop)已把动作停掉——此刻 tool
+							// 结果已入列,立即以停止事件恢复(顺序正确),不空等超时
+							if (!asyncActionInFlight(ctx.assistant)) {
+								resumeWithEvent(ctx.lockKey, ActionEvents.stoppedText(), false);
+							}
 							return;
 						}
 						// 交回工作线程发起下一轮
@@ -493,13 +762,27 @@ public final class AgentRuntime {
 					scheduleRetry("空响应");
 				} else {
 					// 无工具调用 / 最后一轮总结:这是最终文本回复
-					// 1) 立即（服务端线程）:写历史（只存最终文本）+ 释放"正忙"锁 +
-					//    把完整回复广播到世界聊天（命令/GUI 一律广播）——聊天是最终记录,
-					//    不等打字机 reveal:长回复也不会让"答案"晚到好几秒。
+					// 0) 终止守卫(非总结轮):任务计划未完成或异步动作仍在途 → 不收尾。
+					//    文本按"中间消息"广播给玩家,注入提醒续轮(最多 MAX_HOLDS 次,
+					//    不与铁了心收尾的模型对抗);held 供 reveal 收尾判断是否跳过最终 reply 事件
+					final boolean[] held = {false};
 					runOnServer(server, () -> {
 						if (ctx.cancelled) {
 							// 已被中断:不写最终回复、不释放锁（interrupt 已处理）、不广播
 							return;
+						}
+						if (!summaryRound && round + 1 < ctx.agent.maxToolRounds()) {
+							String hold = TaskCompletionGuard.holdReminder(
+									ctx.plan != null && ctx.plan.hasUnfinished(),
+									asyncActionInFlight(ctx.assistant),
+									ctx.terminalHolds,
+									ctx.plan == null ? null : ctx.plan.summary());
+							if (hold != null) {
+								ctx.terminalHolds++;
+								held[0] = true;
+								holdForUnfinishedTask(ctx, full, round, hold);
+								return; // 不写历史、不释放忙锁、不当最终回复收尾
+							}
 						}
 						if (ctx.historyKey != null && !full.isBlank()) {
 							AiCompanionService.appendHistory(ctx.historyKey,
@@ -533,7 +816,9 @@ public final class AgentRuntime {
 							// 兜底:保证浮层一定收到 done（含空回复 / 收尾 reveal 已标记的重复发送）
 							AiCompanionService.finishOverlay(ctx.player, sessionId,
 									chatName(ctx.assistant), full);
-							if (ctx.gui) {
+							// 终止守卫暂缓收尾时任务仍在进行:GUI 不发最终 "reply"
+							// （下一轮的 "thinking" 事件会接上）,只有真正收尾才替换为完整回复
+							if (ctx.gui && !held[0]) {
 								AiCompanionService.finishGuiReply(ctx.player, ctx.guiBlockPos,
 										ctx.guiDimension, full);
 							}
@@ -560,6 +845,15 @@ public final class AgentRuntime {
 					if (ctx.cancelled) {
 						// 已被中断:不报错、不广播（interrupt 已反馈）
 						return;
+					}
+					// 报错即本次指令结束:任务已死,停掉在途移动/挖掘并关事件通道
+					// （否则 bot 会继续走完上一次的异步动作,再被跟随召回,行为不可解）
+					PENDING_ACTIONS.remove(ctx.lockKey);
+					if (ctx.assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p
+							&& p.movement() != null) {
+						p.movement().clearActionCallback();
+						p.movement().stop();
+						p.movement().cancelMining();
 					}
 					// 报错即本次指令结束:释放忙锁并让助手回到跟随模式
 					finishLoop(ctx);
@@ -676,15 +970,20 @@ public final class AgentRuntime {
 	 * 在服务端线程执行每个工具,收集 tool 结果消息（异常捕获为 error 结果）。
 	 * 结果统一以 [工具名 成功/失败] 标记开头并裁剪超长文本；每轮最多执行
 	 * {@link #MAX_TOOLS_PER_ROUND} 个；重复调用守卫触发时追加一条 user 提醒消息。
+	 * 启动异步动作的工具（deferred 结果）在批内全部工具执行完后注册 pending,
+	 * 由调用方暂停循环等待 [Event]。
 	 */
 	private static List<LlmClient.Message> executeTools(LoopContext ctx,
-	                                                    List<LlmClient.ToolCallBlock> calls) {
+	                                                    List<LlmClient.ToolCallBlock> calls, int round) {
 		List<LlmClient.Message> results = new ArrayList<>();
 		Map<String, ToolDefinition> tools = ctx.agent.toolMap();
 		int executed = 0;
 		List<String> executedNames = new ArrayList<>();
-		// task_plan 成功时才算"做了实事",失败时不应重置停滞守卫
+		// task_plan 成功时才算"做了实事"，失败时不应重置停滞守卫
 		boolean taskPlanSucceeded = false;
+		// 本批已启动的延迟动作（一次只允许一个:goto/mine/place 共用一个移动控制器）
+		String deferredTool = null;
+		JsonObject deferredArgs = null;
 		for (LlmClient.ToolCallBlock call : calls) {
 			String toolName = call.name() == null ? "" : call.name().trim();
 			if (executed >= MAX_TOOLS_PER_ROUND) {
@@ -711,6 +1010,7 @@ public final class AgentRuntime {
 						"助手更新任务计划 → {}", plan == null ? "参数错误" : plan.summary());
 				ctx.planText = plan == null ? ctx.planText : plan.format();
 				if (plan != null) {
+					ctx.plan = plan;
 					taskPlanSucceeded = true;
 				}
 				results.add(LlmClient.Message.toolResult(call.id(),
@@ -729,6 +1029,9 @@ public final class AgentRuntime {
 			}
 			ToolDefinition def = tools.get(toolName);
 			ToolResult result;
+			// 重复 goto 豁免:同一目标已在途中（模型在等待到达期间的"再确认"）——
+			// 不重复执行、不进重复守卫,改回一条信息型结果教它等待
+			boolean redundantGoto = false;
 			if (def == null) {
 				result = ToolResult.error("Unknown tool \"" + toolName + "\". Available tools: "
 						+ String.join(", ", tools.keySet()));
@@ -738,10 +1041,22 @@ public final class AgentRuntime {
 					if (args == null) {
 						result = ToolResult.error("Could not parse the arguments JSON: " + previewArgs(call.arguments())
 								+ "; please provide valid argument JSON.");
+					} else if (isRedundantInFlightGoto(ctx.assistant, toolName, args)) {
+						redundantGoto = true;
+						result = ToolResult.ok("Already walking to that target — re-issuing changes nothing. "
+								+ "Movement takes a few seconds; use the waiting rounds for other useful steps "
+								+ "(e.g. prepare tools) and confirm arrival via the Assistant State.");
+					} else if (isAsyncActionTool(toolName) && deferredTool != null) {
+						result = ToolResult.error("Another movement action is already in progress this round; "
+								+ "wait for its [Event] outcome before starting another.");
 					} else {
 						ToolContext toolCtx = new ToolContext(ctx.player.level().getServer(),
 								ctx.assistant, ctx.player, (ServerLevel) ctx.player.level());
 						result = def.executor().execute(toolCtx, args);
+						if (result.deferred()) {
+							deferredTool = toolName;
+							deferredArgs = args;
+						}
 					}
 				} catch (Exception e) {
 					OpenCraftMod.LOGGER.warn("[OpenCraft] 工具 {} 执行异常: {}",
@@ -760,11 +1075,14 @@ public final class AgentRuntime {
 			OpenCraftMod.LOGGER.info("[OpenCraft] 助手为 {} 执行工具 {} → {}",
 					ctx.player.getName().getString(), toolName, result.message());
 			// 重复工具调用守卫:连续相同工具+相同参数达到阈值 → 注入提醒打断死循环
-			String reminder = ctx.repeatGuard.observe(toolName, call.arguments());
-			if (reminder != null) {
-				com.swaydy.opencraft.logging.DebugLog.log("tool",
-						"重复工具调用提醒:{} 已连续 {} 次相同调用", toolName, ctx.repeatGuard.currentCount());
-				results.add(LlmClient.Message.user(reminder));
+			// （重复 goto 的"再确认"已豁免——那是合法等待,不是失败重试）
+			if (!redundantGoto) {
+				String reminder = ctx.repeatGuard.observe(toolName, call.arguments());
+				if (reminder != null) {
+					com.swaydy.opencraft.logging.DebugLog.log("tool",
+							"重复工具调用提醒:{} 已连续 {} 次相同调用", toolName, ctx.repeatGuard.currentCount());
+					results.add(LlmClient.Message.user(reminder));
+				}
 			}
 		}
 		// 停滞守卫:连续多轮纯观察（没有任何状态变化）→ 注入提醒,打断"卡在某一步"空转。
@@ -777,6 +1095,11 @@ public final class AgentRuntime {
 			com.swaydy.opencraft.logging.DebugLog.log("tool",
 					"停滞提醒:连续 {} 轮纯观察无进展", ctx.stallGuard.streak());
 			results.add(LlmClient.Message.user(stallNudge));
+		}
+		// 延迟动作注册放在批内全部工具执行完之后:同批的 player_stop 等能正常停掉动作,
+		// 注册时若动作已不在途（被后续工具停了）会立即以"被停止"事件恢复,不空等超时
+		if (deferredTool != null) {
+			registerPendingAction(ctx, deferredTool, deferredArgs, round);
 		}
 		return results;
 	}
@@ -1001,22 +1324,7 @@ public final class AgentRuntime {
 				"助手（方块 {}）的提问已恢复:{}", ctx.lockKey.pos().toShortString(),
 				userMessage.length() <= 60 ? userMessage : userMessage.substring(0, 60) + "…");
 		// 恢复循环:达到步数上限走总结轮,否则正常下一轮
-		if (pa.nextRound >= ctx.agent.maxToolRounds()) {
-			com.swaydy.opencraft.logging.DebugLog.log("llm",
-					"提问恢复后已达最大行动轮数（{}）,进入最后一轮总结", ctx.agent.maxToolRounds());
-			ctx.messages.add(LlmClient.Message.toolResult("round-limit",
-					"You have reached the maximum number of action rounds for this task (" + ctx.agent.maxToolRounds() + ")."
-							+ " Stop acting now and summarize in one concise sentence what you have accomplished (do not call tools).",
-					true));
-			LlmClient.Request summaryRequest = new LlmClient.Request(
-					ctx.config.baseUrl, ctx.config.apiKey, ctx.config.model,
-					ctx.system, new ArrayList<>(ctx.messages),
-					null, ctx.config.temperature, null, null,
-					ctx.config.timeoutSeconds);
-			streamWithRetry(ctx, pa.nextRound, summaryRequest, true);
-		} else {
-			runRound(ctx, pa.nextRound);
-		}
+		resumeRound(ctx, pa.nextRound);
 	}
 
 	/**
@@ -1042,8 +1350,10 @@ public final class AgentRuntime {
 		}
 		ctx.cancelled = true;
 		PENDING_ASKS.remove(key);
+		PENDING_ACTIONS.remove(key);
 		if (ctx.assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer p
 				&& p.movement() != null) {
+			p.movement().clearActionCallback(); // 先关事件通道,stop() 不再触发恢复
 			p.movement().stop();
 		}
 		RUNNING.remove(key);
@@ -1139,10 +1449,16 @@ public final class AgentRuntime {
 		final int[] llmRetries = {0};
 		/** 模型通过 task_plan 维护的当前任务计划（格式化文本）,null = 无计划。 */
 		String planText = null;
+		/** 解析后的任务计划（终止守卫判断"是否还有未完成步骤"）;null = 无计划。 */
+		TaskPlan plan = null;
+		/** 终止守卫已暂缓收尾的次数（上限 {@link TaskCompletionGuard#MAX_HOLDS},不与模型无限对抗）。 */
+		int terminalHolds = 0;
 		/** 本轮请求的 system 文本（每轮在 runRound 重建；总结轮/提问恢复复用,保持上下文一致）。 */
 		String system = null;
 		/** ask_player 已暂停等待玩家回答（本批工具停止继续,等 answer/超时 恢复）。 */
 		boolean pausedByAsk = false;
+		/** 延迟动作（goto/mine/place）已注册,循环暂停等待 [Event] 事件恢复。 */
+		boolean pausedByAction = false;
 
 		LoopContext(ServerPlayer player, AiAssistant assistant, AiBlockConfig config,
 		            AgentDefinition agent, List<LlmClient.Message> messages,
@@ -1178,11 +1494,32 @@ public final class AgentRuntime {
 		}
 	}
 
+	/** 一个等待事件的在途异步动作（goto/mine/place）:持有恢复循环所需的全部状态。 */
+	private static final class PendingAction {
+		final LoopContext ctx;
+		final int nextRound; // 事件到达后从第几轮恢复（= 启动动作那一轮的下一轮）
+		final MinecraftServer server;
+		final String toolName; // player_goto / player_mine / player_place
+		final BlockPos target; // 动作目标（日志/诊断;参数异常时 null）
+		final Map<String, Integer> inventoryBefore; // player_mine 掉落差分快照（其他工具 null）
+
+		PendingAction(LoopContext ctx, int nextRound, MinecraftServer server, String toolName,
+		              BlockPos target, Map<String, Integer> inventoryBefore) {
+			this.ctx = ctx;
+			this.nextRound = nextRound;
+			this.server = server;
+			this.toolName = toolName;
+			this.target = target;
+			this.inventoryBefore = inventoryBefore;
+		}
+	}
+
 	/** 服务器停止时关闭线程池并清理运行标记（由 {@link AiCompanionService#init()} 的钩子一并调用）。 */
 	public static void shutdown() {
 		RUNNING.clear();
 		LIVE.clear();
 		PENDING_ASKS.clear();
+		PENDING_ACTIONS.clear();
 		EXECUTOR.shutdown();
 	}
 }

@@ -1,5 +1,6 @@
 package com.swaydy.opencraft.assistant.player;
 
+import com.swaydy.opencraft.agent.ActionEvents;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
@@ -9,6 +10,8 @@ import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+
+import java.util.function.BiConsumer;
 /**
  * 玩家形态助手的移动控制器（bot 式移动）。
  *
@@ -68,6 +71,18 @@ public final class PlayerMovementController {
 	/** 本控制器所属的机器人（由每 tick 刷新；供显式跳跃判定着地/飞行）。 */
 	private AiAssistantPlayer owner;
 
+	// —— 动作事件回调（延迟工具结果,见 AgentRuntime.PENDING_ACTIONS）——
+	/** 在途动作的完成回调（text=事件文本, success=是否成功）;触发一次即清空。 */
+	private BiConsumer<String, Boolean> actionCallback;
+	/** 回调注册代次:只接受最新一次注册（及同代次的上报）,陈旧回调被丢弃。 */
+	private int actionToken = 0;
+	/** 上次到达前是否经历过"卡住传送"（到达事件里如实报告位置跳变）。 */
+	private boolean justTeleported = false;
+	// —— 延迟触发的事件（挖掘完成延后 1.5s 上报,让掉落物过了拾取保护期被捡起,差分才有内容）——
+	private String pendingEventText = null;
+	private boolean pendingEventSuccess;
+	private int pendingEventDelay = 0;
+
 	// —— 原版式挖掘状态（见类注释：START → 按进度等待 → STOP）——
 	private BlockPos miningPos;
 	private int miningTicksLeft;
@@ -102,12 +117,78 @@ public final class PlayerMovementController {
 		this.onArrived = action;
 	}
 
+	// ------------------------------------------------------------------
+	// 动作事件回调：AgentRuntime 注册,动作完成（到达/停止/挖掘完成/中止）时
+	// 收到 (事件文本, 是否成功),用于把异步动作的真实结果延迟送达给模型。
+	// ------------------------------------------------------------------
+
+	/**
+	 * 注册在途动作的完成回调,返回本次注册的代次令牌。
+	 * 新注册会使旧代次的 {@link #completeAction} 上报失效（防陈旧回调）。
+	 */
+	public int setActionCallback(BiConsumer<String, Boolean> callback) {
+		this.actionCallback = callback;
+		return ++this.actionToken;
+	}
+
+	/** 清除动作回调（任务收尾/中断时;之后的动作事件不再上报）。 */
+	public void clearActionCallback() {
+		this.actionCallback = null;
+	}
+
+	/** 当前回调代次令牌（工具侧的到达动作 Runnable 用它上报结果）。 */
+	public int currentActionToken() {
+		return this.actionToken;
+	}
+
+	/**
+	 * 由「到达动作」的 Runnable 上报动作结果（挖掘启动失败/瞬间完成/放置结果）。
+	 * 代次不匹配（已有新动作注册）时丢弃。控制器内部事件走 {@link #fireAction}。
+	 */
+	public void completeAction(int token, String text, boolean success) {
+		if (this.actionCallback != null && token == this.actionToken) {
+			fireAction(text, success);
+		}
+	}
+
+	/** 控制器内部事件出口（到达/停止/挖掘进度推进的结果）;触发一次即清空回调。 */
+	private void fireAction(String text, boolean success) {
+		BiConsumer<String, Boolean> cb = this.actionCallback;
+		if (cb == null) {
+			return;
+		}
+		this.actionCallback = null;
+		try {
+			cb.accept(text, success);
+		} catch (Exception e) {
+			com.swaydy.opencraft.logging.DebugLog.log("movement",
+					"动作事件回调异常: {}", e.toString());
+		}
+	}
+
+	/** 延迟若干 tick 后触发事件（挖掘完成:等掉落物被捡起,背包差分才有内容）。 */
+	private void fireActionDelayed(String text, boolean success, int ticks) {
+		this.pendingEventText = text;
+		this.pendingEventSuccess = success;
+		this.pendingEventDelay = ticks;
+	}
+
 	public boolean isManual() {
 		return manual;
 	}
 
 	public boolean isMoving() {
 		return target != null;
+	}
+
+	/** 当前移动目标（null = 无移动）；重复 goto 豁免/终止守卫读取在途目标用。 */
+	public Vec3 target() {
+		return this.target;
+	}
+
+	/** 是否有挖掘正在进行（START 已发、STOP 未发）。 */
+	public boolean isMining() {
+		return this.miningPos != null;
 	}
 
 	/** 停止移动（清掉待执行的动作与手动标记）。**不中断挖掘**——挖掘是独立动作，
@@ -120,11 +201,17 @@ public final class PlayerMovementController {
 					"移动已停止（原目标 ({},{},{})）",
 					(int) this.target.x, (int) this.target.y, (int) this.target.z);
 		}
+		boolean hadTarget = this.target != null;
 		this.target = null;
 		this.onArrived = null;
 		this.arrivedFired = false;
 		this.manual = false;
 		this.actualMove = false;
+		this.justTeleported = false;
+		// 有在途动作等待结果时上报"被停止"（player_stop/中断/新指令接管）
+		if (hadTarget) {
+			fireAction(ActionEvents.stoppedText(), false);
+		}
 	}
 
 	/** 显式取消挖掘（像客户端松开破坏键：发 ABORT，清破坏进度）。 */
@@ -225,6 +312,12 @@ public final class PlayerMovementController {
 			return;
 		}
 		this.owner = player;
+		// 延迟事件倒计时（挖掘完成等掉落物捡起）
+		if (pendingEventDelay > 0 && --pendingEventDelay == 0) {
+			String text = pendingEventText;
+			pendingEventText = null;
+			fireAction(text, pendingEventSuccess);
+		}
 		tickMining(player);
 		Vec3 pos = player.position();
 		boolean flying = player.getAbilities().flying;
@@ -283,8 +376,14 @@ public final class PlayerMovementController {
 					com.swaydy.opencraft.logging.DebugLog.log("movement",
 							"到达目标 ({},{},{})", (int) pos.x, (int) pos.y, (int) pos.z);
 				}
+				// 无到达动作（player_goto）:就地结束,上报到达事件——
+				// 到达判定只看水平距离,事件文本里报告与目标的垂直差,
+				// 模型才知道自己是"站在目标头顶/脚下"而不是"到了"
+				fireAction(ActionEvents.arrivalText((int) pos.x, (int) pos.y, (int) pos.z,
+						(int) Math.round(target.y - pos.y), justTeleported), true);
 				target = null;
 				actualMove = false;
+				justTeleported = false;
 			}
 			return;
 		}
@@ -326,6 +425,8 @@ public final class PlayerMovementController {
 					(int) pos.x, (int) pos.y, (int) pos.z);
 			player.teleportTo(target.x, target.y, target.z);
 			stuckTicks = 0;
+			// 下一 tick 到达判定生效;到达事件里如实报告"卡住后被传送"
+			justTeleported = true;
 		}
 	}
 
@@ -337,14 +438,20 @@ public final class PlayerMovementController {
 		ServerLevel level = player.level() instanceof ServerLevel sl ? sl : null;
 		if (level == null || level.getBlockState(this.miningPos).isAir()) {
 			// 方块已被破坏（自己或别人）：服务器侧已自动结束，清状态即可
+			BlockPos gone = this.miningPos;
 			this.miningPos = null;
 			this.miningTicksLeft = 0;
+			fireAction(ActionEvents.miningBlockGoneText(
+					gone.getX(), gone.getY(), gone.getZ()), false);
 			return;
 		}
 		if (!player.isWithinBlockInteractionRange(this.miningPos, 1.5)) {
 			com.swaydy.opencraft.logging.DebugLog.log("player_action",
 					"挖掘中止：离开触及范围 {}", this.miningPos.toShortString());
+			BlockPos out = this.miningPos;
 			abortMining(player, this.miningPos);
+			fireAction(ActionEvents.miningAbortedRangeText(
+					out.getX(), out.getY(), out.getZ()), false);
 			return;
 		}
 		if (--this.miningTicksLeft > 0) {
@@ -358,6 +465,10 @@ public final class PlayerMovementController {
 				Direction.UP, level.getMaxY(), miningSequence++);
 		com.swaydy.opencraft.logging.DebugLog.log("player_action",
 				"挖掘完成信号已发（STOP_DESTROY_BLOCK）→ {}", pos.toShortString());
+		// 延迟 30 tick（1.5s）上报:原版掉落物自带 10 tick 拾取保护期,加上飞向
+		// 玩家的时间——太早上报会让背包差分永远显示"什么都没捡到"（曾踩坑）
+		fireActionDelayed(ActionEvents.miningCompleteText(
+				pos.getX(), pos.getY(), pos.getZ()), true, 30);
 	}
 
 	/** 让玩家朝向 (dx, dz) 方向（yRot/yHeadRot/yBodyRot 同步平滑转向）。 */

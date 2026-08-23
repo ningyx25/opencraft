@@ -23,8 +23,9 @@ public final class RepeatToolGuard {
 	/** 第一次（温和）提醒：指出"在重复同一调用"，建议换做法。 */
 	private static final String GENTLE_REMINDER =
 			"[Reminder] You are repeatedly calling the same tool with exactly the same parameters. "
-					+ "Carefully analyze the last result first: if the task is not done, try a different approach or different "
-					+ "parameters instead of retrying identically; if you already have enough evidence, end the task with your final reply.";
+					+ "Carefully analyze the last result first: if you are waiting for an async action (walking/mining), "
+					+ "do NOT re-issue the command — it takes time to finish; take a different step or check the Assistant State. "
+					+ "If the action keeps failing, change your approach or parameters instead of retrying identically.";
 
 	private final List<Integer> thresholds;
 	private String lastKey = null;
@@ -80,9 +81,10 @@ public final class RepeatToolGuard {
 				+ "- Tool: " + (toolName == null ? "?" : toolName) + "\n"
 				+ "- Consecutive count: " + count + "\n"
 				+ "- Arguments: " + argumentsPreview + "\n"
-				+ "These repeated calls are making no progress. Stop calling this tool with these arguments: "
-				+ "analyze the most recent result, choose a different action or different arguments, "
-				+ "or if you have enough evidence, end the task immediately with your final reply.";
+			+ "These repeated calls are making no progress. Stop calling this tool with these arguments: "
+			+ "analyze the most recent result and choose a different action or different arguments. "
+			+ "If you are waiting for an async action to finish, wait for its outcome instead of re-calling; "
+			+ "if it keeps failing, honestly report to the player what blocked you.";
 	}
 
 	/**

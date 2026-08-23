@@ -60,6 +60,8 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 	 * 任务生命周期是瞬态的，重进/重召唤一律默认跟随。
 	 */
 	private boolean following = true;
+	/** 指令结束时仍有移动/挖掘在途:等动作空闲后再恢复跟随（由 keepSafeState 每 tick 检查）。 */
+	private boolean pendingFollowResume = false;
 
 	private final PlayerMovementController movement = new PlayerMovementController();
 
@@ -80,6 +82,15 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 	@Override
 	public void setFollowing(boolean following) {
 		this.following = following;
+	}
+
+	/** 是否等在途动作结束后恢复跟随（endTask 时动作未完则置位）。 */
+	public boolean isPendingFollowResume() {
+		return pendingFollowResume;
+	}
+
+	public void setPendingFollowResume(boolean pending) {
+		this.pendingFollowResume = pending;
 	}
 
 	// ------------------------------------------------------------------

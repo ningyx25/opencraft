@@ -40,6 +40,12 @@ public class AssistantControlPlugin implements AssistantPlugin {
 	}
 
 	private ToolResult teleport(ToolContext ctx, JsonObject args) {
+		// 传送前停掉在途移动/挖掘:传送后旧目标已无意义,不停的话 bot 会朝旧目标走回去
+		// （若同批有延迟动作,注册时的"不在途"检查会以停止事件恢复循环）
+		if (ctx.assistantPlayer() != null && ctx.assistantPlayer().movement() != null) {
+			ctx.assistantPlayer().movement().stop();
+			ctx.assistantPlayer().movement().cancelMining();
+		}
 		AiCompanionService.teleportAssistantToPlayer(ctx.owner(), ctx.assistant());
 		return ToolResult.ok("I have teleported to your side.");
 	}

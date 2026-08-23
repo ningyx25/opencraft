@@ -248,6 +248,27 @@ class AgentLoopGuardsTest {
 		assertTrue(plan.format().contains("mine stone"), "content 应被去除首尾空白");
 	}
 
+	@Test
+	void taskPlanHasUnfinishedDetectsPendingSteps() {
+		TaskPlan allDone = TaskPlan.fromJson(JsonParser.parseString("""
+				{"steps":[
+				  {"content":"mine","status":"completed"},
+				  {"content":"craft","status":"completed"}
+				]}""").getAsJsonObject());
+		assertFalse(allDone.hasUnfinished(), "全部 completed 应无未完成步骤");
+
+		TaskPlan withPending = TaskPlan.fromJson(JsonParser.parseString("""
+				{"steps":[
+				  {"content":"mine","status":"completed"},
+				  {"content":"craft","status":"pending"}
+				]}""").getAsJsonObject());
+		assertTrue(withPending.hasUnfinished(), "pending 步骤应算未完成");
+
+		TaskPlan withActive = TaskPlan.fromJson(JsonParser.parseString(
+				"{\"steps\":[{\"content\":\"mine\",\"status\":\"in_progress\"}]}").getAsJsonObject());
+		assertTrue(withActive.hasUnfinished(), "in_progress 步骤应算未完成");
+	}
+
 	// ------------------------------------------------------------------
 	// 5. StallGuard：连续纯观察触发提醒、真实动作重置、bumped 防重复
 	// ------------------------------------------------------------------

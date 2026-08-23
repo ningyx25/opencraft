@@ -37,11 +37,12 @@ import java.util.Map;
  * 非插件引入的提示词集中管理：system 提示词里不属于插件/预设的所有静态与动态片段。
  *
  * <p><b>结构约定（结构化提示词）</b>：整段 system 用 Markdown 组织——
- * 每个来源一个 `#` 大节（Identity / 预设各自的准则 / Capabilities / Game Context /
- * Current Task Plan）,插件片段与状态段用 `##` 小节;<b>数据段一律用 ```json 围栏的
+ * 每个来源一个 `#` 大节（Identity / 预设各自的准则 / Capabilities / Skills /
+ * Game Context / Current Task Plan）,插件片段与状态段用 `##` 小节;<b>数据段一律用 ```json 围栏的
  * JSON</b>（玩家状态、助手状态、任务计划）,字段自描述（radius/note 等）,方便模型解析
  * 与后续扩展。组装顺序：
  * 人设（# Identity：基础 + 名字 + 预设 persona）→ 插件提示词（# Capabilities）→
+ * 内置技能（# Skills,agent/skills 的 SKILL.md 按可用工具过滤）→
  * 玩家状态（## Player State）→ 助手状态（## Assistant State）→ 插件状态 →
  * 任务计划（# Current Task Plan）。
  *
@@ -595,6 +596,13 @@ public final class Prompts {
 		String frags = agent.systemPromptFragments();
 		if (!frags.isBlank()) {
 			sb.append("\n\n# Capabilities\n\n").append(frags);
+		}
+		// 内置技能(SKILL.md 文档):预设绑定(skills 列表) + 可用工具双重过滤后整节注入——
+		// 教模型"某类任务怎么做"的结构化经验(如阶梯下沉挖法)
+		String skills = com.swaydy.opencraft.agent.skills.SkillLibrary
+				.promptsFragment(agent.skills(), agent.toolMap().keySet());
+		if (!skills.isBlank()) {
+			sb.append("\n\n").append(skills);
 		}
 		sb.append("\n\n# Game Context\n\n").append(playerState(player));
 		ToolContext ctx = new ToolContext(player.level().getServer(), assistant, player,

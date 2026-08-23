@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Agent 预设：插件的命名组合 + 人设提示词 + agentic loop 参数。
+ * Agent 预设：插件的命名组合 + 人设提示词 + agentic loop 参数 + 绑定的内置技能。
  *
  * 助手的能力 = 其选中的预设装配的插件之和（tools + system/skill 提示词 + 游戏上下文 + 实体 Goal）。
  *
@@ -21,9 +21,22 @@ import java.util.Map;
  * @param plugins      该预设装配的插件（顺序即注册顺序，重名工具先注册者生效并告警）
  * @param personaPrompt 人设提示词（指导模型“怎么用工具、何时用工具”，位于 system 开头）
  * @param maxToolRounds agentic loop 最大工具轮数
+ * @param skills       绑定的内置技能名列表（见 agent/skills/SkillLibrary 的 skills/index.json）——
+ *                     只有绑定的技能才会注入该预设的 system 上下文（再经 requires_tools 过滤），
+ *                     管理粒度在预设：换预设即换技能组合，未绑定的技能不占上下文
  */
 public record AgentDefinition(String id, String displayName, List<AssistantPlugin> plugins,
-                              String personaPrompt, int maxToolRounds) {
+                              String personaPrompt, int maxToolRounds, List<String> skills) {
+
+	/** 兼容旧签名：不绑定任何技能（纯聊天类预设）。 */
+	public AgentDefinition(String id, String displayName, List<AssistantPlugin> plugins,
+	                       String personaPrompt, int maxToolRounds) {
+		this(id, displayName, plugins, personaPrompt, maxToolRounds, List.of());
+	}
+
+	public AgentDefinition {
+		skills = skills == null ? List.of() : List.copyOf(skills);
+	}
 
 	/** 汇总全部工具：按插件顺序，重名时先注册者生效并记 WARN 日志。 */
 	public Map<String, ToolDefinition> toolMap() {

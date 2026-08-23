@@ -312,6 +312,14 @@ public final class PlayerAssistantService {
 		if (player.getFoodData().getFoodLevel() < 20) {
 			player.getFoodData().setFoodLevel(20);
 		}
+		// 延迟恢复跟随:指令收尾时动作（移动/挖掘）仍在途 → 等空闲再恢复,
+		// 避免跟随逻辑立刻把在途动作召回（"走一半掉头回家"）
+		if (player.isPendingFollowResume() && player.movement() != null
+				&& !player.movement().isMoving() && !player.movement().isMining()) {
+			player.setPendingFollowResume(false);
+			player.setFollowing(true);
+			com.swaydy.opencraft.logging.DebugLog.log("movement", "在途动作已空闲,恢复跟随模式");
+		}
 		if (!player.isFollowing()) {
 			return; // 指令执行期间不跟随
 		}

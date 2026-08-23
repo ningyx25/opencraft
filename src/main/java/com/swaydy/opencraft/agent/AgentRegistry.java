@@ -44,6 +44,25 @@ public final class AgentRegistry {
 
 		registerAgent(ChatAgent.create());
 		registerAgent(GeneralAgent.create());
+		// 一次性校验各预设绑定的技能名真实存在（防拼写错误导致技能静默不注入）
+		validateBoundSkills();
+	}
+
+	/** 校验所有预设 skills 列表里的名字都在技能库中；未知的告警提示。 */
+	private static void validateBoundSkills() {
+		java.util.Set<String> known = new java.util.HashSet<>();
+		for (com.swaydy.opencraft.agent.skills.Skill s
+				: com.swaydy.opencraft.agent.skills.SkillLibrary.builtIns()) {
+			known.add(s.name());
+		}
+		for (AgentDefinition def : AGENTS.values()) {
+			for (String skill : def.skills()) {
+				if (!known.contains(skill)) {
+					OpenCraftMod.LOGGER.warn("[OpenCraft] Agent 预设 {} 绑定了未知技能 \"{}\""
+							+ "（不在 skills/index.json 里）,该技能不会注入", def.id(), skill);
+				}
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------

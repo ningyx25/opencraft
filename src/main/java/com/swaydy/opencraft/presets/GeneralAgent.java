@@ -31,7 +31,10 @@ public final class GeneralAgent {
 			- The system context already gives you everything you need to observe, refreshed every round: the **Assistant State** JSON (position, facing, movement, nearby blocks, block type counts, nearby entities) plus your per-slot inventory/equipment (with durability and mainhand marked) — read it first; do NOT call tools just to re-check what it already shows.
 			- After acting, trust the returned tool text and the next round's refreshed **Assistant State** to confirm the result — never assume a tool succeeded.
 			- Do one step at a time: `player_goto` to move, `player_mine` to mine, `player_place` to place, `player_craft` to craft, `player_hand_to_player` to hand an item to the player.
-			- Movement/mining/placing are asynchronous commands: they return immediately and the assistant walks over by itself; the **Assistant State** refreshes every round — check it to confirm arrival/completion.
+				- Movement/mining/placing are asynchronous commands: after calling one, the loop pauses automatically and the real outcome (arrival / mining result / picked-up items) arrives as an [Event] message — wait for it and never re-issue the same command while waiting.
+				- While the task plan still has unfinished steps, or an async action (walking/mining/placing) is still in progress, do NOT end your turn with a plain-text reply — the task would be aborted. Keep acting with tools; only reply with plain text when every step is completed or you honestly cannot proceed.
+				- To mine a block, call `player_mine` directly with its coordinates — the assistant walks there and mines automatically; don't `player_goto` there first.
+				- Follow the built-in skills listed under `# Skills` in the context — they are proven procedures for common tasks (e.g. descending underground while mining); use them instead of improvising.
 			- Tool results begin with `[tool success/failure]`: read that marker first; on failure analyze why and try a different approach — never call the same tool repeatedly with identical parameters.
 			- At most 6 tools per round; wait for the results after calling, don't fire off many identical calls at once.
 			- When you need exact coordinates of a specific target (beyond the nearby context), use `player_find` — don't guess.
@@ -47,6 +50,10 @@ public final class GeneralAgent {
 				"agent.opencraft.general",
 				List.of(new AssistantControlPlugin(), new PlayerActionsPlugin()),
 				PERSONA,
-				250);
+				250,
+				// 绑定的内置技能（skills/index.json 登记;未绑定的不注入）——
+				// 生存玩家视角:挖矿下沉/砍树/工具链合成/定量采集/回到主人身边
+				List.of("dig-down-staircase", "gather-wood", "craft-toolchain",
+						"mine-and-collect", "regroup-with-owner"));
 	}
 }

@@ -1,6 +1,7 @@
 package com.swaydy.opencraft.plugins;
 
 import com.google.gson.JsonObject;
+import com.swaydy.opencraft.agent.ActionEvents;
 import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.assistant.player.AiAssistantPlayer;
 import net.minecraft.core.BlockPos;
@@ -112,9 +113,9 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		findProps.add("radius", ToolSchema.prop("integer", "Search radius (default 12, max 20)."));
 		return List.of(
 				new ToolDefinition("player_goto",
-						"Have the assistant (as a player) walk to the given coordinates (absolute x,y,z). Movement is asynchronous: "
-								+ "the call returns immediately and the assistant walks over by itself; your position is refreshed "
-								+ "in the Assistant State context every round.",
+						"Have the assistant (as a player) walk to the given coordinates (absolute x,y,z). Asynchronous: "
+								+ "the call returns immediately and the conversation pauses; when the assistant arrives, "
+								+ "the outcome arrives automatically as an [Event] message — never re-issue the same goto while waiting.",
 						ToolSchema.object(gotoProps, "x", "y", "z"),
 						this::gotoTool),
 				new ToolDefinition("player_stop",
@@ -136,15 +137,17 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 						this::findTarget),
 				new ToolDefinition("player_mine",
 						"Have the assistant (as a player) mine the block at the given coordinates: walk up to it and break it with the "
-								+ "main-hand tool like a player; drops fall out as items and are auto-picked into the assistant's inventory. "
-								+ "Asynchronous: returns immediately; the result shows in the next rounds' Assistant State context. "
-								+ "Cannot mine air, bedrock, or containers (chests/furnaces etc.).",
+							+ "main-hand tool like a player; drops fall out as items and are auto-picked into the assistant's inventory. "
+							+ "Asynchronous: the loop pauses and the outcome (done / aborted, picked-up items) arrives automatically "
+							+ "as an [Event] message — never re-issue while waiting. If the block is deep underground, walking only "
+							+ "gets the assistant above it — dig down step by step instead. "
+							+ "Cannot mine air, bedrock, or containers (chests/furnaces etc.).",
 						ToolSchema.object(mineProps, "x", "y", "z"),
 						this::mine),
 				new ToolDefinition("player_place",
 						"Have the assistant (as a player) place a block at the given position with its main-hand item: place it against the "
-								+ "face of the block at (x,y,z). Requires a placeable item in the main hand (e.g. stone/planks). "
-								+ "Asynchronous: if far away it walks over first, then places; the result shows in the next rounds' Assistant State context.",
+							+ "face of the block at (x,y,z). Requires a placeable item in the main hand (e.g. stone/planks). "
+							+ "If far away, the assistant walks over first and the outcome arrives automatically as an [Event] message.",
 						ToolSchema.object(placeProps, "x", "y", "z"),
 						this::place),
 				new ToolDefinition("player_craft",
@@ -218,11 +221,14 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		}
 		double maxDist = a.getConfig().maxDistance;
 		if (a.distanceToSqr(x + 0.5, y + 0.5, z + 0.5) > maxDist * maxDist) {
-			return ToolResult.error("Target is more than " + (int) maxDist + " blocks from the owner — too far; "
-					+ "move in steps or pick a closer target.");
+			// 校验的是目标距助手自身当前位置的距离（不是距主人）——文案如实说明
+			return ToolResult.error("Target is more than " + (int) maxDist
+					+ " blocks from your current position — too far; "
+					+ "move toward it in steps or pick a closer target.");
 		}
 		a.movement().moveTo(new Vec3(x + 0.5, y, z + 0.5), a.getConfig().speed, true);
-		return ToolResult.ok("Heading to (" + x + "," + y + "," + z + "). Your position is refreshed in the Assistant State context every round.");
+		return ToolResult.deferred("Heading to (" + x + "," + y + "," + z + ") — walking takes a few seconds. "
+				+ "This is an async action: the arrival [Event] will arrive automatically; do not re-issue the command.");
 	}
 
 	private ToolResult stopTool(ToolContext ctx, JsonObject args) {
@@ -273,6 +279,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		boolean entityQuery = isEntityQuery(target);
 
 		List<String> lines = new ArrayList<>();
+		List<Integer> listedDy = new ArrayList<>(); // 已列出条目相对助手的垂直偏移(可达性提示用)
 		int total = 0;
 
 		// 方块扫描：一次过立方体，命中即记
@@ -288,6 +295,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 						if (lines.size() < 6) {
 							lines.add(formatTarget(center.offset(dx, dy, dz),
 									st.getBlock().getDescriptionId(), a));
+							listedDy.add(dy);
 						}
 					}
 				}
@@ -306,8 +314,11 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				}
 				String label = e instanceof Player ? "Player"
 						: e instanceof Monster ? "Monster"
-						: e instanceof ItemEntity ? "Dropped item" : AiCompanionService.shortName(e.getType().getDescriptionId());
+						: e instanceof ItemEntity ie
+								? "Dropped " + AiCompanionService.shortName(ie.getItem().getItem().getDescriptionId())
+						: AiCompanionService.shortName(e.getType().getDescriptionId());
 				lines.add(formatTarget(e.blockPosition(), label, a));
+				listedDy.add(e.blockPosition().getY() - center.getY());
 				n++;
 			}
 		}
@@ -323,6 +334,12 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		}
 		if (total > lines.size()) {
 			sb.append("\n… ").append(total).append(" total (listing the nearest ").append(lines.size()).append(" here)");
+		}
+		// 可达性提示:列出的方块全部在脚下 ≥5 格(典型:地表下方的石头/矿物)——
+		// 走过去只会停在其正上方,必须向下挖才能到达
+		if (!listedDy.isEmpty() && listedDy.stream().allMatch(d -> d <= -5)) {
+			sb.append("\nnote: all listed matches are at least 5 blocks below you (underground) — "
+					+ "walking only reaches the ground above them; mine down step by step to reach them.");
 		}
 		return ToolResult.ok(sb.toString());
 	}
@@ -375,13 +392,28 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 					+ "(player_hotbar_select) and try again.");
 		}
 		int seconds = Math.max(1, Math.round(1.0F / perTick / 20.0F));
-		// 走到方块旁，到达后按真实玩家的挖掘流程（START → 按工具速度推进 → STOP）
+		// 走到方块旁，到达后按真实玩家的挖掘流程（START → 按工具速度推进 → STOP）;
+		// 启动失败/秒破立即经动作回调上报,正常挖掘由控制器在完成时上报
 		a.movement().moveTo(new Vec3(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5),
 				a.getConfig().speed, true);
-		a.movement().whenArrived(() -> a.movement().startMining(a, level, pos));
-		return ToolResult.ok("Walking over to mine (" + x + "," + y + "," + z + ") as a player. "
-				+ "Digging takes ~" + seconds + "s with my current tool (real mining speed); "
-				+ "drops will fall out and be auto-picked into the inventory.");
+		a.movement().whenArrived(() -> {
+			int started = a.movement().startMining(a, level, pos);
+			if (started == -1) {
+				// 不在触及范围内/方块已消失:如实上报失败,让模型换策略
+				String text = level.getBlockState(pos).isAir()
+						? ActionEvents.miningBlockGoneText(x, y, z)
+						: ActionEvents.miningAbortedRangeText(x, y, z);
+				a.movement().completeAction(a.movement().currentActionToken(), text, false);
+			} else if (started == 0) {
+				// 当前工具秒破（服务器已就地破坏并掉落）
+				a.movement().completeAction(a.movement().currentActionToken(),
+						ActionEvents.miningCompleteText(x, y, z), true);
+			}
+			// started ≥ 1：挖掘进行中,PlayerMovementController.tickMining 完成时上报
+		});
+		return ToolResult.deferred("Walking over to mine (" + x + "," + y + "," + z + ") as a player — "
+				+ "digging takes ~" + seconds + "s with my current tool (real mining speed). "
+				+ "Async action: the outcome [Event] will arrive automatically; do not re-issue.");
 	}
 
 	private ToolResult place(ToolContext ctx, JsonObject args) {
@@ -422,14 +454,18 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		BlockHitResult hit = new BlockHitResult(hitLoc, face, anchor, false);
 		boolean sneak = t.boolOf("sneak", false);
 		if (a.getEyePosition().distanceTo(hitLoc) <= REACH) {
-			return ToolResult.ok(doPlace(a, level, mainHand, hit, sneak));
+			return doPlace(a, level, mainHand, hit, sneak); // 就近:同步完成,直接给真实结果
 		}
-		// 太远：先走到放置位置旁，到达后再放
+		// 太远：先走到放置位置旁，到达后再放;结果经动作回调上报
 		a.movement().moveTo(new Vec3(target.getX() + 0.5, target.getY(), target.getZ() + 0.5),
 				a.getConfig().speed, true);
-		a.movement().whenArrived(() -> doPlace(a, level, a.getMainHandItem(), hit, sneak));
-		return ToolResult.ok("Walking to the placement spot to place the main-hand item at (" + target.getX() + ","
-				+ target.getY() + "," + target.getZ() + ").");
+		a.movement().whenArrived(() -> {
+			ToolResult r = doPlace(a, level, a.getMainHandItem(), hit, sneak);
+			a.movement().completeAction(a.movement().currentActionToken(), r.message(), r.ok());
+		});
+		return ToolResult.deferred("Walking to the placement spot to place the main-hand item at ("
+				+ target.getX() + "," + target.getY() + "," + target.getZ() + ") — async action: "
+				+ "the outcome [Event] will arrive automatically; do not re-issue.");
 	}
 
 	private ToolResult craft(ToolContext ctx, JsonObject args) {
@@ -794,7 +830,10 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				|| target.contains("animal") || target.contains("生物") || target.contains("living")) {
 			return true;
 		}
-		return tryResolveEntityType(target) != null;
+		// 物品名/ID 也要查实体:掉落物（地上的圆石/木头等）只有实体查询能定位——
+		// 方块查询只会命中世界里的方块,搜 "cobblestone" 找不到掉在地上的圆石
+		return tryResolveEntityType(target) != null
+				|| AiCompanionService.resolveItem(target) != null;
 	}
 
 	private static boolean matchesEntity(Entity e, String target) {
@@ -805,8 +844,13 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				|| target.contains("zombie") || target.contains("skeleton")) {
 			return e instanceof Monster; // 僵尸/骷髅是怪物，一网打尽
 		}
+		if (e instanceof ItemEntity ie) {
+			// 掉落物:泛关键词命中,或手持物品名/ID 命中——掉落物的实体类型描述是
+			// "entity.minecraft.item"不含物品名,按名搜索必须看手持物品
+			return target.contains("掉落") || target.contains("drop") || itemMatches(ie, target);
+		}
 		if (target.contains("掉落") || target.contains("drop")) {
-			return e instanceof ItemEntity;
+			return false; // 掉落关键词只匹配 ItemEntity,已在上面处理
 		}
 		if (target.contains("living") || target.contains("生物") || target.contains("animal")) {
 			return e instanceof LivingEntity;
@@ -817,6 +861,18 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		}
 		// 其它：把关键词当实体类型描述子串匹配
 		return e.getType().getDescriptionId().toLowerCase(java.util.Locale.ROOT).contains(target);
+	}
+
+	/** 掉落物手持物品是否与搜索词匹配:短名/描述键子串,或解析成同一物品 ID。 */
+	private static boolean itemMatches(ItemEntity ie, String target) {
+		String descId = ie.getItem().getItem().getDescriptionId(); // 如 item.minecraft.cobblestone
+		String lower = target.toLowerCase(java.util.Locale.ROOT);
+		if (AiCompanionService.shortName(descId).contains(lower)
+				|| descId.toLowerCase(java.util.Locale.ROOT).contains(lower)) {
+			return true;
+		}
+		var resolved = AiCompanionService.resolveItem(target);
+		return resolved != null && ie.getItem().is(resolved);
 	}
 
 	private static EntityType<?> tryResolveEntityType(String id) {
@@ -838,19 +894,25 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return null;
 	}
 
-	/** 一条定位结果：`(x,y,z) 3 east 2 south distance 2.4 blocks(类型)`。 */
+	/** 一条定位结果：`(x,y,z) 3 east 2 south distance 2.4 blocks(类型)`;与助手垂直差 ≥3 格时
+	 * 追加 `(N blocks below/above you)`——移动只改变水平位置,模型需要知道目标在脚下还是头顶。 */
 	private static String formatTarget(BlockPos pos, String descId, AiAssistantPlayer a) {
 		double dist = Math.round(Math.sqrt(a.distanceToSqr(
 				pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5)) * 10.0) / 10.0;
-		return "(" + pos.getX() + "," + pos.getY() + "," + pos.getZ() + ") "
+		String line = "(" + pos.getX() + "," + pos.getY() + "," + pos.getZ() + ") "
 				+ AiCompanionService.bearingTo(a.blockPosition(), pos) + " distance " + dist + " blocks(" + AiCompanionService.shortName(descId) + ")";
+		int dy = pos.getY() - a.blockPosition().getY();
+		if (Math.abs(dy) >= 3) {
+			line += " (" + Math.abs(dy) + " blocks " + (dy < 0 ? "below" : "above") + " you)";
+		}
+		return line;
 	}
 
-	/** 执行真正的玩家式放置（ServerPlayerGameMode.useItemOn）。 */
-	private static String doPlace(AiAssistantPlayer a, ServerLevel level, ItemStack item,
-	                              BlockHitResult hit, boolean sneak) {
+	/** 执行真正的玩家式放置（ServerPlayerGameMode.useItemOn）;结果可直接回给模型或经动作回调上报。 */
+	private static ToolResult doPlace(AiAssistantPlayer a, ServerLevel level, ItemStack item,
+	                                  BlockHitResult hit, boolean sneak) {
 		if (a.isRemoved() || item.isEmpty()) {
-			return "The assistant is gone or the main hand is empty; cannot place.";
+			return ToolResult.error("The assistant is gone or the main hand is empty; cannot place.");
 		}
 		BlockPos target = hit.getBlockPos().relative(hit.getDirection());
 		// 记录放置前主手物品数量，用于判断物品是否被消耗（比仅查块状态更可靠）
@@ -874,8 +936,8 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		com.swaydy.opencraft.logging.DebugLog.log("player_action",
 				"玩家形态助手 useItemOn({}, {}, {}) → {} (before={} after={})",
 				target.getX(), target.getY(), target.getZ(), result, countBefore, countAfter);
-		return placed ? "Placed the main-hand item at (" + target.getX() + "," + target.getY() + "," + target.getZ() + ")."
-				: "Placement had no effect (result " + result + "); the item may not be placeable or the spot is occupied.";
+		return placed ? ToolResult.ok("Placed the main-hand item at (" + target.getX() + "," + target.getY() + "," + target.getZ() + ").")
+				: ToolResult.error("Placement had no effect (result " + result + "); the item may not be placeable or the spot is occupied.");
 	}
 
 	// ------------------------------------------------------------------
