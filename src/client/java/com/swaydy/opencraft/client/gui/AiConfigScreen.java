@@ -4,7 +4,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.swaydy.opencraft.agent.AgentDefinition;
+import com.swaydy.opencraft.agent.AgentRegistry;
 import com.swaydy.opencraft.ai.AiConfigData;
+import com.swaydy.opencraft.loop.LoopDefinition;
+import com.swaydy.opencraft.loop.LoopRegistry;
 import com.swaydy.opencraft.net.AiConfigPayloads;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.gui.Font;
@@ -93,6 +97,15 @@ public class AiConfigScreen extends Screen {
 	private double maxDistance;
 	private double speed;
 
+	// 循环事件状态（第 3 页“行动行为”）：来自服务器随配置下发的快照
+	/** 一条循环事件运行状态（id / 阶段 / 已执行次数）。 */
+	private record LoopStatusEntry(String id, String phase, long iteration) {
+	}
+	/** 本方块循环事件实例状态（空 = 无实例在运行）。 */
+	private List<LoopStatusEntry> loopStatus = List.of();
+	/** 本方块已启用的循环事件 id（服务器下发，空 = 全部启用）。 */
+	private List<String> enabledLoops = List.of();
+
 	// 聊天窗口状态（第 4 页“聊天”）
 	/** 一条聊天记录（role: user/assistant/system）。 */
 	private record ChatEntry(String role, String text) {
@@ -122,7 +135,7 @@ public class AiConfigScreen extends Screen {
 	private int selectedTab = 0;
 
 	public AiConfigScreen(AiConfigData data, boolean canEdit, boolean blockBound, boolean blockBoundByMe,
-	                      BlockPos blockPos, ResourceKey<Level> dimension) {
+	                      String loopStatusJson, BlockPos blockPos, ResourceKey<Level> dimension) {
 		super(Component.translatable("screen.opencraft.config.title"));
 		this.data = data;
 		this.canEdit = canEdit;
@@ -131,6 +144,7 @@ public class AiConfigScreen extends Screen {
 		this.blockBound = blockBound;
 		this.blockBoundByMe = blockBoundByMe;
 		loadData(data);
+		parseLoopStatus(loopStatusJson);
 	}
 
 	private void loadData(AiConfigData data) {
@@ -149,23 +163,64 @@ public class AiConfigScreen extends Screen {
 
 		this.maxDistance = data.maxDistance();
 		this.speed = data.speed();
+		this.enabledLoops = data.enabledLoops() == null ? List.of() : data.enabledLoops();
 	}
 
-	/** Agent 预设的显示名（翻译键 → 友好文本）。 */
-	private static String displayAgent(String agentId) {
-		if (agentId == null || agentId.isBlank()) {
-			return Component.translatable("agent.opencraft.general").getString();
+	/**
+	 * 解析服务器下发的循环事件状态 JSON（[{id, phase, iteration}]）。
+	 * 解析失败或空串时保持空列表（界面显示“已停止”）。
+	 */
+	private void parseLoopStatus(String json) {
+		List<LoopStatusEntry> parsed = new ArrayList<>();
+		if (json != null && !json.isBlank()) {
+			try {
+				JsonArray array = JsonParser.parseString(json).getAsJsonArray();
+				for (JsonElement element : array) {
+					JsonObject obj = element.getAsJsonObject();
+					String id = obj.has("id") ? obj.get("id").getAsString() : "";
+					String phase = obj.has("phase") ? obj.get("phase").getAsString() : "";
+					long iteration = obj.has("iteration") ? obj.get("iteration").getAsLong() : 0;
+					if (!id.isEmpty()) {
+						parsed.add(new LoopStatusEntry(id, phase, iteration));
+					}
+				}
+			} catch (Exception e) {
+				// 解析失败：保留空状态显示
+			}
 		}
-		return switch (agentId) {
-			case "chat_agent" -> Component.translatable("agent.opencraft.chat").getString();
-			case "general_agent" -> Component.translatable("agent.opencraft.general").getString();
-			default -> agentId;
+		this.loopStatus = parsed;
+	}
+
+	/** 指定 id 的循环事件当前状态文本（运行中带阶段/次数，否则“已停止”）。 */
+	private Component loopStatusComponent(String id) {
+		for (LoopStatusEntry e : this.loopStatus) {
+			if (e.id().equals(id)) {
+				return Component.translatable("screen.opencraft.config.loop.running",
+						e.phase(), e.iteration()).withColor(0xFF55FF55);
+			}
+		}
+		return Component.translatable("screen.opencraft.config.loop.stopped").withColor(0xFFAAAAAA);
+	}
+
+	/** Agent 预设的显示组件：优先从注册表取翻译键，未注册回退到旧映射/原文。 */
+	private static Component agentDisplayComponent(String agentId) {
+		if (agentId != null) {
+			for (AgentDefinition def : AgentRegistry.agents()) {
+				if (agentId.equals(def.id())) {
+					return Component.translatable(def.displayName());
+				}
+			}
+		}
+		return switch (agentId == null ? "" : agentId) {
+			case "chat_agent" -> Component.translatable("agent.opencraft.chat");
+			case "general_agent" -> Component.translatable("agent.opencraft.general");
+			default -> Component.literal(agentId == null ? "" : agentId);
 		};
 	}
 
 	/** 服务器返回新数据时刷新界面 */
 	public void updateData(AiConfigData data, boolean canEdit, boolean blockBound, boolean blockBoundByMe,
-	                       BlockPos blockPos, ResourceKey<Level> dimension) {
+	                       String loopStatusJson, BlockPos blockPos, ResourceKey<Level> dimension) {
 		// 配置方块变了（右键了另一个方块）：聊天窗口要清空并重新拉取新方块的历史
 		if (!blockPos.equals(this.blockPos) || !dimension.equals(this.dimension)) {
 			this.chatEntries.clear();
@@ -186,6 +241,7 @@ public class AiConfigScreen extends Screen {
 		}
 		this.data = data;
 		loadData(data);
+		parseLoopStatus(loopStatusJson);
 		if (this.minecraft != null) {
 			SystemToast.addOrUpdate(
 					this.minecraft.getToastManager(),
@@ -350,7 +406,8 @@ public class AiConfigScreen extends Screen {
 				this.maxDistance,
 				this.speed,
 				this.name,
-				this.agent
+				this.agent,
+				new ArrayList<>(this.enabledLoops)
 		);
 		ClientPlayNetworking.send(new AiConfigPayloads.AiConfigSavePayload(
 				configToSave.toJson(), this.blockPos, this.dimension));
@@ -637,9 +694,21 @@ public class AiConfigScreen extends Screen {
 
 			// Agent 预设下拉（只决定 LLM 行为 = 人设/工具/轮数；身体形态与预设无关——
 			// 助手一律是真正的 ServerPlayer bot，像客户端一样进服）
+			// 选项动态取自 AgentRegistry.agents()（新预设注册后自动出现）；注册表为空时回退硬编码列表
+			List<String> agentIds = new ArrayList<>();
+			for (AgentDefinition def : AgentRegistry.agents()) {
+				agentIds.add(def.id());
+			}
+			if (agentIds.isEmpty()) {
+				agentIds.add("chat_agent");
+				agentIds.add("general_agent");
+			}
+			if (!agentIds.contains(AiConfigScreen.this.agent)) {
+				agentIds.add(0, AiConfigScreen.this.agent);
+			}
 			CycleButton<String> agentPicker = CycleButton.<String>builder(
-							val -> Component.literal(displayAgent(val)), AiConfigScreen.this.agent)
-					.withValues(List.of("chat_agent", "general_agent"))
+							AiConfigScreen::agentDisplayComponent, AiConfigScreen.this.agent)
+					.withValues(agentIds)
 					.withTooltip(val -> Tooltip.create(Component.translatable("screen.opencraft.config.agent.tooltip")))
 					.create(0, 0, CONTROL_WIDTH, ROW_HEIGHT,
 							Component.translatable("screen.opencraft.config.agent"),
@@ -684,13 +753,15 @@ public class AiConfigScreen extends Screen {
 	}
 
 	// =========================================================================
-	// Tab 3: 行动行为（跟随/待命模式已移除，仅剩行动范围与速度）
+	// Tab 3: 行动行为（跟随/待命模式已移除，仅剩行动范围与速度 + 循环事件开关）
 	// =========================================================================
 	private class CompanionBehaviorTab extends GridLayoutTab {
 		public CompanionBehaviorTab() {
 			super(Component.translatable("screen.opencraft.config.tab.companion"));
 			GridLayout.RowHelper rows = this.layout.createRowHelper(1);
 			rows.defaultCellSetting().paddingVertical(2).alignHorizontallyCenter();
+
+			Font font = AiConfigScreen.this.font;
 
 			// 跟随/待命模式已整体移除：不再有跟随/停止/瞬移距离滑块
 			// 走丢最大距离 (10.0 ~ 128.0 格)
@@ -714,6 +785,64 @@ public class AiConfigScreen extends Screen {
 			speedSlider.setTooltip(Tooltip.create(Component.translatable("screen.opencraft.config.speed.tooltip")));
 			speedSlider.active = AiConfigScreen.this.canEdit;
 			rows.addChild(speedSlider);
+
+			// =============================================================
+			// 循环事件区域
+			// =============================================================
+			java.util.List<LoopDefinition> loopDefs = LoopRegistry.all();
+			if (loopDefs.isEmpty()) {
+				// 无可用循环事件
+				rows.addChild(new StringWidget(
+						Component.translatable("screen.opencraft.config.loop.none"),
+						font));
+			} else {
+				// 区域标题
+				StringWidget loopHeader = new StringWidget(
+						Component.translatable("screen.opencraft.config.loops"),
+						font);
+				loopHeader.setTooltip(Tooltip.create(
+						Component.translatable("screen.opencraft.config.loops.tooltip")));
+				rows.addChild(loopHeader);
+
+				for (LoopDefinition def : loopDefs) {
+					String id = def.id();
+					String display = def.displayName() == null ? id : def.displayName();
+					boolean selected = AiConfigScreen.this.enabledLoops.contains(id);
+
+					// 复选框 + 状态文本的水平行
+					LinearLayout loopRow = LinearLayout.horizontal().spacing(4);
+					Checkbox check = Checkbox.builder(
+									Component.literal(display), font)
+							.selected(selected)
+							.onValueChange((c, checked) -> {
+								// 修改 enabledLoops 副本（避免写回不可变列表）
+								List<String> updated = new ArrayList<>(
+										AiConfigScreen.this.enabledLoops);
+								if (checked) {
+									if (!updated.contains(id)) {
+										updated.add(id);
+									}
+								} else {
+									updated.remove(id);
+								}
+								AiConfigScreen.this.enabledLoops = updated;
+							})
+							.build();
+					check.active = AiConfigScreen.this.canEdit;
+					if (def.description() != null) {
+						check.setTooltip(Tooltip.create(
+								Component.literal(def.description())));
+					}
+					loopRow.addChild(check);
+
+					// 状态文字
+					StringWidget status = new StringWidget(
+							AiConfigScreen.this.loopStatusComponent(id), font);
+					loopRow.addChild(status);
+
+					rows.addChild(loopRow);
+				}
+			}
 		}
 	}
 

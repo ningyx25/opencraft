@@ -3,6 +3,8 @@ package com.swaydy.opencraft.ai;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
+import java.util.List;
+
 
 /**
  * AI 配置编辑器的数据载体：与 AI 徽标方块中保存的可编辑配置一一对应（方块实体，无外部文件），
@@ -26,7 +28,12 @@ public record AiConfigData(
 		double maxDistance,
 		double speed,
 		String name,
-		String agent) {
+		String agent,
+		List<String> enabledLoops) {
+
+	public AiConfigData {
+		enabledLoops = enabledLoops == null ? List.of() : List.copyOf(enabledLoops);
+	}
 
 	private static final Gson GSON = new GsonBuilder().create();
 

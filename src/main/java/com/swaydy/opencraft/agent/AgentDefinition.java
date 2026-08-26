@@ -1,6 +1,6 @@
 package com.swaydy.opencraft.agent;
 
-import com.swaydy.opencraft.plugins.AssistantPlugin;
+import com.swaydy.opencraft.plugins.presets.AssistantPlugin;
 import com.swaydy.opencraft.plugins.ToolContext;
 import com.swaydy.opencraft.plugins.ToolDefinition;
 

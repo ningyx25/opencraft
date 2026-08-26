@@ -53,7 +53,7 @@ import java.util.Map;
  * 按槽位背包清单,完整吸收原 player_look/player_inventory）＋ system 整段组装；</li>
  * <li><b>不在这里</b>：各插件的 {@code systemPromptFragment}/{@code gameContextFragment}
  * （留在 plugins/ 各插件内,各自带 `##` 小节标题）、各预设的 personaPrompt
- * （留在 presets/,自带 `#` 大节标题）、守卫与工具结果文案（留在各守卫/执行器内）。</li>
+ * （留在 agent/presets/ 各预设类内,自带 `#` 大节标题）、守卫与工具结果文案（留在各守卫/执行器内）。</li>
  * </ul>
  *
  * <p>共用游戏工具方法（{@code facingName}/{@code bearingTo}/{@code shortName}）

@@ -52,6 +52,8 @@ import java.util.List;
  * 10. assistantRightClickInteract —— 右键助手互动（绑定/主人右键开背包界面/非主人拒绝/聊天/送走）；
  * 11. assistantInventoryMenuLayoutAndTransfer —— 右键打开的双面板背包菜单
  *     （原版 E 背包布局：装备槽/2×2 合成/主背包/快捷栏 / 原版合成 / Shift 双向转移 / 助手消失后失效）。
+ * 12. healAuraLoopHealsOwner —— 循环事件模块：heal_aura 治疗光环端到端
+ *     （召唤绑定自动启动 / 受伤后每 ~40 tick 回 1 点血 / 满血后 persistent 闲置不消亡 / 送走即停止）。
  */
 public class OpenCraftGameTests {
 	/**
@@ -185,7 +187,7 @@ public class OpenCraftGameTests {
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							sent.language(),
 							sent.maxDistance(), sent.speed(),
-							"改名小智", "general_agent");
+							"改名小智", "general_agent", sent.enabledLoops());
 					AiConfigHandler.save(player, absPos, dimension, edited.toJson());
 					if (!"in-game-edited-model".equals(blockEntity.getConfig().model)) {
 						throw new AssertionError("保存后方块配置未即时生效");
@@ -199,6 +201,10 @@ public class OpenCraftGameTests {
 					if (!"改名小智".equals(blockEntity.getConfig().name)) {
 						throw new AssertionError("保存后助手名字未生效");
 					}
+					// 保存后显式启用了循环事件（enabledLoops 持久化生效；默认未配置 = 全启用）
+					if (!blockEntity.getConfig().isLoopEnabled("heal_aura")) {
+						throw new AssertionError("保存后循环事件应保持启用（默认全启用）");
+					}
 					// 5) 未勾选更换时保存：密钥应保留（客户端只会传空串）
 					AiConfigData keepKey = new AiConfigData(
 							sent.baseUrl(), "", false, true,
@@ -206,7 +212,7 @@ public class OpenCraftGameTests {
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							sent.language(),
 							sent.maxDistance(), sent.speed(),
-							"keep-key-name", "general_agent");
+							"keep-key-name", "general_agent", java.util.List.of());
 					AiConfigHandler.save(player, absPos, dimension, keepKey.toJson());
 					if (!"new-secret-key-456".equals(blockEntity.getConfig().apiKey)) {
 						throw new AssertionError("未更换密钥时不应覆盖旧密钥");
@@ -216,6 +222,10 @@ public class OpenCraftGameTests {
 					}
 					if (!"keep-key-name".equals(blockEntity.getConfig().name)) {
 						throw new AssertionError("keep-key 保存的名字未生效");
+					}
+					// 显式保存空 enabledLoops = 全部循环事件关闭（与"未配置"区分）
+					if (blockEntity.getConfig().isLoopEnabled("heal_aura")) {
+						throw new AssertionError("保存空 enabledLoops 后循环事件应全部关闭");
 					}
 					// 6) 恢复
 					AiBlockConfig original = blockEntity.getConfig();
@@ -487,7 +497,7 @@ public class OpenCraftGameTests {
 	 * 历史按“助手绑定的方块”键控（一方块 = 一助手 = 一份记忆），ask() 会同步把
 	 * user 消息写入目标助手的记忆，因此“路由到哪个助手”可以立即断言，无需等回复。
 	 */
-	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 500)
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 8000)
 	public void askTargetsSpecificAssistant(GameTestHelper helper) {
 		dismissAllPlayerBots();
 		ServerPlayer player = helper.makeMockServerPlayerInLevel();
@@ -1041,7 +1051,7 @@ public class OpenCraftGameTests {
 	 * 4. 别人对已占用方块 chatWithBlock → 被拒绝（历史不变、原助手不受影响）；
 	 * 5. historyJson 返回可解析的 JSON 历史快照；sendChatHistory 不崩溃（模拟连接发送被吞）。
 	 */
-	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 400)
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 4000)
 	public void configScreenChatWindow(GameTestHelper helper) {
 		dismissAllPlayerBots();
 		ServerPlayer player = helper.makeMockServerPlayerInLevel();
@@ -1132,6 +1142,127 @@ public class OpenCraftGameTests {
 					AiCompanionService.resetAllHistory(player);
 					helper.succeed();
 				});
+	}
+
+	/**
+	 * 端到端验证内置技能真实注入到发给 LLM 的 HTTP 请求：
+	 * （skills/index.json 登记的技能经 general_agent 绑定 + requires_tools 双重过滤后，
+	 * 由 Prompts.system 渲染进每轮请求 system 消息——请求体里是 messages[0] 的 role=system）
+	 * 1. 用 mock 方块聊天触发 agentic loop（mod → 真实 HTTP 请求 → mock 服务器）；
+	 * 2. 等回复完成，从 mock 的 GET /v1/requests 拉回全部请求体；
+	 * 3. 断言：至少一个请求的 system 含 "# Skills" 大节与 ## gather-wood / ## craft-toolchain；
+	 * 4. 断言：没有任何请求的 system 含已删除技能名（dig-down-staircase 等）——
+	 *    证明删除彻底、注入无残留。
+	 * 注意：openai-java SDK 首次 createStreaming 有 ~400ms 冷启动开销，maxTicks 需给足。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 2000)
+	public void skillsInjectedIntoSystemPrompt(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		ResourceKey<net.minecraft.world.level.Level> dimension = player.level().dimension();
+		BlockPos absPos = helper.absolutePos(blockPos);
+		GlobalPos bindPos = GlobalPos.of(dimension, absPos);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 触发 agentic loop：聊天自动召唤助手并提问（砍树 → general_agent 的 gather-wood 场景）
+					AiConfigHandler.chatWithBlock(player, absPos, dimension, "砍一棵树");
+					if (AiCompanionService.historySize(bindPos) != 1) {
+						throw new AssertionError("发送消息后历史应新增 1 条 user 消息，实际 "
+								+ AiCompanionService.historySize(bindPos));
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 等流式回复写入历史（独立线程，按墙钟时间到达）
+					if (AiCompanionService.historySize(bindPos) < 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("等待聊天回复写入历史…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 从 mock 服务器拉回真实收到的请求体（端到端：mod → HTTP → mock）
+					java.util.List<com.google.gson.JsonObject> requests =
+							fetchMockRequests("http://127.0.0.1:18923/v1/requests");
+					if (requests.isEmpty()) {
+						throw new AssertionError("mock 未收到任何请求");
+					}
+					StringBuilder allSystems = new StringBuilder();
+					for (com.google.gson.JsonObject req : requests) {
+						// 请求体里 system 是 messages[0] 的 role=system 消息（非顶层字段）
+						String system = "";
+						com.google.gson.JsonArray msgs = req.has("messages")
+								? req.getAsJsonArray("messages") : null;
+						if (msgs != null && msgs.size() > 0
+								&& msgs.get(0).getAsJsonObject().has("role")
+								&& "system".equals(msgs.get(0).getAsJsonObject().get("role").getAsString())) {
+							system = msgs.get(0).getAsJsonObject().has("content")
+									? msgs.get(0).getAsJsonObject().get("content").getAsString() : "";
+						}
+						allSystems.append(system).append('\n');
+						// 已删除的技能不应出现在任何请求里（删除彻底、无残留）
+						for (String gone : new String[]{
+								"dig-down-staircase", "mine-and-collect", "regroup-with-owner"}) {
+							if (system.contains(gone)) {
+								throw new AssertionError("已删除技能不应出现在请求 system 中: " + gone);
+							}
+						}
+					}
+					if (!allSystems.toString().contains("# Skills")) {
+						throw new AssertionError("system 应含 # Skills 大节");
+					}
+					if (!allSystems.toString().contains("## gather-wood")) {
+						throw new AssertionError("system 应注入 ## gather-wood 技能小节");
+					}
+					if (!allSystems.toString().contains("## craft-toolchain")) {
+						throw new AssertionError("system 应注入 ## craft-toolchain 技能小节");
+					}
+					// 清理
+					com.swaydy.opencraft.assistant.AssistantFacade.dismissAllFor(player);
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/** 从 mock 服务器 GET /v1/requests 拉取最近收到的请求体列表（本地往返，毫秒级）。 */
+	private static java.util.List<com.google.gson.JsonObject> fetchMockRequests(String url) {
+		try {
+			java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+					.connectTimeout(java.time.Duration.ofSeconds(5)).build();
+			java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+					.uri(java.net.URI.create(url)).GET()
+					.timeout(java.time.Duration.ofSeconds(10)).build();
+			java.net.http.HttpResponse<String> resp = client.send(req,
+					java.net.http.HttpResponse.BodyHandlers.ofString());
+			if (resp.statusCode() != 200) {
+				throw new AssertionError("拉取 mock 请求失败: HTTP " + resp.statusCode());
+			}
+			com.google.gson.JsonObject obj =
+					com.google.gson.JsonParser.parseString(resp.body()).getAsJsonObject();
+			java.util.List<com.google.gson.JsonObject> out = new java.util.ArrayList<>();
+			for (com.google.gson.JsonElement e : obj.getAsJsonArray("requests")) {
+				out.add(e.getAsJsonObject());
+			}
+			return out;
+		} catch (Exception e) {
+			throw new AssertionError("GET " + url + " 失败: " + e, e);
+		}
 	}
 
 	/**
@@ -1514,6 +1645,152 @@ public class OpenCraftGameTests {
 	}
 
 	/**
+	 * 验证 player_teleport 工具（玩家形态助手瞬移到指定坐标，同维度）：
+	 * 1. 目标在 maxDistance 缰绳内 → 同步传送到位（位置精确等于目标落点）；
+	 * 2. 目标超出缰绳（默认 64 格）→ 拒绝（"too far"），位置不变；
+	 * 3. 先 player_goto 再 player_teleport → 传送取消在途移动，bot 停在传送点不回走。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 400)
+	public void playerTeleportTool(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		// 7×7 石砖平台（相对 y=0 实心，y≥1 空气）：bot 与传送目标都站在 y=1 空气层上
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		BlockPos blockPos = new BlockPos(4, 1, 1); // 配置方块也放在平台上
+		helper.setBlock(blockPos, ModBlocks.AI_LOGO_BLOCK.defaultBlockState());
+		AiLogoBlockEntity blockEntity = helper.getBlockEntity(blockPos, AiLogoBlockEntity.class);
+		if (blockEntity == null) {
+			throw new AssertionError("配置方块实体未创建");
+		}
+		AiBlockConfig cfg = blockEntity.getConfig();
+		cfg.baseUrl = "http://127.0.0.1:18923/v1";
+		cfg.apiKey = "test-key-123";
+		cfg.model = "mock-model";
+		blockEntity.markConfigChanged();
+
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		net.minecraft.server.MinecraftServer server = level.getServer();
+		GlobalPos bindPos = GlobalPos.of(level.dimension(), helper.absolutePos(blockPos));
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(2.5, 1, 2.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.AiAssistant summoned =
+							AiCompanionService.summonFor(player, bindPos);
+					if (!(summoned instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot)) {
+						throw new AssertionError("召唤出的助手应是玩家形态，实际 "
+								+ (summoned == null ? "null" : summoned.getClass().getSimpleName()));
+					}
+					// 模拟"任务执行中"（工具直接调用不经 AgentRuntime）：关闭跟随，
+					// 防止 keepSafeState 的跟随逻辑把 bot 拉回玩家身边干扰位置断言
+					bot.setFollowing(false);
+				})
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("玩家形态助手不存在");
+					}
+					com.swaydy.opencraft.plugins.ToolDefinition tp =
+							com.swaydy.opencraft.agent.AgentRegistry.agent("general_agent").toolMap()
+									.get("player_teleport");
+					if (tp == null) {
+						throw new AssertionError("general_agent 预设应提供 player_teleport 工具");
+					}
+					ToolContext tctx = new ToolContext(server, bot, player, level);
+
+					// 1) 传送到平台上的合法落点（相对 (6,1,6)：空气+空气+脚下石砖）
+					bot.setPos(playerPos.x, playerPos.y, playerPos.z + 4); // (2.5,1,6.5)
+					BlockPos tp1 = helper.absolutePos(new BlockPos(6, 1, 6));
+					JsonObject args1 = new JsonObject();
+					args1.addProperty("x", tp1.getX());
+					args1.addProperty("y", tp1.getY());
+					args1.addProperty("z", tp1.getZ());
+					ToolResult r1 = tp.executor().execute(tctx, args1);
+					if (!r1.ok()) {
+						throw new AssertionError("player_teleport 应成功: " + r1.message());
+					}
+					if (!bot.blockPosition().equals(tp1)) {
+						throw new AssertionError("传送后应精确落在 " + tp1 + "，实际 " + bot.blockPosition());
+					}
+
+					// 2) 目标超出 maxDistance（默认 64）→ 拒绝，位置不变
+					BlockPos far = tp1.offset(0, 0, 100);
+					JsonObject args2 = new JsonObject();
+					args2.addProperty("x", far.getX());
+					args2.addProperty("y", far.getY());
+					args2.addProperty("z", far.getZ());
+					ToolResult r2 = tp.executor().execute(tctx, args2);
+					if (r2.ok() || !r2.message().contains("too far")) {
+						throw new AssertionError("超距传送应被拒绝（too far），实际 " + r2.message());
+					}
+					if (!bot.blockPosition().equals(tp1)) {
+						throw new AssertionError("被拒绝后位置不应改变，实际 " + bot.blockPosition());
+					}
+
+					// 3) 先 player_goto（启动在途移动）再 player_teleport →
+					//    传送取消在途移动，bot 停在传送点不回走
+					com.swaydy.opencraft.plugins.ToolDefinition gotoDef =
+							com.swaydy.opencraft.agent.AgentRegistry.agent("general_agent").toolMap()
+									.get("player_goto");
+					if (gotoDef == null) {
+						throw new AssertionError("general_agent 预设应提供 player_goto 工具");
+					}
+					BlockPos g1 = helper.absolutePos(new BlockPos(7, 1, 7));
+					JsonObject argsG = new JsonObject();
+					argsG.addProperty("x", g1.getX());
+					argsG.addProperty("y", g1.getY());
+					argsG.addProperty("z", g1.getZ());
+					ToolResult rg = gotoDef.executor().execute(tctx, argsG);
+					if (!rg.ok()) {
+						throw new AssertionError("player_goto 应启动: " + rg.message());
+					}
+					if (!bot.movement().isMoving()) {
+						throw new AssertionError("player_goto 后应有在途移动目标");
+					}
+					BlockPos tp2 = helper.absolutePos(new BlockPos(2, 1, 2));
+					JsonObject args3 = new JsonObject();
+					args3.addProperty("x", tp2.getX());
+					args3.addProperty("y", tp2.getY());
+					args3.addProperty("z", tp2.getZ());
+					ToolResult r3 = tp.executor().execute(tctx, args3);
+					if (!r3.ok()) {
+						throw new AssertionError("goto 在途时 player_teleport 应成功: " + r3.message());
+					}
+					if (bot.movement().isMoving()) {
+						throw new AssertionError("传送后应取消在途移动（不回走）");
+					}
+					if (!bot.blockPosition().equals(tp2)) {
+						throw new AssertionError("传送后应停在 " + tp2 + "，实际 " + bot.blockPosition());
+					}
+				})
+				.thenIdle(10)
+				.thenExecute(() -> {
+					// 过 10 tick 确认 bot 没有被旧移动目标拉回去（停住不动）
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("玩家形态助手不存在");
+					}
+					BlockPos tp2 = helper.absolutePos(new BlockPos(2, 1, 2));
+					if (!bot.blockPosition().equals(tp2)) {
+						throw new AssertionError("传送后 bot 不应被旧目标拉走，实际 " + bot.blockPosition());
+					}
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bot);
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
 	 * 验证玩家形态助手的 bot 式移动物理（PlayerMovementController）：
 	 * 1. 移动时会朝向目标方向（yRot 平滑转向，不再侧滑）；
 	 * 2. 走出平台边缘后受重力下坠（不依赖可能陈旧的 onGround 标志，不会浮空）；
@@ -1887,7 +2164,7 @@ public class OpenCraftGameTests {
 	 * 2. 中断（或第一次已结束时）随后立刻再提问，不再被“正忙”拒绝，能收到第二条的回复。
 	 * 核心断言是「第二条提问一定被处理并得到回复」——这是忙锁已释放的确定性契约。
 	 */
-	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 300)
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 4000)
 	public void agentInterruptReleasesLoop(GameTestHelper helper) {
 		dismissAllPlayerBots();
 		ServerPlayer player = helper.makeMockServerPlayerInLevel();
@@ -1968,7 +2245,7 @@ public class OpenCraftGameTests {
 	 * 4. 等指令完成（历史 ≥2 条，loop 收尾）→ 回到跟随（isFollowing()==true）；
 	 * 5. 再次移开玩家 → bot 重新跟上来（跟随恢复）。
 	 */
-	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 500)
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 4000)
 	public void playerAssistantFollowMode(GameTestHelper helper) {
 		dismissAllPlayerBots();
 		ServerPlayer player = helper.makeMockServerPlayerInLevel();
@@ -2096,5 +2373,203 @@ public class OpenCraftGameTests {
 					AiCompanionService.resetAllHistory(player);
 					helper.succeed();
 				});
+	}
+
+	/**
+	 * 循环事件模块（loop 包）端到端验证：heal_aura（治疗光环）最小实现。
+	 * 1. 召唤助手绑定方块 → heal_aura 循环实例自动启动（LoopEngine.isRunning 为真）;
+	 * 2. 主人受伤（生命 10/20,食物 5 抑制原版自然回血）→ 每 ~40 tick 回 1 点血,
+	 *    轮询等到生命回升;
+	 * 3. 等到满血 → persistent 循环只结束本轮、实例仍在运行（闲置监视）;
+	 * 4. 送走助手 → 循环实例停止。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 2000)
+	public void healAuraLoopHealsOwner(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		// 铺平台 + 放 AI 徽标方块（heal 不调 LLM,配置随意）
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		ResourceKey<net.minecraft.world.level.Level> dimension = player.level().dimension();
+		BlockPos absPos = helper.absolutePos(blockPos);
+		GlobalPos bindPos = GlobalPos.of(dimension, absPos);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 1) 召唤（绑定最近的未绑定方块）→ 下一 tick 进入查找表
+					if (com.swaydy.opencraft.assistant.AssistantFacade.summonNearest(player) == null) {
+						throw new AssertionError("召唤助手失败");
+					}
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(helper.getLevel(), bindPos) == null) {
+						throw new AssertionError("召唤后应绑定助手到方块");
+					}
+					// 召唤即自动启动循环事件
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos, "heal_aura")) {
+						throw new AssertionError("召唤后 heal_aura 循环实例应已启动");
+					}
+					// 2) 受伤到 10/20;食物 5:低于 18 无自然回血、高于 0 无饥饿掉血,
+					//    确保只有治疗光环在回血
+					player.setHealth(10.0F);
+					player.getFoodData().setFoodLevel(5);
+				})
+				.thenWaitUntil(() -> {
+					// 3) 每 ~40 tick 回 1 点血 → 轮询等到生命回升
+					if (player.getHealth() <= 10.0F) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待治疗光环生效（当前生命 " + player.getHealth() + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 4) 等到满血（监测函数 STOP 结束本轮）
+					if (player.getHealth() < player.getMaxHealth()) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待治疗到满血（当前生命 " + player.getHealth() + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 5) 满血后 persistent 循环只闲置不消亡;且有迭代记录
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos, "heal_aura")) {
+						throw new AssertionError("满血后 persistent 循环应仍在运行（闲置监视）");
+					}
+					if (com.swaydy.opencraft.loop.LoopEngine.status().stream()
+							.noneMatch(s -> bindPos.equals(s.anchor()) && s.iteration() > 0)) {
+						throw new AssertionError("循环实例应有治疗迭代记录");
+					}
+					// 6) 送走助手 → 循环停止
+					com.swaydy.opencraft.assistant.AiAssistant bound =
+							com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(helper.getLevel(), bindPos);
+					if (bound == null) {
+						throw new AssertionError("助手不存在,无法送走");
+					}
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bound);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos, "heal_aura")) {
+						throw new AssertionError("送走助手后 heal_aura 循环实例应停止");
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 验证配置界面「循环事件开关」的服务器端行为（配置保存即时生效）：
+	 * 1. 召唤助手绑定方块 → heal_aura 循环实例自动启动；
+	 * 2. 保存 enabledLoops=[]（全部关闭）→ 已绑定方块的循环实例立即停止；
+	 * 3. 保存 enabledLoops=["heal_aura"]（重新开启）→ 循环实例重新启动；
+	 * 4. 送走助手 → 全部循环停止。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 400)
+	public void configLoopToggleStartsAndStops(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		// 铺平台 + 放 AI 徽标方块（heal 不调 LLM，配置随意）
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		ResourceKey<net.minecraft.world.level.Level> dimension = player.level().dimension();
+		BlockPos absPos = helper.absolutePos(blockPos);
+		GlobalPos bindPos = GlobalPos.of(dimension, absPos);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 保存配置需要 op
+					net.minecraft.server.players.NameAndId nameAndId =
+							new net.minecraft.server.players.NameAndId(player.getGameProfile());
+					player.level().getServer().getPlayerList().op(nameAndId);
+					// 1) 召唤（绑定最近的未绑定方块）→ 下一 tick 进入查找表
+					if (com.swaydy.opencraft.assistant.AssistantFacade.summonNearest(player) == null) {
+						throw new AssertionError("召唤助手失败");
+					}
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(helper.getLevel(), bindPos) == null) {
+						throw new AssertionError("召唤后应绑定助手到方块");
+					}
+					// 召唤即自动启动循环事件
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos, "heal_aura")) {
+						throw new AssertionError("召唤后 heal_aura 循环实例应已启动");
+					}
+					// 2) 保存全部关闭（enabledLoops 为空 = 显式全关）→ 循环应立即停止
+					AiConfigData disabled = new AiConfigData(
+							blockEntity(helper, absPos).getConfig().toData().baseUrl(), "", false, false,
+							"mock-model", 0.8, 20, 15, "zh-CN",
+							64.0, 1.0, "小智", "general_agent", java.util.List.of());
+					AiConfigHandler.save(player, absPos, dimension, disabled.toJson());
+				})
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos, "heal_aura")) {
+						throw new AssertionError("关闭后 heal_aura 循环实例应已停止");
+					}
+					// 3) 重新开启（enabledLoops=["heal_aura"]）→ 循环重新启动
+					AiConfigData enabled = new AiConfigData(
+							blockEntity(helper, absPos).getConfig().toData().baseUrl(), "", false, false,
+							"mock-model", 0.8, 20, 15, "zh-CN",
+							64.0, 1.0, "小智", "general_agent", java.util.List.of("heal_aura"));
+					AiConfigHandler.save(player, absPos, dimension, enabled.toJson());
+				})
+				.thenExecute(() -> {
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos, "heal_aura")) {
+						throw new AssertionError("重新开启后 heal_aura 循环实例应运行");
+					}
+					// 4) 送走助手 → 循环停止
+					com.swaydy.opencraft.assistant.AiAssistant bound =
+							com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(helper.getLevel(), bindPos);
+					if (bound == null) {
+						throw new AssertionError("助手不存在,无法送走");
+					}
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bound);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos, "heal_aura")) {
+						throw new AssertionError("送走助手后 heal_aura 循环实例应停止");
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/** 读取绝对坐标处的 AI 徽标方块实体（测试辅助）。 */
+	private static AiLogoBlockEntity blockEntity(GameTestHelper helper, BlockPos absPos) {
+		net.minecraft.world.level.block.entity.BlockEntity be = helper.getLevel().getBlockEntity(absPos);
+		if (!(be instanceof AiLogoBlockEntity logo)) {
+			throw new AssertionError("配置方块实体不存在");
+		}
+		return logo;
 	}
 }

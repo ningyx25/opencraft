@@ -56,26 +56,24 @@ class SkillLibraryTest {
 	}
 
 	@Test
-	void staircaseSkillKeepsCoreContent() {
-		// Fix 4 的核心内容抽查（阶梯挖法 + 反模式说明）
-		Skill staircase = SkillLibrary.builtIns().stream()
-				.filter(s -> s.name().equals("dig-down-staircase"))
+	void woodSkillKeepsCoreContent() {
+		// 核心内容抽查（砍树流程:先 find 再自下而上挖 + 按 picked-up 计数）
+		Skill wood = SkillLibrary.builtIns().stream()
+				.filter(s -> s.name().equals("gather-wood"))
 				.findFirst().orElse(null);
-		assertNotNull(staircase, "dig-down-staircase 应在 index.json 里并被加载");
-		assertTrue(staircase.body().contains("staircase"));
-		assertTrue(staircase.body().contains("1×1"), "正文应说明 1×1 竖井反模式");
+		assertNotNull(wood, "gather-wood 应在 index.json 里并被加载");
+		assertTrue(wood.body().contains("player_find"));
+		assertTrue(wood.body().contains("BOTTOM up"), "正文应说明自下而上挖树干");
 	}
 
 	@Test
-	void allFiveSkillsRenderForAgentToolSet() {
-		// general_agent 绑定 5 个技能 + 工具齐备 → 5 个小节全部渲染
+	void boundSkillsRenderForAgentToolSet() {
+		// general_agent 绑定 2 个技能 + 工具齐备 → 2 个小节全部渲染
 		String fragment = SkillLibrary.promptsFragment(
-				List.of("dig-down-staircase", "gather-wood", "craft-toolchain",
-						"mine-and-collect", "regroup-with-owner"),
+				List.of("gather-wood", "craft-toolchain"),
 				AGENT_TOOLS);
 		assertTrue(fragment.startsWith("# Skills"));
-		for (String name : new String[]{"dig-down-staircase", "gather-wood",
-				"craft-toolchain", "mine-and-collect", "regroup-with-owner"}) {
+		for (String name : new String[]{"gather-wood", "craft-toolchain"}) {
 			assertTrue(fragment.contains("## " + name), "应渲染技能小节: " + name);
 		}
 	}
@@ -93,8 +91,7 @@ class SkillLibraryTest {
 	void boundSkillStillFilteredByRequiredTools() {
 		// 纯聊天工具集（缺全部动作工具）→ 所有绑定的技能都不渲染
 		assertEquals("", SkillLibrary.promptsFragment(
-				List.of("dig-down-staircase", "gather-wood", "craft-toolchain",
-						"mine-and-collect", "regroup-with-owner"),
+				List.of("gather-wood", "craft-toolchain"),
 				Set.of("ask_player", "task_plan")));
 		// 绑定了不存在的名字（拼写错误）→ 静默忽略为空（AgentRegistry.init 有一次性告警）
 		assertEquals("", SkillLibrary.promptsFragment(List.of("typo-name"), AGENT_TOOLS));
@@ -108,6 +105,6 @@ class SkillLibraryTest {
 		List<Skill> skills = SkillLibrary.load(empty);
 		assertTrue(skills.isEmpty(), "索引缺失应为空库而非异常");
 		// 空库（注入库,绕开静态缓存）+ 任意绑定 → 片段为空
-		assertEquals("", SkillLibrary.render(List.of(), List.of("dig-down-staircase"), AGENT_TOOLS));
+		assertEquals("", SkillLibrary.render(List.of(), List.of("gather-wood"), AGENT_TOOLS));
 	}
 }

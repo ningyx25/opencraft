@@ -73,6 +73,10 @@ https://github.com/user-attachments/assets/c4a91eff-5ded-4788-9cba-8ecffc6c3d61
 
 **默认配置烘焙**：将 `OPEN_CRAFT_BASE_URL`、`OPEN_CRAFT_MODEL`、`OPEN_CRAFT_API_KEY` 写入项目根目录 `.env` 后执行 `./gradlew build`，生成的 jar 自带这些默认值（XOR 混淆存储，jar 内无明文）。运行时优先级：JVM 参数 > 环境变量 > jar 内烘焙值 > 代码内置回退。
 
+### 循环事件（触发条件 → 执行事件 → 监测条件）
+
+内置循环事件模块：召唤助手后，其绑定的方块自动运行 `heal_aura`（治疗光环）——当主人生命值不满时每 2 秒恢复 1 点血，直到满血；满血后循环自动闲置，再次受伤时自动重新治疗。可用 `/opencraft loop status` 查看循环状态（框架为通用设计，[条件] + [事件] + [监测函数] 可组合出任意循环事件）。
+
 ---
 
 ## 快速上手
@@ -98,6 +102,7 @@ https://github.com/user-attachments/assets/c4a91eff-5ded-4788-9cba-8ecffc6c3d61
 | `/opencraft status` | 列出全部助手及配置状态 |
 | `/opencraft reset [all]` | 清空最近 / 全部助手的对话记忆 |
 | `/opencraft debug [on\|off]` | 查看或切换调试模式（需 op） |
+| `/opencraft loop status` | 查看循环事件（触发条件→事件→监测）的定义与活动实例 |
 | `/opencraft help` | 显示帮助 |
 
 ---
@@ -136,10 +141,10 @@ src/
 ├── main/java/com/swaydy/opencraft/
 │   ├── OpenCraftMod.java          # 模组入口，注册方块/命令/网络包
 │   ├── agent/                     # Agent 框架：AgentRuntime、预设注册、插件接口
+│   │   └── presets/               # Agent 预设：chat_agent、general_agent
 │   ├── assistant/                 # 助手抽象：AiAssistant 统一接口、AssistantFacade、
 │   │                              #   player/（AiAssistantPlayer 真 ServerPlayer bot）
 │   ├── plugins/                   # 内置插件：助手控制、移动、感知、挖掘、物品、合成
-│   ├── presets/                   # Agent 预设：chat_agent、general_agent
 │   ├── ai/                        # LLM 客户端（SSE 流式 + 工具调用）、配置模型
 │   ├── block/                     # AI 徽标方块与方块实体
 │   ├── command/                   # /opencraft 指令

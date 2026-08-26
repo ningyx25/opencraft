@@ -26,7 +26,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -154,7 +153,11 @@ public final class PlayerAssistantService {
 		// 幂等：已召唤自己的玩家形态助手 → 直接返回；被他人绑定 → 拒绝（一方块一助手）
 		AiAssistantPlayer existing = findBoundTo(block);
 		if (existing != null) {
-			return owner.getUUID().equals(existing.getOwnerUuid()) ? existing : null;
+			if (owner.getUUID().equals(existing.getOwnerUuid())) {
+				ensureLoopStarted(block);
+				return existing;
+			}
+			return null;
 		}
 		AiLogoBlockEntity blockEntity =
 				(AiLogoBlockEntity) blockLevel.getBlockEntity(block.pos());
@@ -171,6 +174,7 @@ public final class PlayerAssistantService {
 						profile.name(), block.pos().toShortString());
 				ACTIVE.put(block, inList);
 				BY_UUID.put(inList.getUUID(), block);
+				ensureLoopStarted(block);
 				return inList;
 			}
 			com.swaydy.opencraft.logging.DebugLog.log("summon",
@@ -217,8 +221,9 @@ public final class PlayerAssistantService {
 		player.setGameMode(GameType.SURVIVAL);
 		player.getAbilities().invulnerable = true;
 
-		ACTIVE.put(block, player);
+				ACTIVE.put(block, player);
 		BY_UUID.put(player.getUUID(), block);
+		ensureLoopStarted(block);
 		AiConfigHandler.syncBoundBlockPoweredState(blockLevel, block);
 		OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 以玩家形态召唤了助手（绑定方块 {}, bot 名 {}）",
 				owner.getName().getString(), block.pos().toShortString(), profile.name());
@@ -234,6 +239,65 @@ public final class PlayerAssistantService {
 	public static UUID assistantUuidFor(GlobalPos block) {
 		return UUID.nameUUIDFromBytes(("opencraft:assistant:" + block.dimension().identifier()
 				+ ":" + block.pos().toShortString()).getBytes(StandardCharsets.UTF_8));
+	}
+
+	/**
+	 * 方块绑定助手后启动其配置中启用的循环事件（如 heal_aura 治疗光环）。
+	 * 幂等（LoopEngine.start 同 anchor+defId 不重复创建）;服务端重启后由再次召唤时重建。
+	 */
+	private static void ensureLoopStarted(GlobalPos block) {
+		if (block == null) {
+			return;
+		}
+		MinecraftServer server = com.swaydy.opencraft.loop.LoopModule.server();
+		if (server == null) {
+			return;
+		}
+		ServerLevel level = server.getLevel(block.dimension());
+		if (level == null) {
+			return;
+		}
+		// 方块实体缺失时用默认配置（未配置 = 所有循环事件启用）
+		AiBlockConfig cfg = new AiBlockConfig();
+		if (level.getBlockEntity(block.pos()) instanceof AiLogoBlockEntity be) {
+			cfg = be.getConfig();
+		}
+		boolean startedAny = false;
+		for (com.swaydy.opencraft.loop.LoopDefinition def
+				: com.swaydy.opencraft.loop.LoopRegistry.all()) {
+			if (cfg.isLoopEnabled(def.id())) {
+				com.swaydy.opencraft.loop.LoopEngine.start(def, block);
+				startedAny = true;
+			}
+		}
+		if (startedAny) {
+			com.swaydy.opencraft.logging.DebugLog.log("loop",
+					"循环事件启动（方块 {}）", block.pos().toShortString());
+		}
+	}
+
+	/**
+	 * 根据方块当前配置同步循环事件实例：启用的启动（幂等），未启用的停止。
+	 * 在配置保存后调用（循环事件开关变化即时生效）。无方块实体时 no-op。
+	 */
+	public static void syncLoopsForBlock(ServerLevel level, GlobalPos block) {
+		if (block == null || level == null) {
+			return;
+		}
+		if (!(level.getBlockEntity(block.pos()) instanceof AiLogoBlockEntity be)) {
+			return;
+		}
+		AiBlockConfig cfg = be.getConfig();
+		for (com.swaydy.opencraft.loop.LoopDefinition def
+				: com.swaydy.opencraft.loop.LoopRegistry.all()) {
+			if (cfg.isLoopEnabled(def.id())) {
+				com.swaydy.opencraft.loop.LoopEngine.start(def, block);
+			} else {
+				com.swaydy.opencraft.loop.LoopEngine.stop(block, def.id());
+			}
+		}
+		com.swaydy.opencraft.logging.DebugLog.log("loop",
+				"循环事件同步（方块 {}）", block.pos().toShortString());
 	}
 
 	/** 在 PlayerList 里找指定 UUID 的玩家（可能是上次进服遗留的 bot）。 */
@@ -257,6 +321,10 @@ public final class PlayerAssistantService {
 			return false;
 		}
 		BY_UUID.remove(p.getUUID());
+		// 解绑：停止该方块的循环事件（治疗光环等）
+		com.swaydy.opencraft.loop.LoopEngine.stopAll(block);
+		com.swaydy.opencraft.logging.DebugLog.log("loop",
+				"循环事件停止: 方块 {}（解绑助手）", block.pos().toShortString());
 		com.swaydy.opencraft.logging.DebugLog.log("summon",
 				"送走玩家形态助手（bot 名 {}，绑定方块 {}）",
 				p.getName().getString(), block.pos().toShortString());

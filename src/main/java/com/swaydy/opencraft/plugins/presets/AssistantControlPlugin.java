@@ -1,7 +1,11 @@
-package com.swaydy.opencraft.plugins;
+package com.swaydy.opencraft.plugins.presets;
 
 import com.google.gson.JsonObject;
 import com.swaydy.opencraft.ai.AiCompanionService;
+import com.swaydy.opencraft.plugins.ToolContext;
+import com.swaydy.opencraft.plugins.ToolDefinition;
+import com.swaydy.opencraft.plugins.ToolResult;
+import com.swaydy.opencraft.plugins.ToolSchema;
 
 import java.util.List;
 

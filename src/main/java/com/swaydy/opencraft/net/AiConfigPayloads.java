@@ -29,8 +29,11 @@ public final class AiConfigPayloads {
 	 * 服务器 → 客户端：某个 AI 徽标方块的配置数据。
 	 * canEdit 表示是否有权限保存；bound/boundByMe 表示该方块当前是否已绑定助手、
 	 * 以及是否绑定的是本玩家自己的助手（配置界面据此把“召唤/送走”合并为同一个按钮）。
+	 * loopStatusJson 为本方块循环事件实例的 JSON 快照
+	 * （[{id, phase, iteration}]，供配置界面显示运行状态）。
 	 */
 	public record AiConfigDataPayload(String json, boolean canEdit, boolean bound, boolean boundByMe,
+	                                  String loopStatusJson,
 	                                  BlockPos pos, ResourceKey<Level> dimension)
 			implements CustomPacketPayload {
 		public static final CustomPacketPayload.Type<AiConfigDataPayload> TYPE =
@@ -41,6 +44,7 @@ public final class AiConfigPayloads {
 						ByteBufCodecs.BOOL, AiConfigDataPayload::canEdit,
 						ByteBufCodecs.BOOL, AiConfigDataPayload::bound,
 						ByteBufCodecs.BOOL, AiConfigDataPayload::boundByMe,
+						ByteBufCodecs.STRING_UTF8, AiConfigDataPayload::loopStatusJson,
 						BlockPos.STREAM_CODEC, AiConfigDataPayload::pos,
 						DIMENSION_CODEC, AiConfigDataPayload::dimension,
 						AiConfigDataPayload::new);

@@ -5,13 +5,14 @@ import com.google.gson.JsonObject;
 
 /**
  * 构建 OpenAI function-calling 的 parameters JSON Schema 的小工具。
+ * public：供 {@code plugins/presets/} 子包的内置插件使用。
  */
-final class ToolSchema {
+public final class ToolSchema {
 	private ToolSchema() {
 	}
 
 	/** 参数定义：properties 里的单项（type + description）。 */
-	static JsonObject prop(String type, String description) {
+	public static JsonObject prop(String type, String description) {
 		JsonObject obj = new JsonObject();
 		obj.addProperty("type", type);
 		obj.addProperty("description", description);
@@ -19,7 +20,7 @@ final class ToolSchema {
 	}
 
 	/** 构造 {type:object, properties:{...}, required:[...]}。 */
-	static JsonObject object(JsonObject properties, String... required) {
+	public static JsonObject object(JsonObject properties, String... required) {
 		JsonObject obj = new JsonObject();
 		obj.addProperty("type", "object");
 		obj.add("properties", properties);

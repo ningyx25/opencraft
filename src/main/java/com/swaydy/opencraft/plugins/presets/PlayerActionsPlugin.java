@@ -1,9 +1,14 @@
-package com.swaydy.opencraft.plugins;
+package com.swaydy.opencraft.plugins.presets;
 
 import com.google.gson.JsonObject;
 import com.swaydy.opencraft.agent.ActionEvents;
 import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.assistant.player.AiAssistantPlayer;
+import com.swaydy.opencraft.plugins.ToolArgs;
+import com.swaydy.opencraft.plugins.ToolContext;
+import com.swaydy.opencraft.plugins.ToolDefinition;
+import com.swaydy.opencraft.plugins.ToolResult;
+import com.swaydy.opencraft.plugins.ToolSchema;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
@@ -79,6 +84,10 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		gotoProps.add("x", ToolSchema.prop("integer", "Target X coordinate (absolute, integer)"));
 		gotoProps.add("y", ToolSchema.prop("integer", "Target Y coordinate (absolute, integer)"));
 		gotoProps.add("z", ToolSchema.prop("integer", "Target Z coordinate (absolute, integer)"));
+		JsonObject teleportProps = new JsonObject();
+		teleportProps.add("x", ToolSchema.prop("integer", "Target X coordinate (absolute, integer)"));
+		teleportProps.add("y", ToolSchema.prop("integer", "Target Y coordinate (absolute, integer)"));
+		teleportProps.add("z", ToolSchema.prop("integer", "Target Z coordinate (absolute, integer)"));
 		JsonObject mineProps = new JsonObject();
 		mineProps.add("x", ToolSchema.prop("integer", "Block X coordinate"));
 		mineProps.add("y", ToolSchema.prop("integer", "Block Y coordinate"));
@@ -122,6 +131,14 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 						"Cancel the assistant's current movement and mining, making it stop.",
 						ToolSchema.object(new JsonObject()),
 						this::stopTool),
+				new ToolDefinition("player_teleport",
+						"Instantly teleport the assistant (as a player) to the given absolute coordinates (x,y,z) "
+								+ "in the current dimension. Use this when walking is impractical (steep cliffs, "
+								+ "lava/water gaps, or when player_goto keeps getting stuck). Cancels any current "
+								+ "movement/mining. Synchronous: the teleport happens immediately. "
+								+ "Still bounded by the maxDistance leash from your current position (same limit as player_goto).",
+						ToolSchema.object(teleportProps, "x", "y", "z"),
+						this::teleportTool),
 				new ToolDefinition("player_jump",
 						"Have the assistant jump in place (to hop over 1-block steps/small gaps; can be combined with player_goto "
 								+ "for a running jump; only takes effect when on the ground).",
@@ -184,6 +201,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				You have joined the Minecraft server as a real player: full player inventory, equipment slots, and player-style actions.
 
 				- **`player_goto` / `player_stop`** — walk to coordinates / stop (stop also cancels mining)
+				- **`player_teleport`** — instantly teleport to any coordinates in the current dimension (use it when walking is impractical: cliffs, lava/water, deep underground, or repeated goto stuck); cancels current movement/mining
 				- **`player_jump`** — jump over 1-block steps or small gaps (combine with a movement target for a running jump)
 				- **`player_mine` / `player_place`** — break/place blocks the player way (mining takes real time depending on the tool — pick the right tool; place with `sneak=true` to place against chests/furnaces instead of opening them; drops go straight into the inventory)
 				- **`player_craft`** — craft from inventory materials (same rules as a player; 3×3 needs a crafting table)
@@ -239,6 +257,56 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		a.movement().stop();
 		a.movement().cancelMining(); // player_stop 语义是"全部停下"：连挖掘一起取消
 		return ToolResult.ok("Movement and mining stopped.");
+	}
+
+	/**
+	 * 瞬移到指定坐标（同维度）——player_goto 的"够不到就走不了"的兜底：悬崖/岩浆/
+	 * 水面/深坑等走路难以到达的地方直接传送过去。传送前停掉在途移动/挖掘（与
+	 * teleport_to_player 相同:传送后旧目标已无意义,不停的话 bot 会朝旧目标走回去）;
+	 * 落点经 findSafeSpawnPos 向上找安全位置,避免传进墙里/地下。同步完成,结果立即返回。
+	 */
+	private ToolResult teleportTool(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("Tool player_teleport requires a player-form assistant.");
+		}
+		ToolArgs t = new ToolArgs(args);
+		int x = t.intOf("x", Integer.MIN_VALUE);
+		int y = t.intOf("y", Integer.MIN_VALUE);
+		int z = t.intOf("z", Integer.MIN_VALUE);
+		if (x == Integer.MIN_VALUE || y == Integer.MIN_VALUE || z == Integer.MIN_VALUE) {
+			return ToolResult.error("player_teleport requires integer parameters x, y, z (absolute coordinates).");
+		}
+		double maxDist = a.getConfig().maxDistance;
+		if (a.distanceToSqr(x + 0.5, y + 0.5, z + 0.5) > maxDist * maxDist) {
+			// 与 player_goto 同一根距离缰绳（目标距助手自身当前位置）——文案一致
+			return ToolResult.error("Target is more than " + (int) maxDist
+					+ " blocks from your current position — too far; "
+					+ "move toward it in steps or pick a closer target.");
+		}
+		// 传送前停掉在途移动/挖掘,避免传送后 bot 朝旧目标走回去/继续挖
+		a.movement().stop();
+		a.movement().cancelMining();
+		// 落点向上找安全位置（空气+空气+脚下实体）,防止传进墙里/地下。
+		// ⚠ 用助手自身所在维度扫描（teleportTo 三参重载在 a.level() 内传送）——
+		// 不能扫 ctx.level()：AgentRuntime 构造 ToolContext 时 level 是主人的维度,
+		// 任务执行期间主人可能已跨维度,扫错维度会让落点与实际传送维度不一致
+		if (!(a.level() instanceof ServerLevel level)) {
+			return ToolResult.error("The assistant is not in a server world; cannot teleport.");
+		}
+		Vec3 safe = AiCompanionService.findSafeSpawnPos(level,
+				new Vec3(x + 0.5, y, z + 0.5));
+		a.teleportTo(safe.x, safe.y, safe.z);
+		com.swaydy.opencraft.logging.DebugLog.log("teleport",
+				"玩家形态助手 player_teleport 到 ({},{},{})（安全点 ({},{},{})）",
+				x, y, z, (int) safe.x, (int) safe.y, (int) safe.z);
+		boolean adjusted = Math.abs(safe.x - (x + 0.5)) > 0.01
+				|| Math.abs(safe.y - y) > 0.01
+				|| Math.abs(safe.z - (z + 0.5)) > 0.01;
+		return ToolResult.ok(adjusted
+				? "Teleported to (" + x + "," + y + "," + z + ") — adjusted to the safe spot ("
+						+ (int) safe.x + "," + (int) safe.y + "," + (int) safe.z + ")."
+				: "Teleported to (" + x + "," + y + "," + z + ").");
 	}
 
 	private ToolResult jump(ToolContext ctx, JsonObject args) {
@@ -741,7 +809,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		}
 		// 按物品 ID 路径自动检测（helmet/chestplate/leggings/boots/shield → 对应槽；其余 → 主手）
 		if (!stack.isEmpty()) {
-			String path = stack.getItem().builtInRegistryHolder().key().identifier().getPath();
+			String path = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
 			if (path.contains("helmet") || path.contains("cap") || path.contains("hood")) {
 				return net.minecraft.world.entity.EquipmentSlot.HEAD;
 			}
@@ -951,7 +1019,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		if (recipe instanceof ShapedRecipe shaped) {
 			return shaped.getWidth() > 2 || shaped.getHeight() > 2;
 		}
-		if (recipe instanceof ShapelessRecipe shapeless) {
+		if (recipe instanceof ShapelessRecipe) {
 			return recipe.placementInfo().ingredients().size() > 4;
 		}
 		return false;

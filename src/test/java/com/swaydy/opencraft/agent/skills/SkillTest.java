@@ -18,34 +18,34 @@ class SkillTest {
 
 	private static final String VALID = """
 			---
-			name: dig-down-staircase
-			description: How to descend underground by digging a staircase.
-			requires_tools: player_mine, player_goto
+			name: gather-wood
+			description: How to chop trees and collect wood efficiently.
+			requires_tools: player_find, player_mine
 			---
 
-			# Staircase Digging
+			# Gather Wood
 
-			Never dig a 1x1 shaft straight below while standing beside it.
+			Mine the trunk from the bottom up, one log per player_mine.
 			""";
 
 	@Test
 	void parsesValidFrontmatter() {
 		Skill skill = Skill.parse(VALID);
 		assertNotNull(skill);
-		assertEquals("dig-down-staircase", skill.name());
-		assertEquals("How to descend underground by digging a staircase.", skill.description());
-		assertEquals(java.util.List.of("player_mine", "player_goto"), skill.requiresTools());
-		assertTrue(skill.body().startsWith("# Staircase Digging"));
-		assertTrue(skill.body().endsWith("beside it."), "正文应去首尾空白: " + skill.body());
+		assertEquals("gather-wood", skill.name());
+		assertEquals("How to chop trees and collect wood efficiently.", skill.description());
+		assertEquals(java.util.List.of("player_find", "player_mine"), skill.requiresTools());
+		assertTrue(skill.body().startsWith("# Gather Wood"));
+		assertTrue(skill.body().endsWith("player_mine."), "正文应去首尾空白: " + skill.body());
 	}
 
 	@Test
 	void parsesBracketedListAndCRLF() {
-		String crlf = VALID.replace("\n", "\r\n").replace("player_mine, player_goto",
-				"[player_mine, player_goto]");
+		String crlf = VALID.replace("\n", "\r\n").replace("player_find, player_mine",
+				"[player_find, player_mine]");
 		Skill skill = Skill.parse(crlf);
 		assertNotNull(skill, "CRLF 与 [a, b] 列表写法都应支持");
-		assertEquals(java.util.List.of("player_mine", "player_goto"), skill.requiresTools());
+		assertEquals(java.util.List.of("player_find", "player_mine"), skill.requiresTools());
 	}
 
 	@Test
@@ -71,14 +71,14 @@ class SkillTest {
 		String withExtra = VALID.replace("requires_tools:", "version: 1\nrequires_tools:");
 		Skill skill = Skill.parse(withExtra);
 		assertNotNull(skill, "保留字段之外的键应忽略（向前兼容）");
-		assertEquals(java.util.List.of("player_mine", "player_goto"), skill.requiresTools());
+		assertEquals(java.util.List.of("player_find", "player_mine"), skill.requiresTools());
 	}
 
 	@Test
 	void filtersByAvailableTools() {
 		Skill skill = Skill.parse(VALID);
 		assertNotNull(skill);
-		assertTrue(skill.applicableTo(Set.of("player_mine", "player_goto", "player_find")));
+		assertTrue(skill.applicableTo(Set.of("player_find", "player_mine", "player_goto")));
 		assertFalse(skill.applicableTo(Set.of("player_mine")), "缺任一依赖工具即不适用");
 		assertFalse(skill.applicableTo(null));
 		// 无 requires_tools = 不限工具（纯聊天预设也能用）

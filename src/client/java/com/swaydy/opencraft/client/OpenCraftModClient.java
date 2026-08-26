@@ -28,11 +28,11 @@ public class OpenCraftModClient implements ClientModInitializer {
 					Minecraft minecraft = context.client();
 					if (minecraft.screen instanceof AiConfigScreen screen) {
 						screen.updateData(data, payload.canEdit(), payload.bound(), payload.boundByMe(),
-								payload.pos(), payload.dimension());
+								payload.loopStatusJson(), payload.pos(), payload.dimension());
 					} else {
 						minecraft.setScreen(new AiConfigScreen(
 								data, payload.canEdit(), payload.bound(), payload.boundByMe(),
-								payload.pos(), payload.dimension()));
+								payload.loopStatusJson(), payload.pos(), payload.dimension()));
 					}
 				}));
 

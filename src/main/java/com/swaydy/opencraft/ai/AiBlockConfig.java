@@ -1,7 +1,13 @@
 package com.swaydy.opencraft.ai;
 
+import com.mojang.serialization.Codec;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
+
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * AI 徽标方块中存储的 AI 助手配置（每个方块一份，随方块存档持久化）。
@@ -46,6 +52,40 @@ public final class AiBlockConfig {
 	// 助手行为参数（跟随/待命模式已整体移除，不再有 followDistance/stopDistance/teleportDistance）
 	public double maxDistance = 64.0;
 	public double speed = 1.0;
+
+	/**
+	 * 循环事件的显式启用集合（用户保存过才有效；见 {@link #loopsConfigured}）。
+	 * 每个方块独立控制哪个内置循环事件（如 heal_aura 治疗光环）运行。
+	 */
+	public Set<String> enabledLoops = new LinkedHashSet<>();
+
+	/**
+	 * 是否已保存过循环事件配置（显式用户选择）。
+	 * false（旧存档/新方块默认）= 启用所有已注册的循环事件，向后兼容；
+	 * true = 只启用 {@link #enabledLoops} 中列出的 id（可为空 = 全部关闭）。
+	 */
+	private boolean loopsConfigured = false;
+
+	/**
+	 * 指定 id 的循环事件是否已启用。
+	 * 未保存过配置时默认启用所有循环事件（向后兼容：旧存档保持原有行为）。
+	 */
+	public boolean isLoopEnabled(String id) {
+		return !loopsConfigured || enabledLoops.contains(id);
+	}
+
+	/** 当前生效的循环事件 id 列表（未配置时 = 全部已注册循环事件，供界面渲染与传输）。 */
+	public List<String> effectiveEnabledLoops() {
+		if (!loopsConfigured) {
+			List<String> all = new ArrayList<>();
+			for (com.swaydy.opencraft.loop.LoopDefinition def
+					: com.swaydy.opencraft.loop.LoopRegistry.all()) {
+				all.add(def.id());
+			}
+			return all;
+		}
+		return new ArrayList<>(enabledLoops);
+	}
 
 	/**
 	 * 是否已配置可用的接口（baseUrl 非空）。
@@ -195,7 +235,7 @@ public final class AiBlockConfig {
 				model,
 				temperature, maxHistoryMessages, timeoutSeconds, language,
 				maxDistance, speed,
-				name, agent);
+				name, agent, effectiveEnabledLoops());
 	}
 
 	/** 用编辑器传来的数据覆盖本配置（apiKey 仅在 apiKeyChanged 时更新）。 */
@@ -219,6 +259,20 @@ public final class AiBlockConfig {
 		// 跟随/待命模式已整体移除：followDistance/stopDistance/teleportDistance 不再使用
 		maxDistance = clamp(data.maxDistance(), 8.0, 512.0, 64.0);
 		speed = clamp(data.speed(), 0.1, 5.0, 1.0);
+
+		// 循环事件开关：保存即视为显式配置（此后只启用列表中的 id，空列表 = 全部关闭）；
+		// 只保留 LoopRegistry 中已注册的 id（未知 id 静默过滤）
+		loopsConfigured = true;
+		enabledLoops = new LinkedHashSet<>();
+		List<String> raw = data.enabledLoops();
+		if (raw != null) {
+			for (String id : raw) {
+				if (id != null && !id.isBlank()
+						&& com.swaydy.opencraft.loop.LoopRegistry.def(id) != null) {
+					enabledLoops.add(id);
+				}
+			}
+		}
 	}
 
 	public void saveAdditional(ValueOutput output) {
@@ -233,6 +287,14 @@ public final class AiBlockConfig {
 		output.putString("Agent", agent);
 		output.putDouble("MaxDistance", maxDistance);
 		output.putDouble("Speed", speed);
+		output.putBoolean("LoopsConfigured", loopsConfigured);
+		// 空集合不写列表（加载时按缺失处理，配合 LoopsConfigured 区分"全部关闭"）
+		if (!enabledLoops.isEmpty()) {
+			ValueOutput.TypedOutputList<String> loops = output.list("EnabledLoops", Codec.STRING);
+			for (String id : enabledLoops) {
+				loops.add(id);
+			}
+		}
 	}
 
 	public void loadAdditional(ValueInput input) {
@@ -251,6 +313,14 @@ public final class AiBlockConfig {
 		agent = input.getStringOr("Agent", "general_agent");
 		maxDistance = input.getDoubleOr("MaxDistance", 64.0);
 		speed = input.getDoubleOr("Speed", 1.0);
+		// 循环事件开关：旧存档无该标签 → 未配置 = 所有内置循环事件启用（向后兼容）
+		loopsConfigured = input.getBooleanOr("LoopsConfigured", false);
+		enabledLoops = new LinkedHashSet<>();
+		for (String id : input.listOrEmpty("EnabledLoops", Codec.STRING)) {
+			if (id != null && !id.isBlank()) {
+				enabledLoops.add(id);
+			}
+		}
 	}
 
 	private static double clamp(double value, double min, double max, double fallback) {

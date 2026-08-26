@@ -66,6 +66,13 @@ public final class AiConfigHandler {
 			return;
 		}
 		blockEntity.applyData(data);
+		// 循环事件开关变化即时生效：该方块已绑定助手时，同步启动/停止对应的循环实例
+		ServerLevel saveLevel = player.level().getServer().getLevel(dimension);
+		GlobalPos saveBindPos = GlobalPos.of(dimension, pos);
+		if (saveLevel != null && AssistantFacade.isConfigBlockBound(saveLevel, saveBindPos)) {
+			com.swaydy.opencraft.assistant.player.PlayerAssistantService.syncLoopsForBlock(
+					saveLevel, saveBindPos);
+		}
 		OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 更新了方块({})的 AI 配置",
 				player.getName().getString(), pos.toShortString());
 		com.swaydy.opencraft.logging.DebugLog.log("config",
@@ -333,12 +340,38 @@ public final class AiConfigHandler {
 			boundByMe = bound && boundAssistant.getOwnerUuid() != null
 					&& boundAssistant.getOwnerUuid().equals(player.getUUID());
 		}
+		String loopStatusJson = loopStatusJson(level, pos, dimension);
 		try {
 			ServerPlayNetworking.send(player,
 					new AiConfigPayloads.AiConfigDataPayload(
-							data.toJson(), canEdit, bound, boundByMe, pos, dimension));
+							data.toJson(), canEdit, bound, boundByMe,
+							loopStatusJson, pos, dimension));
 		} catch (Exception e) {
 			OpenCraftMod.LOGGER.debug("[OpenCraft] 发送 AI 配置数据失败（可能是模拟连接）: {}", e.toString());
 		}
+	}
+
+	/**
+	 * 本方块活动循环事件实例的 JSON 快照（[{id, phase, iteration}]）。
+	 * 供配置界面第 3 页显示每个循环事件“运行中/已停止、阶段、迭代次数”。
+	 * 无实例时返回 "[]"。
+	 */
+	private static String loopStatusJson(ServerLevel level, BlockPos pos, ResourceKey<Level> dimension) {
+		com.google.gson.JsonArray array = new com.google.gson.JsonArray();
+		if (level != null) {
+			GlobalPos anchor = GlobalPos.of(dimension, pos);
+			for (com.swaydy.opencraft.loop.LoopStatus st
+					: com.swaydy.opencraft.loop.LoopEngine.status()) {
+				if (!anchor.equals(st.anchor())) {
+					continue;
+				}
+				com.google.gson.JsonObject obj = new com.google.gson.JsonObject();
+				obj.addProperty("id", st.defId());
+				obj.addProperty("phase", st.phase().name());
+				obj.addProperty("iteration", st.iteration());
+				array.add(obj);
+			}
+		}
+		return array.toString();
 	}
 }

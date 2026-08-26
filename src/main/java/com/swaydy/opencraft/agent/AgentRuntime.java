@@ -599,7 +599,31 @@ public final class AgentRuntime {
 	// 一轮循环（带重试）
 	// ------------------------------------------------------------------
 
+	/**
+	 * 发起一轮循环（LLM 请求 + 回复处理）。
+	 *
+	 * <p>每轮重建 system 会读取世界状态（坐标/方块/实体/群系）——必须在服务端线程执行：
+	 * 从工作线程（EXECUTOR）直接读 ServerLevel 会与服务端 tick 争抢区块锁（gametest 冲刺
+	 * tick 下会几乎永久阻塞——round 2 的 system 重建因此卡死）。已在服务端线程（第 0 轮
+	 * startLoop 路径）则直接执行,否则排队回服务端线程。</p>
+	 */
 	private static void runRound(LoopContext ctx, int round) {
+		if (ctx == null || ctx.cancelled) {
+			return;
+		}
+		MinecraftServer server = ctx.player.level().getServer();
+		if (server == null || server.isStopped()) {
+			return;
+		}
+		if (server.isSameThread()) {
+			doRunRound(ctx, round);
+		} else {
+			runOnServer(server, () -> doRunRound(ctx, round));
+		}
+	}
+
+	/** 在服务端线程上执行一轮循环（system 重建 + 请求发起）。 */
+	private static void doRunRound(LoopContext ctx, int round) {
 		if (ctx == null || ctx.cancelled) {
 			// 已被中断:不再发起下一轮（RUNNING/LIVE 已由 interrupt 清理）
 			return;

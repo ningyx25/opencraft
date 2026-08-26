@@ -1,8 +1,8 @@
-package com.swaydy.opencraft.presets;
+package com.swaydy.opencraft.agent.presets;
 
-import com.swaydy.opencraft.agent.AgentDefinition;
-import com.swaydy.opencraft.plugins.AssistantControlPlugin;
-import com.swaydy.opencraft.plugins.PlayerActionsPlugin;
+import com.swaydy.opencraft.plugins.presets.AssistantControlPlugin;
+import com.swaydy.opencraft.plugins.presets.AssistantPlugin;
+import com.swaydy.opencraft.plugins.presets.PlayerActionsPlugin;
 
 import java.util.List;
 
@@ -18,10 +18,7 @@ import java.util.List;
  * Assistant State 每轮自动提供,定向找坐标才用 player_find；外加基础控制
  * （teleport_to_player 传送到主人身边）。maxToolRounds=250：多步任务预算。
  */
-public final class GeneralAgent {
-	private GeneralAgent() {
-	}
-
+public final class GeneralAgent extends BaseAgent {
 	/** general 预设的人设提示词（“读上下文观察→计划→行动→读上下文确认”，以玩家身份行动;自带 # 大节）。 */
 	private static final String PERSONA = """
 			# Action Guidelines
@@ -34,7 +31,7 @@ public final class GeneralAgent {
 				- Movement/mining/placing are asynchronous commands: after calling one, the loop pauses automatically and the real outcome (arrival / mining result / picked-up items) arrives as an [Event] message — wait for it and never re-issue the same command while waiting.
 				- While the task plan still has unfinished steps, or an async action (walking/mining/placing) is still in progress, do NOT end your turn with a plain-text reply — the task would be aborted. Keep acting with tools; only reply with plain text when every step is completed or you honestly cannot proceed.
 				- To mine a block, call `player_mine` directly with its coordinates — the assistant walks there and mines automatically; don't `player_goto` there first.
-				- Follow the built-in skills listed under `# Skills` in the context — they are proven procedures for common tasks (e.g. descending underground while mining); use them instead of improvising.
+				- Follow the built-in skills listed under `# Skills` in the context — they are proven procedures for common tasks; use them instead of improvising.
 			- Tool results begin with `[tool success/failure]`: read that marker first; on failure analyze why and try a different approach — never call the same tool repeatedly with identical parameters.
 			- At most 6 tools per round; wait for the results after calling, don't fire off many identical calls at once.
 			- When you need exact coordinates of a specific target (beyond the nearby context), use `player_find` — don't guess.
@@ -44,16 +41,35 @@ public final class GeneralAgent {
 			- Serve only the owner and never harm their interests: don't attack players, don't break the owner's functional blocks/buildings, don't give items to others.
 			- When something can't be done (missing materials, blocked path, can't win a fight), honestly tell the owner and suggest alternatives — don't fake success.""";
 
-	public static AgentDefinition create() {
-		return new AgentDefinition(
-				"general_agent",
-				"agent.opencraft.general",
-				List.of(new AssistantControlPlugin(), new PlayerActionsPlugin()),
-				PERSONA,
-				250,
-				// 绑定的内置技能（skills/index.json 登记;未绑定的不注入）——
-				// 生存玩家视角:挖矿下沉/砍树/工具链合成/定量采集/回到主人身边
-				List.of("dig-down-staircase", "gather-wood", "craft-toolchain",
-						"mine-and-collect", "regroup-with-owner"));
+	@Override
+	public String id() {
+		return "general_agent";
+	}
+
+	@Override
+	public String displayName() {
+		return "agent.opencraft.general";
+	}
+
+	@Override
+	public List<AssistantPlugin> plugins() {
+		return List.of(new AssistantControlPlugin(), new PlayerActionsPlugin());
+	}
+
+	@Override
+	public String personaPrompt() {
+		return PERSONA;
+	}
+
+	@Override
+	public int maxToolRounds() {
+		return 250;
+	}
+
+	@Override
+	public List<String> skills() {
+		// 绑定的内置技能（skills/index.json 登记;未绑定的不注入）——
+		// 生存玩家视角:砍树 / 工具链合成
+		return List.of("gather-wood", "craft-toolchain");
 	}
 }

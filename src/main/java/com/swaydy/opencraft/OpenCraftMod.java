@@ -60,6 +60,9 @@ public class OpenCraftMod implements ModInitializer {
 		// AI 插件系统 + Agent 预设注册表（插件、预设、agentic loop）
 		com.swaydy.opencraft.agent.AgentRegistry.init();
 
+		// 循环事件模块：注册内置循环事件 + 挂服务端 tick / 生命周期
+		com.swaydy.opencraft.loop.LoopModule.init();
+
 		// /opencraft 指令
 		ModCommands.register();
 

@@ -1,11 +1,11 @@
 package com.swaydy.opencraft.agent;
 
-import com.swaydy.opencraft.plugins.AssistantPlugin;
+import com.swaydy.opencraft.plugins.presets.AssistantPlugin;
 
 import com.swaydy.opencraft.OpenCraftMod;
 import com.swaydy.opencraft.ai.AiBlockConfig;
-import com.swaydy.opencraft.presets.ChatAgent;
-import com.swaydy.opencraft.presets.GeneralAgent;
+import com.swaydy.opencraft.agent.presets.ChatAgent;
+import com.swaydy.opencraft.agent.presets.GeneralAgent;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -36,14 +36,14 @@ public final class AgentRegistry {
 			return;
 		}
 		initialized = true;
-		registerPlugin(new com.swaydy.opencraft.plugins.AssistantControlPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.presets.AssistantControlPlugin());
 		// 玩家形态插件：假玩家（ServerPlayer 客户端形态）的真实玩家动作。
 		// 注意：插件只是“能力单元”；身体形态（玩家 bot）不由预设决定——
 		// 助手一律以真正的 ServerPlayer 身份进服，预设只装配 LLM 可调用的工具。
-		registerPlugin(new com.swaydy.opencraft.plugins.PlayerActionsPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.presets.PlayerActionsPlugin());
 
-		registerAgent(ChatAgent.create());
-		registerAgent(GeneralAgent.create());
+		registerAgent(new ChatAgent().definition());
+		registerAgent(new GeneralAgent().definition());
 		// 一次性校验各预设绑定的技能名真实存在（防拼写错误导致技能静默不注入）
 		validateBoundSkills();
 	}
@@ -119,7 +119,7 @@ public final class AgentRegistry {
 					id);
 		}
 		AgentDefinition def = AGENTS.get(DEFAULT_AGENT_ID);
-		return def != null ? def : GeneralAgent.create();
+		return def != null ? def : new GeneralAgent().definition();
 	}
 
 	/** 默认 Agent 预设 id（无配置/未知时使用）。 */

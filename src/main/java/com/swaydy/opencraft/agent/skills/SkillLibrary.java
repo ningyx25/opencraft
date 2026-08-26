@@ -17,8 +17,8 @@ import java.util.Set;
  *
  * <p><b>资源布局</b>（jar 内打不进目录枚举,用索引文件列清单）：
  * <pre>
- * skills/index.json                  —— ["dig-down-staircase", ...]
- * skills/dig-down-staircase/SKILL.md —— frontmatter(name/description/requires_tools) + 正文
+ * skills/index.json                  —— ["gather-wood", "craft-toolchain", ...]
+ * skills/gather-wood/SKILL.md —— frontmatter(name/description/requires_tools) + 正文
  * </pre>
  *
  * <p><b>注入方式</b>：{@code promptsFragment(绑定列表, 可用工具集)} 渲染 {@code # Skills}

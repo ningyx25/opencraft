@@ -1,4 +1,7 @@
-package com.swaydy.opencraft.plugins;
+package com.swaydy.opencraft.plugins.presets;
+
+import com.swaydy.opencraft.plugins.ToolContext;
+import com.swaydy.opencraft.plugins.ToolDefinition;
 
 import java.util.List;
 

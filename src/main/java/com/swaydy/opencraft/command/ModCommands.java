@@ -72,6 +72,9 @@ public final class ModCommands {
 						.executes(ctx -> interrupt(ctx.getSource())))
 				.then(Commands.literal("stop")
 						.executes(ctx -> interrupt(ctx.getSource())))
+				.then(Commands.literal("loop")
+						.then(Commands.literal("status")
+								.executes(ctx -> loopStatus(ctx.getSource()))))
 				.then(Commands.literal("debug")
 						.executes(ctx -> debugStatus(ctx.getSource()))
 						.then(Commands.literal("on")
@@ -291,6 +294,43 @@ public final class ModCommands {
 				"调试模式: " + (com.swaydy.opencraft.logging.DebugLog.isEnabled() ? "开" : "关")
 						+ " | 日志文件: " + com.swaydy.opencraft.logging.DebugLog.logFilePath()), false);
 		return 1;
+	}
+
+	/**
+	 * /opencraft loop status：列出已注册的循环事件定义与当前活动的循环实例
+	 * （只读,无需权限）。实例锚点是绑定方块的坐标。
+	 */
+	private static int loopStatus(CommandSourceStack source) {
+		StringBuilder sb = new StringBuilder();
+		java.util.List<com.swaydy.opencraft.loop.LoopDefinition> defs =
+				com.swaydy.opencraft.loop.LoopRegistry.all();
+		sb.append("已注册的循环事件 (").append(defs.size()).append("):");
+		for (com.swaydy.opencraft.loop.LoopDefinition d : defs) {
+			sb.append("\n  - ").append(d.id()).append(": ").append(d.description());
+		}
+		java.util.List<com.swaydy.opencraft.loop.LoopStatus> active =
+				com.swaydy.opencraft.loop.LoopEngine.status();
+		sb.append("\n活动中的循环实例 (").append(active.size()).append("):");
+		if (active.isEmpty()) {
+			sb.append(" 无（绑定 AI 徽标方块并召唤助手后会自动启动）");
+		}
+		for (com.swaydy.opencraft.loop.LoopStatus s : active) {
+			sb.append("\n  ").append(s.defId())
+					.append(" @ ").append(formatLoopAnchor(s.anchor()))
+					.append(" [").append(s.phase()).append("]")
+					.append(" 已执行 ").append(s.iteration()).append(" 次");
+		}
+		source.sendSuccess(() -> Component.literal(sb.toString()), false);
+		return 1;
+	}
+
+	/** 循环实例锚点的人类可读格式（GlobalPos → 维度(x,y,z);其他对象 → toString）。 */
+	private static String formatLoopAnchor(Object anchor) {
+		if (anchor instanceof GlobalPos gp) {
+			return gp.dimension().identifier().toShortString()
+					+ "(" + gp.pos().toShortString() + ")";
+		}
+		return String.valueOf(anchor);
 	}
 
 	private static int debugSet(CommandSourceStack source, boolean on) {

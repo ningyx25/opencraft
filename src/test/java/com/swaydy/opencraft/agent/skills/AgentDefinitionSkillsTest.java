@@ -29,9 +29,9 @@ class AgentDefinitionSkillsTest {
 
 	@Test
 	void boundListIsCopied() {
-		java.util.ArrayList<String> mutable = new java.util.ArrayList<>(List.of("dig-down-staircase"));
+		java.util.ArrayList<String> mutable = new java.util.ArrayList<>(List.of("gather-wood"));
 		AgentDefinition def = new AgentDefinition("test_agent", "test", null, "persona", 5, mutable);
 		mutable.add("later-mutation");
-		assertEquals(List.of("dig-down-staircase"), def.skills(), "绑定列表应防御性拷贝");
+		assertEquals(List.of("gather-wood"), def.skills(), "绑定列表应防御性拷贝");
 	}
 }

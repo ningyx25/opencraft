@@ -6,16 +6,17 @@ import com.google.gson.JsonPrimitive;
 
 /**
  * 工具参数的小工具：安全地读取 x/y/z、字符串等，避免每个插件重复 try/catch。
+ * public：供 {@code plugins/presets/} 子包的内置插件使用。
  */
-final class ToolArgs {
+public final class ToolArgs {
 	private final JsonObject args;
 
-	ToolArgs(JsonObject args) {
+	public ToolArgs(JsonObject args) {
 		this.args = args == null ? new JsonObject() : args;
 	}
 
 	/** 读取整数坐标分量；缺失/非法返回 fallback。 */
-	int intOf(String key, int fallback) {
+	public int intOf(String key, int fallback) {
 		JsonElement el = args.get(key);
 		if (el == null || !el.isJsonPrimitive()) {
 			return fallback;
@@ -34,7 +35,7 @@ final class ToolArgs {
 	}
 
 	/** 读取字符串参数；缺失/非法返回 fallback。 */
-	String strOf(String key, String fallback) {
+	public String strOf(String key, String fallback) {
 		JsonElement el = args.get(key);
 		if (el == null || !el.isJsonPrimitive()) {
 			return fallback;
@@ -44,7 +45,7 @@ final class ToolArgs {
 	}
 
 	/** 读取布尔参数；缺失/非法返回 fallback（字符串 "true"/"false" 也接受）。 */
-	boolean boolOf(String key, boolean fallback) {
+	public boolean boolOf(String key, boolean fallback) {
 		JsonElement el = args.get(key);
 		if (el == null || !el.isJsonPrimitive()) {
 			return fallback;
@@ -59,7 +60,7 @@ final class ToolArgs {
 		return fallback;
 	}
 
-	boolean has(String key) {
+	public boolean has(String key) {
 		return args.has(key);
 	}
 }
