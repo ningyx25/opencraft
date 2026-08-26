@@ -119,6 +119,30 @@ public final class AgentRuntime {
 	/** 等待动作事件的在途异步动作（按助手绑定方块键控；事件/超时/中断时移除）。 */
 	private static final Map<GlobalPos, PendingAction> PENDING_ACTIONS = new ConcurrentHashMap<>();
 
+	/**
+	 * 工具执行观察者（e2e 评测日志等用）：每轮工具执行完后回调（工具名 + 结果）。
+	 * 观察者不得抛异常（回调内 try/catch 兜底）；注册/移除线程安全。
+	 */
+	public interface ToolListener {
+		void onToolExecuted(String toolName, com.swaydy.opencraft.plugins.ToolResult result);
+	}
+
+	/** 已注册的工具观察者。 */
+	private static final java.util.List<ToolListener> TOOL_LISTENERS =
+			new java.util.concurrent.CopyOnWriteArrayList<>();
+
+	/** 注册工具观察者。 */
+	public static void addToolListener(ToolListener listener) {
+		if (listener != null) {
+			TOOL_LISTENERS.add(listener);
+		}
+	}
+
+	/** 移除工具观察者。 */
+	public static void removeToolListener(ToolListener listener) {
+		TOOL_LISTENERS.remove(listener);
+	}
+
 	private AgentRuntime() {
 	}
 
@@ -1098,6 +1122,14 @@ public final class AgentRuntime {
 					!result.ok()));
 			OpenCraftMod.LOGGER.info("[OpenCraft] 助手为 {} 执行工具 {} → {}",
 					ctx.player.getName().getString(), toolName, result.message());
+			// 通知工具观察者（e2e 评测日志）
+			for (ToolListener l : TOOL_LISTENERS) {
+				try {
+					l.onToolExecuted(toolName, result);
+				} catch (Exception ignored) {
+					// 观察者异常不影响主流程
+				}
+			}
 			// 重复工具调用守卫:连续相同工具+相同参数达到阈值 → 注入提醒打断死循环
 			// （重复 goto 的"再确认"已豁免——那是合法等待,不是失败重试）
 			if (!redundantGoto) {
@@ -1349,6 +1381,14 @@ public final class AgentRuntime {
 				userMessage.length() <= 60 ? userMessage : userMessage.substring(0, 60) + "…");
 		// 恢复循环:达到步数上限走总结轮,否则正常下一轮
 		resumeRound(ctx, pa.nextRound);
+	}
+
+	/**
+	 * 指定助手当前是否正忙（正在处理 agentic loop 任务）。
+	 * 供 E2E 测试模块轮询任务完成状态。
+	 */
+	public static boolean isBusy(GlobalPos key) {
+		return key != null && RUNNING.containsKey(key);
 	}
 
 	/**

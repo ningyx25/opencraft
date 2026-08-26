@@ -460,10 +460,11 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 					+ "(player_hotbar_select) and try again.");
 		}
 		int seconds = Math.max(1, Math.round(1.0F / perTick / 20.0F));
-		// 走到方块旁，到达后按真实玩家的挖掘流程（START → 按工具速度推进 → STOP）;
-		// 启动失败/秒破立即经动作回调上报,正常挖掘由控制器在完成时上报
-		a.movement().moveTo(new Vec3(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5),
-				a.getConfig().speed, true);
+		// 走到方块旁（站在方块上方或旁边，让目标方块在触及范围内），
+		// 到达后开始挖掘；目标不在方块中心（y）而在邻接可站位（y+1），
+		// 避免目标点在方块内部导致移动卡住
+		Vec3 standPos = new Vec3(pos.getX() + 0.5, pos.getY() + 1, pos.getZ() + 0.5);
+		a.movement().moveTo(standPos, a.getConfig().speed, true);
 		a.movement().whenArrived(() -> {
 			int started = a.movement().startMining(a, level, pos);
 			if (started == -1) {

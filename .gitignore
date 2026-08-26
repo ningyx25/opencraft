@@ -41,3 +41,7 @@ hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
+
+# runtime logs (JUnit test output, e2e results, Minecraft logs outside run/)
+
+logs/

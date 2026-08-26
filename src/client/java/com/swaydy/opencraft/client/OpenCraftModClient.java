@@ -17,6 +17,9 @@ import net.minecraft.client.Minecraft;
 public class OpenCraftModClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
+		// 评测截图自动抓取（Xvfb + 真客户端 + --quickPlayMultiplayer 自动进服时启用）
+		ShotAutoCapture.init();
+
 		// 注册双面板助手背包界面（与 MenuType 绑定，原版框架会自动在 S2C 打开包时调用）
 		MenuScreens.register(ModMenuTypes.ASSISTANT_INVENTORY, AssistantInventoryScreen::new);
 

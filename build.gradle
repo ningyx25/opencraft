@@ -42,6 +42,19 @@ loom {
 			vmArg "-Dfabric-api.gametest.filter=${project.findProperty('gametestFilter') ?: 'opencraft:*'}"
 			vmArg '-Dfabric-api.gametest.report-file=build/gametest-results.xml'
 		}
+		// 运行端到端测试（无头真实存档 + 真实 LLM + general_agent）：
+		//   ./gradlew runE2E [-Pe2eTask=chop_tree|all]
+		// 服务器启动后自动运行 e2e 套件并自动退出（见 e2e/E2EHarness.registerAutoRunHook）。
+		e2eServer {
+			server()
+			vmArg "-Dopencraft.e2e.autorun=${project.findProperty('e2eTask') ?: 'all'}"
+			// 可选：-Pe2eHoldMs=<毫秒> 任务跑完后服务器保持运行（真客户端启动慢，
+			// 需要这段时间连上、被粘到助手眼睛、截图）；默认 0 = 立即退出
+			vmArg "-Dopencraft.e2e.holdMs=${project.findProperty('e2eHoldMs') ?: '0'}"
+			// 可选：-Pe2eBaseUrl=http://127.0.0.1:18923/v1 把 e2e 方块 LLM 指向 mock 服务器
+			// （AiBlockConfig.defaultBaseUrl 优先读 -Dopencraft.baseUrl；空值回退正常配置）
+			vmArg "-Dopencraft.baseUrl=${project.findProperty('e2eBaseUrl') ?: ''}"
+		}
 	}
 
 	mods {
@@ -238,4 +251,44 @@ publishing {
 		// The repositories here will be used for publishing your artifact, not for
 		// retrieving dependencies.
 	}
+}
+
+// ------------------------------------------------------------------
+// 端到端测试便捷任务：./gradlew runE2E [-Pe2eTask=chop_tree|all]
+// 在全新真实存档上无头跑 e2e 套件（删 run/world → spawn-protection=0 → runE2EServer）。
+// 服务器跑完套件自动退出；结果见 run/logs/e2e-results.txt。
+// ------------------------------------------------------------------
+tasks.register('cleanE2EWorld') {
+	group = 'opencraft'
+	description = 'Delete run/world for a fresh e2e save'
+	doLast {
+		delete file('run/world')
+		logger.lifecycle('[E2E] 已删除 run/world（全新存档）')
+	}
+}
+
+// 确保 spawn-protection=0（助手非 op，出生点保护圈内不能破坏方块）。
+// 已有文件则替换该行，否则创建最小配置。
+tasks.register('prepareE2EProps') {
+	group = 'opencraft'
+	description = 'Ensure run/server.properties has spawn-protection=0 for e2e'
+	doLast {
+		def props = file('run/server.properties')
+		def lines = []
+		if (props.exists()) {
+			lines = props.readLines('UTF-8')
+		}
+		def filtered = lines.findAll { !it.trim().startsWith('spawn-protection=') && !it.trim().startsWith('online-mode=') }
+		filtered << 'spawn-protection=0'
+		filtered << 'online-mode=false'
+		props.parentFile.mkdirs()
+		props.text = filtered.join('\n') + '\n'
+		logger.lifecycle('[E2E] 已设置 spawn-protection=0 和 online-mode=false')
+	}
+}
+
+tasks.register('runE2E') {
+	group = 'opencraft'
+	description = 'Headless e2e on a fresh real save (fresh world + spawn-protection=0 + run all e2e tasks)'
+	dependsOn 'cleanE2EWorld', 'prepareE2EProps', 'runE2eServer'
 }

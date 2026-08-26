@@ -75,6 +75,13 @@ public final class ModCommands {
 				.then(Commands.literal("loop")
 						.then(Commands.literal("status")
 								.executes(ctx -> loopStatus(ctx.getSource()))))
+				.then(Commands.literal("e2e")
+						.then(Commands.literal("list")
+								.executes(ctx -> e2eList(ctx.getSource())))
+						.then(Commands.literal("run")
+								.then(Commands.argument("task", StringArgumentType.word())
+										.executes(ctx -> e2eRun(ctx.getSource(),
+												StringArgumentType.getString(ctx, "task"))))))
 				.then(Commands.literal("debug")
 						.executes(ctx -> debugStatus(ctx.getSource()))
 						.then(Commands.literal("on")
@@ -331,6 +338,46 @@ public final class ModCommands {
 					+ "(" + gp.pos().toShortString() + ")";
 		}
 		return String.valueOf(anchor);
+	}
+
+	/**
+	 * /opencraft e2e list：列出已注册的端到端测试任务（控制台/玩家均可，无需权限）。
+	 */
+	private static int e2eList(CommandSourceStack source) {
+		StringBuilder sb = new StringBuilder("已注册的端到端测试任务 (").append(
+				com.swaydy.opencraft.e2e.E2ERegistry.all().size()).append("):");
+		for (com.swaydy.opencraft.e2e.E2ETask task
+				: com.swaydy.opencraft.e2e.E2ERegistry.all()) {
+			sb.append("\n  - ").append(task.id()).append(": ").append(task.description());
+		}
+		source.sendSuccess(() -> Component.literal(sb.toString()), false);
+		return 1;
+	}
+
+	/**
+	 * /opencraft e2e run <task|all>：在真实世界里跑端到端测试任务（无头，无需玩家在线）。
+	 * 任务在服务端线程启动，异步等待 agentic loop 完成后验证并报告；结果追加到
+	 * run/logs/e2e-results.txt。自动运行用 -Dopencraft.e2e.autorun=<task|all>。
+	 */
+	private static int e2eRun(CommandSourceStack source, String taskId) {
+		net.minecraft.server.level.ServerLevel level = source.getServer().overworld();
+		if (level == null) {
+			source.sendFailure(Component.literal("主世界不可用"));
+			return 0;
+		}
+		if ("all".equalsIgnoreCase(taskId)) {
+			com.swaydy.opencraft.e2e.E2EHarness.runTasks(level,
+					com.swaydy.opencraft.e2e.E2ERegistry.all(), null);
+			source.sendSuccess(() -> Component.literal("开始运行全部 e2e 任务…（结果见 run/logs/e2e-results.txt）"), false);
+			return 1;
+		}
+		if (com.swaydy.opencraft.e2e.E2ERegistry.byId(taskId) == null) {
+			source.sendFailure(Component.literal("未知任务: " + taskId + "（/opencraft e2e list 查看可用任务）"));
+			return 0;
+		}
+		com.swaydy.opencraft.e2e.E2EHarness.runTask(level, taskId, null);
+		source.sendSuccess(() -> Component.literal("开始运行 e2e 任务 " + taskId + "…（结果见 run/logs/e2e-results.txt）"), false);
+		return 1;
 	}
 
 	private static int debugSet(CommandSourceStack source, boolean on) {
