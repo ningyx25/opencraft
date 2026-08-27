@@ -16,7 +16,13 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-TASKS="chop_tree place_workbench craft_wooden_pickaxe craft_stone_pickaxe mine_stone"
+# 任务列表自动发现：从 e2e/tasks/*.java 的 id() 提取（新增任务无需改本脚本）
+TASKS=$(./gradlew e2eList -q 2>/dev/null || true)
+if [ -z "$TASKS" ]; then
+	echo "[E2E] 无法获取任务列表（./gradlew e2eList 失败）"
+	exit 1
+fi
+echo "[E2E] 任务列表: $(echo "$TASKS" | tr '\n' ' ')"
 PASSED=0
 FAILED=0
 

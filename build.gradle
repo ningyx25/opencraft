@@ -288,6 +288,25 @@ tasks.register('prepareE2EProps') {
 	}
 }
 
+// 列出已注册 e2e 任务 id（供 bin/run_e2e_all.sh 自动发现新任务，无需手动维护列表）
+tasks.register('e2eList') {
+	group = 'opencraft'
+	description = 'List registered e2e task ids (extracted from e2e/tasks/*.java id() methods)'
+	doLast {
+		def dir = file('src/main/java/com/swaydy/opencraft/e2e/tasks')
+		dir.listFiles().findAll { it.name.endsWith('Task.java') }.sort { it.name }.each { f ->
+			def text = f.getText('UTF-8')
+			// 找 id() 方法体里的第一个 return "..."
+			def matcher = (text =~ /id\(\)\s*\{\s*return "([a-z_0-9]+)";/)
+			if (matcher.find()) {
+				println matcher.group(1)
+			} else {
+				logger.warn('[E2E] 未能从 {} 解析任务 id', f.name)
+			}
+		}
+	}
+}
+
 // 单任务：./gradlew runE2E -Pe2eTask=chop_tree（删世界 + 独立服务器 + 跑完退出）
 // 全部任务每任务全新世界：bash bin/run_e2e_all.sh（GradleBuild 不支持嵌套同一项目）
 tasks.register('runE2E') {
