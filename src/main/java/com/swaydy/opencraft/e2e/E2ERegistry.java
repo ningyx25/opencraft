@@ -28,15 +28,12 @@ public final class E2ERegistry {
 		}
 		initialized = true;
 		register(new com.swaydy.opencraft.e2e.tasks.ChopTreeTask());
-		register(new com.swaydy.opencraft.e2e.tasks.PlaceWorkbenchTask());
+		register(new com.swaydy.opencraft.e2e.tasks.CraftWorkbenchTask());
 		register(new com.swaydy.opencraft.e2e.tasks.CraftWoodenPickaxeTask());
 		register(new com.swaydy.opencraft.e2e.tasks.CraftStonePickaxeTask());
-		register(new com.swaydy.opencraft.e2e.tasks.MineStoneTask());
-		register(new com.swaydy.opencraft.e2e.tasks.StoreItemsInChestTask());
-		register(new com.swaydy.opencraft.e2e.tasks.RetrieveFromChestTask());
-		register(new com.swaydy.opencraft.e2e.tasks.OrganizeContainerTask());
-		register(new com.swaydy.opencraft.e2e.tasks.SmeltOreInFurnaceTask());
-		register(new com.swaydy.opencraft.e2e.tasks.AddFuelAndOreToFurnaceTask());
+		register(new com.swaydy.opencraft.e2e.tasks.CraftFurnaceTask());
+		register(new com.swaydy.opencraft.e2e.tasks.SmeltIronAndIronPickaxeTask());
+		register(new com.swaydy.opencraft.e2e.tasks.CraftDiamondPickaxeTask());
 		OpenCraftMod.LOGGER.info("[OpenCraft] 端到端测试模块已注册 {} 个内置任务", TASKS.size());
 	}
 

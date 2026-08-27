@@ -96,4 +96,29 @@ final class TaskScenes {
 		}
 		return pos;
 	}
+
+	/** 在平台上放一个工作台（服务端线程；位置在助手出生点旁）。 */
+	static BlockPos placeWorkbench(E2EContext ctx) {
+		ServerLevel level = ctx.level();
+		BlockPos pos = new BlockPos(ctx.areaOrigin().getX() + 2, ctx.areaOrigin().getY() + 1, ctx.areaOrigin().getZ() + 2);
+		level.setBlock(pos, net.minecraft.world.level.block.Blocks.CRAFTING_TABLE.defaultBlockState(), Block.UPDATE_ALL);
+		return pos;
+	}
+
+	/**
+	 * 在平台面上放一块矿石（y = 平台顶 + 1，放在平台表面而非挖洞埋入，避免挖矿后在
+	 * 平台上留洞导致 bot 掉落）。index 按 3×3 网格散布在平台内（x 偏 5-7、z 偏 -2/0/2，
+	 * 全部在平台边界内，不会靠边掉落）。
+	 */
+	static BlockPos placeOre(E2EContext ctx, net.minecraft.world.level.block.Block ore, int index) {
+		ServerLevel level = ctx.level();
+		int gx = index % 3;
+		int gz = index / 3;
+		int ox = 5 + gx;          // 5, 6, 7
+		int oz = -2 + gz * 2;     // -2, 0, 2
+		BlockPos pos = new BlockPos(ctx.areaOrigin().getX() + ox, ctx.areaOrigin().getY() + 1,
+				ctx.areaOrigin().getZ() + oz);
+		level.setBlock(pos, ore.defaultBlockState(), Block.UPDATE_ALL);
+		return pos;
+	}
 }
