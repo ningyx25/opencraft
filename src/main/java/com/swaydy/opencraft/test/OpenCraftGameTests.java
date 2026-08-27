@@ -54,6 +54,9 @@ import java.util.List;
  *     （原版 E 背包布局：装备槽/2×2 合成/主背包/快捷栏 / 原版合成 / Shift 双向转移 / 助手消失后失效）。
  * 12. healAuraLoopHealsOwner —— 循环事件模块：heal_aura 治疗光环端到端
  *     （召唤绑定自动启动 / 受伤后每 ~40 tick 回 1 点血 / 满血后 persistent 闲置不消亡 / 送走即停止）。
+ * 13. assistantOpensAndUsesChest —— 容器交互端到端（player_container_open 真实右键打开箱子 /
+ *     player_container_list 查看内容 / player_container_take 取出物品 / player_container_put 放入物品 /
+ *     player_container_close 关闭）。
  */
 public class OpenCraftGameTests {
 	/**
@@ -99,6 +102,32 @@ public class OpenCraftGameTests {
 				com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bot);
 			}
 		}
+	}
+
+	/** 按名取 general_agent 的工具定义（拿不到直接失败）。 */
+	private static ToolDefinition agentTool(String name) {
+		ToolDefinition def = com.swaydy.opencraft.agent.AgentRegistry.agent("general_agent")
+				.toolMap().get(name);
+		if (def == null) {
+			throw new AssertionError("general_agent 应提供工具 " + name);
+		}
+		return def;
+	}
+
+	/** 构造 {x,y,z} 参数（容器打开用）。 */
+	private static JsonObject xyzArgs(int x, int y, int z) {
+		JsonObject args = new JsonObject();
+		args.addProperty("x", x);
+		args.addProperty("y", y);
+		args.addProperty("z", z);
+		return args;
+	}
+
+	/** 构造 {item} 参数（容器取/放用）。 */
+	private static JsonObject itemArgs(String item) {
+		JsonObject args = new JsonObject();
+		args.addProperty("item", item);
+		return args;
 	}
 
 	
@@ -1982,6 +2011,157 @@ public class OpenCraftGameTests {
 					if (player.getInventory().countItem(ModBlocks.AI_LOGO_BLOCK.asItem()) < 1) {
 						throw new AssertionError("主人背包应收到 AI 徽标方块");
 					}
+					// 清理
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bot);
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 验证玩家形态助手与容器的真实玩家式交互（player_container_* 工具）：
+	 * 1. 放置一个箱子并预填物品（两栈木板 + 一栈木棍），召唤 bot 到箱子旁；
+	 * 2. player_container_open（真实右键路径 ServerPlayerGameMode.useItemOn）→
+	 *    bot.containerMenu 变成 ChestMenu（27 槽）；
+	 * 3. player_container_list 能看到箱子内容与自己的背包（只读）；
+	 * 4. player_container_take 把箱子里的木板整栈 shift 点击取进背包；
+	 * 5. player_container_put 把背包里的圆石放进箱子；
+	 * 6. player_container_close 关闭容器（containerMenu 复位为 inventoryMenu）。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
+	public void assistantOpensAndUsesChest(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		BlockPos configBlockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, configBlockPos, player);
+		ServerLevel level = (ServerLevel) helper.getLevel();
+		GlobalPos bindPos = GlobalPos.of(level.dimension(), helper.absolutePos(configBlockPos));
+		net.minecraft.server.MinecraftServer server = level.getServer();
+
+		// 箱子放在玩家东侧（bot 站在它旁边即可触及）
+		BlockPos chestRel = new BlockPos(6, 1, 4);
+		helper.setBlock(chestRel, Blocks.CHEST.defaultBlockState());
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 预填箱子：oak_planks×10 + oak_planks×8（两栈）+ stick×8
+					net.minecraft.world.level.block.entity.ChestBlockEntity chest =
+							helper.getBlockEntity(chestRel,
+									net.minecraft.world.level.block.entity.ChestBlockEntity.class);
+					if (chest == null) {
+						throw new AssertionError("箱子方块实体未创建");
+					}
+					chest.setItem(0, new ItemStack(Items.OAK_PLANKS, 10));
+					chest.setItem(1, new ItemStack(Items.OAK_PLANKS, 8));
+					chest.setItem(2, new ItemStack(Items.STICK, 8));
+					chest.setChanged();
+				})
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							(com.swaydy.opencraft.assistant.player.AiAssistantPlayer)
+									AiCompanionService.summonFor(player, bindPos);
+					if (bot == null) {
+						throw new AssertionError("召唤玩家形态助手失败");
+					}
+					// 放到箱子旁边（bot 自然落回平台），背包放 16 个圆石待放进箱子
+					net.minecraft.world.phys.Vec3 botPos = helper.absoluteVec(
+							new net.minecraft.world.phys.Vec3(5.5, 2, 4.5));
+					bot.teleportTo(botPos.x, botPos.y, botPos.z);
+					bot.getInventory().add(new ItemStack(Items.COBBLESTONE, 16));
+				})
+				.thenIdle(10) // 落回地面
+				.thenExecute(() -> {
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (bot == null) {
+						throw new AssertionError("助手不应消失");
+					}
+					BlockPos chestAbs = helper.absolutePos(chestRel);
+
+					// 1) 打开箱子（真实右键路径）
+					ToolResult open = agentTool("player_container_open").executor().execute(
+							new ToolContext(server, bot, player, level),
+							xyzArgs(chestAbs.getX(), chestAbs.getY(), chestAbs.getZ()));
+					if (!open.ok()) {
+						throw new AssertionError("打开箱子应成功: " + open.message());
+					}
+					if (!(bot.containerMenu instanceof net.minecraft.world.inventory.ChestMenu menu)) {
+						throw new AssertionError("打开后 containerMenu 应为 ChestMenu，实际 "
+								+ bot.containerMenu.getClass().getSimpleName());
+					}
+					if (menu.getContainer().getContainerSize() != 27) {
+						throw new AssertionError("单箱子应有 27 槽，实际 "
+								+ menu.getContainer().getContainerSize());
+					}
+
+					// 2) 查看内容（只读，能看到箱子与背包两侧）
+					ToolResult list = agentTool("player_container_list").executor().execute(
+							new ToolContext(server, bot, player, level), new JsonObject());
+					if (!list.ok() || !list.message().contains("oak_planks")
+							|| !list.message().contains("stick")) {
+						throw new AssertionError("列表应显示箱子内容: " + list.message());
+					}
+
+					// 3) 取 oak_planks（整栈 shift 点击，18 全取走）
+					ToolResult take = agentTool("player_container_take").executor().execute(
+							new ToolContext(server, bot, player, level), itemArgs("minecraft:oak_planks"));
+					if (!take.ok() || !take.message().contains("18")) {
+						throw new AssertionError("应取走全部 18 个橡木木板: " + take.message());
+					}
+					if (bot.getInventory().countItem(Items.OAK_PLANKS) != 18) {
+						throw new AssertionError("bot 背包应有 18 个橡木木板，实际 "
+								+ bot.getInventory().countItem(Items.OAK_PLANKS));
+					}
+					int planksLeft = 0;
+					for (int i = 0; i < menu.getContainer().getContainerSize(); i++) {
+						ItemStack s = menu.getContainer().getItem(i);
+						if (s.getItem() == Items.OAK_PLANKS) {
+							planksLeft += s.getCount();
+						}
+					}
+					if (planksLeft != 0) {
+						throw new AssertionError("取走后箱子不应再有木板: " + planksLeft);
+					}
+
+					// 4) 把背包里的圆石放进箱子
+					ToolResult put = agentTool("player_container_put").executor().execute(
+							new ToolContext(server, bot, player, level), itemArgs("minecraft:cobblestone"));
+					if (!put.ok() || !put.message().contains("16")) {
+						throw new AssertionError("应把 16 个圆石放进箱子: " + put.message());
+					}
+					int cobbleInChest = 0;
+					for (int i = 0; i < menu.getContainer().getContainerSize(); i++) {
+						ItemStack s = menu.getContainer().getItem(i);
+						if (s.getItem() == Items.COBBLESTONE) {
+							cobbleInChest += s.getCount();
+						}
+					}
+					if (cobbleInChest != 16 || bot.getInventory().countItem(Items.COBBLESTONE) != 0) {
+						throw new AssertionError("圆石应在箱子里（16）且不在 bot 背包: 箱=" + cobbleInChest
+								+ " bot=" + bot.getInventory().countItem(Items.COBBLESTONE));
+					}
+
+					// 5) 关闭容器
+					ToolResult close = agentTool("player_container_close").executor().execute(
+							new ToolContext(server, bot, player, level), new JsonObject());
+					if (!close.ok()) {
+						throw new AssertionError("关闭容器应成功: " + close.message());
+					}
+					if (bot.containerMenu != bot.inventoryMenu) {
+						throw new AssertionError("关闭后 containerMenu 应复位为 inventoryMenu");
+					}
+
 					// 清理
 					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bot);
 					AiCompanionService.resetAllHistory(player);

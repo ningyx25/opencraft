@@ -42,13 +42,15 @@ https://github.com/user-attachments/assets/c4a91eff-5ded-4788-9cba-8ecffc6c3d61
 | 工具 | 作用 |
 |---|---|
 | `player_goto` / `player_stop` / `player_jump` | 走到指定坐标 / 停止移动 / 跳一下 |
-| `player_look` | 观察周围：坐标、朝向、附近方块/实体/掉落物、背包摘要 |
 | `player_find` | 按关键词找方块/实体/掉落物，返回精确坐标 + 方位 + 距离 |
 | `player_mine` | 走到方块旁用 `ServerPlayerGameMode.destroyBlock` 破坏，掉落物自动拾取 |
 | `player_place` | 用主手物品以 `useItemOn` 贴着指定面放置方块 |
 | `player_craft` | 按玩家规则合成（2×2 随时可合，3×3 需附近有工作台） |
-| `player_inventory` | 查看自己或主人的背包与装备 |
+| `player_inventory` | 查看自己或主人的完整背包与装备（逐槽号 + 数量 + 耐久） |
 | `player_hand_to_player` | 从背包取物品递给主人（背包满则掉在主人脚边） |
+| `player_container_open` / `player_container_close` | 像真实玩家右键一样打开/关闭容器（箱子/桶/潜影盒/熔炉…） |
+| `player_container_list` | 查看已打开容器的内容与自己的背包（只读） |
+| `player_container_take` / `player_container_put` | 在容器与背包间 shift 点击整栈取/放物品 |
 | `teleport_to_player` | 瞬间传送到主人身边（支持跨维度，所有预设可用） |
 
 **Agentic loop 健壮性**：自动退避重试网络错误；检测重复工具调用死循环并打断；工具结果超长自动裁剪；对话历史过长时 LLM 压缩为摘要；破坏性操作前向玩家提问确认（`/opencraft answer` 回复，90 秒超时后按合理假设继续）；多步任务自动列计划并实时更新进度。

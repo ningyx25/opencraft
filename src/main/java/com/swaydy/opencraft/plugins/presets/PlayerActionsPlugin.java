@@ -58,6 +58,12 @@ import java.util.Set;
  * <li><b>物品移动/装备</b>：在助手自己的 {@code InventoryMenu} 里按真实点击交换
  *     （护甲部位校验/穿戴回调/音效全原版）；丢弃走原版 {@code Player.drop}（朝看向抛出）；
  *     热键栏切换走 {@code setSelectedSlot}（与原版换手键的服务端处理一致）。</li>
+ * <li><b>容器交互</b>（箱子/桶/潜影盒/熔炉…）：与真实玩家一样“右键打开 → 查看 →
+ *     shift 点击取放 → 关闭”——{@code ServerPlayerGameMode.useItemOn}(sneak=false)
+ *     走真实右键路径打开菜单（{@code player_container_open}），
+ *     {@code AbstractContainerMenu.quickMoveStack} 做原版 shift-click 取放
+ *     （{@code player_container_take/put}），{@code ServerPlayer.closeContainer} 关闭
+ *     （{@code player_container_close}）；内容查看走 {@code player_container_list}。</li>
  * </ul>
  * 装备/主手变更的客户端同步由 {@code AiAssistantPlayer.tick()} 的 doTick
  * （LivingEntity 装备检测）自动完成，无需手动广播。
@@ -105,6 +111,9 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		craftProps.add("item", ToolSchema.prop("string",
 				"Item id to craft, e.g. minecraft:diamond_block."));
 		craftProps.add("amount", ToolSchema.prop("integer", "Amount to craft (default 1)."));
+		JsonObject listProps = new JsonObject();
+		listProps.add("whose", ToolSchema.prop("string",
+				"Whose inventory to list: \"self\" (default, the assistant's own inventory) or \"owner\"/\"player\" (the owner's inventory)."));
 		JsonObject moveProps = new JsonObject();
 		moveProps.add("from", ToolSchema.prop("string",
 				"Source slot: a number 0–35 (main inventory) or a name: mainhand (= currently selected hotbar slot), offhand, helmet, chestplate, leggings, boots."));
@@ -120,6 +129,13 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		findProps.add("target", ToolSchema.prop("string",
 				"What to find: a block/item ID (minecraft:oak_log, oak_log) or a keyword (log, chest, iron, player, monster…)."));
 		findProps.add("radius", ToolSchema.prop("integer", "Search radius (default 12, max 20)."));
+		JsonObject containerOpenProps = new JsonObject();
+		containerOpenProps.add("x", ToolSchema.prop("integer", "X coordinate of the container block (chest/barrel/furnace/etc.)"));
+		containerOpenProps.add("y", ToolSchema.prop("integer", "Y coordinate of the container block"));
+		containerOpenProps.add("z", ToolSchema.prop("integer", "Z coordinate of the container block"));
+		JsonObject containerTakePutProps = new JsonObject();
+		containerTakePutProps.add("item", ToolSchema.prop("string", "Item id, e.g. minecraft:oak_planks."));
+		containerTakePutProps.add("amount", ToolSchema.prop("integer", "Amount to take/put (default = all matching stacks)."));
 		return List.of(
 				new ToolDefinition("player_goto",
 						"Have the assistant (as a player) walk to the given coordinates (absolute x,y,z). Asynchronous: "
@@ -173,6 +189,16 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 								+ "Products go into the assistant's inventory; later you can hand them to the owner with player_hand_to_player.",
 						ToolSchema.object(craftProps, "item"),
 						this::craft),
+				new ToolDefinition("player_inventory",
+						"List the full contents of the assistant's own player inventory (or the owner's) in detail: "
+								+ "every non-empty slot with its slot number (0–35, matching player_item_move), the currently selected "
+								+ "main-hand hotbar slot, durability of tools/armor, and equipment (helmet/chestplate/leggings/boots/offhand). "
+								+ "Call this when you need an exact, complete inventory view — e.g. before planning a craft, "
+								+ "when deciding what to hand to the owner, or when the inventory summary in the Assistant State "
+								+ "context is truncated and you must know exactly what you have. Note: player_inventory is read-only "
+								+ "and never changes anything.",
+						ToolSchema.object(listProps),
+						this::listInventory),
 				new ToolDefinition("player_item_move",
 						"Move (swap) items between any two slots in the assistant's inventory. "
 								+ "Slots: numbers 0–35 for main inventory, or named slots: "
@@ -190,7 +216,38 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 						"Take an item out of the assistant's inventory and hand it to the owner (goes into the owner's inventory; "
 								+ "drops at the owner's feet if their inventory is full).",
 						ToolSchema.object(handProps, "item"),
-						this::handToPlayer));
+						this::handToPlayer),
+				new ToolDefinition("player_container_open",
+						"Open a container block (chest, barrel, shulker box, furnace, hopper, dispenser, ender chest, crafting "
+								+ "table…) at the given coordinates, exactly like a player right-clicking it. "
+								+ "If far away, the assistant walks over first and the outcome arrives automatically as an [Event] "
+								+ "message. After opening, use player_container_list to see the contents and "
+								+ "player_container_take / player_container_put to move items; close with player_container_close.",
+						ToolSchema.object(containerOpenProps, "x", "y", "z"),
+						this::containerOpen),
+				new ToolDefinition("player_container_list",
+						"List the contents of the container the assistant currently has open (its slots) together with the "
+								+ "assistant's own inventory side by side, like the container GUI shows. Read-only. "
+								+ "Call this after player_container_open and whenever you need to know exactly what is inside "
+								+ "the container before taking or putting items.",
+						ToolSchema.object(new JsonObject()),
+						this::containerList),
+				new ToolDefinition("player_container_take",
+						"Take an item out of the open container into the assistant's inventory by shift-clicking matching "
+								+ "container slots (whole stacks at a time, exactly like a player). Requires an open container "
+								+ "(player_container_open first). amount caps how many to take (may overshoot by one stack).",
+						ToolSchema.object(containerTakePutProps, "item"),
+						this::containerTake),
+				new ToolDefinition("player_container_put",
+						"Put an item from the assistant's inventory into the open container by shift-clicking matching "
+								+ "inventory slots (whole stacks at a time, exactly like a player). Requires an open container "
+								+ "(player_container_open first). amount caps how many to put (may overshoot by one stack).",
+						ToolSchema.object(containerTakePutProps, "item"),
+						this::containerPut),
+				new ToolDefinition("player_container_close",
+						"Close the container the assistant currently has open (like pressing Esc). No-op if nothing is open.",
+						ToolSchema.object(new JsonObject()),
+						this::containerClose));
 	}
 
 	@Override
@@ -209,10 +266,23 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				- **`player_hotbar_select`** — pick which hotbar slot (0–8) is the main hand
 				- **`player_hand_to_player`** — hand an item to the owner
 				- **`player_find`** — find things by keyword/ID and return exact coordinates (always use it first to get coordinates — don't guess)
+				- **`player_inventory`** — list the FULL inventory of the assistant (or the owner) in detail: every non-empty slot with
+				  its slot number, the selected main-hand slot, durability, and equipment — call it when you need an exact,
+				  complete inventory view (planning crafts, deciding what to hand over, or the context summary is not enough)
+				- **`player_container_open` / `player_container_close`** — open/close a container block (chest, barrel, shulker box,
+				  furnace…) like a player right-clicking it; opening may be asynchronous (walking) — the [Event] outcome arrives by itself
+				- **`player_container_list`** — see the open container's contents and your inventory side by side (read-only)
+				- **`player_container_take` / `player_container_put`** — shift-click whole stacks of an item between the open
+				  container and your inventory (e.g. take all oak_planks from the chest, put cobblestone into the barrel)
 
-				Your own state and inventory are provided automatically in the **Assistant State** JSON of the system context every round
-				(position, facing, movement, nearby blocks, block type counts, nearby entities, per-slot inventory with durability) —
-				no observation tool call is needed; never call tools just to re-check what the context already shows.
+				Your own position, environment, nearby blocks and a summary of your inventory are provided automatically in the
+				**Assistant State** JSON of the system context every round — do not call tools just to re-check what the context
+				already shows. But that inventory summary is capped/abridged: when you need the exact, complete inventory
+				(which slot holds what, durability, every stack) call `player_inventory` (read-only, safe).
+
+				Containers (chests/barrels/shulker boxes/furnaces…) hold items and `player_mine` refuses to break them. To get
+				items from one or store items in one: `player_find` the container → `player_container_open` it → `player_container_list`
+				to see what's inside → `player_container_take` / `player_container_put` to move items → `player_container_close` when done.
 
 				Tool results begin with `[tool success/failure]` — read the marker first; never assume a tool succeeded;
 				on failure try a different approach rather than retrying identically.""";
@@ -319,9 +389,11 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				: ToolResult.error("Cannot jump right now: in mid-air or flying; land first and try again.");
 	}
 
-	// player_look/player_inventory 已移除:坐标/朝向/移动、近旁方块（带坐标）、大范围方块计数、
-	// 附近实体（带坐标/方位/距离）、背包/装备清单全部由 agent.Prompts 的 Assistant State
-	// 每轮注入 system 上下文,模型无需再调用观察类工具（定向找坐标仍用 player_find）。
+	// player_look 已移除（坐标/朝向/移动、近旁方块（带坐标）、大范围方块计数、附近实体
+	// （带坐标/方位/距离）全部由 agent.Prompts 的 Assistant State 每轮注入 system 上下文,
+	// 模型无需再调用观察类工具;定向找坐标仍用 player_find）。
+	// player_inventory 已加回：上下文里的背包只是摘要（截断/聚合）,模型在需要精确完整
+	// 的背包视图（哪个槽有什么、耐久、装备）时调用 player_inventory 按需获取。
 
 	/**
 	 * 按关键词/ID 找方块或实体，返回【精确坐标 + 方位 + 距离】——模型据此才能判断
@@ -894,6 +966,95 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return net.minecraft.world.entity.EquipmentSlot.MAINHAND;
 	}
 
+	private ToolResult listInventory(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("Tool player_inventory requires a player-form assistant.");
+		}
+		ToolArgs t = new ToolArgs(args);
+		String whose = t.strOf("whose", "self").trim().toLowerCase(java.util.Locale.ROOT);
+		boolean owner = whose.equals("player") || whose.equals("owner")
+				|| whose.equals("玩家") || whose.equals("主人");
+		return ToolResult.ok(owner
+				? "Owner inventory: " + formatPlayerInventory(ctx.owner())
+				: "Assistant inventory: " + formatPlayerInventory(a));
+	}
+
+	/**
+	 * 完整背包详情（供 player_inventory）：逐非空槽列出——带槽号（与 player_item_move
+	 * 的参数一致：0–8 快捷栏、9–35 主背包）、当前选中主手标记、数量、工具/装备耐久、
+	 * 装备/副手，并统计空槽数。空槽不逐格列出（避免噪音），但总数给出——模型需要的是
+	 * "我有哪些、各在几号槽、还剩多少空位"。
+	 */
+	private static String formatPlayerInventory(Player p) {
+		Inventory inv = p.getInventory();
+		int selected = Math.max(0, Math.min(8, inv.getSelectedSlot()));
+		int empty = 0;
+		List<String> hotbar = new ArrayList<>();
+		for (int i = 0; i < 9; i++) {
+			ItemStack s = inv.getItem(i);
+			if (s.isEmpty()) {
+				empty++;
+				continue;
+			}
+			hotbar.add("[" + i + "] " + itemLabel(s) + (i == selected ? " (selected mainhand)" : ""));
+		}
+		List<String> backpack = new ArrayList<>();
+		for (int i = 9; i < MAIN_SLOTS; i++) {
+			ItemStack s = inv.getItem(i);
+			if (s.isEmpty()) {
+				empty++;
+				continue;
+			}
+			backpack.add("[" + i + "] " + itemLabel(s));
+		}
+		List<String> equip = new ArrayList<>();
+		for (net.minecraft.world.entity.EquipmentSlot es : new net.minecraft.world.entity.EquipmentSlot[]{
+				net.minecraft.world.entity.EquipmentSlot.HEAD,
+				net.minecraft.world.entity.EquipmentSlot.CHEST,
+				net.minecraft.world.entity.EquipmentSlot.LEGS,
+				net.minecraft.world.entity.EquipmentSlot.FEET,
+				net.minecraft.world.entity.EquipmentSlot.OFFHAND}) {
+			ItemStack s = p.getItemBySlot(es);
+			if (s.isEmpty()) {
+				continue;
+			}
+			equip.add(equipSlotDisplay(es) + "=" + itemLabel(s));
+		}
+		StringBuilder sb = new StringBuilder("hotbar[0-8]: ");
+		sb.append(hotbar.isEmpty() ? "empty" : String.join(" | ", hotbar));
+		sb.append("; backpack[9-35]: ");
+		sb.append(backpack.isEmpty() ? "empty" : String.join(" | ", backpack));
+		sb.append("; equipment: ");
+		sb.append(equip.isEmpty() ? "none" : String.join(" | ", equip));
+		if (empty > 0) {
+			sb.append("; empty slots: ").append(empty);
+		}
+		return sb.toString();
+	}
+
+	/** 单个物品标签：短名 + 数量（&gt;1 时）+ 耐久（可受损物品的"剩余/上限"）。 */
+	private static String itemLabel(ItemStack s) {
+		StringBuilder b = new StringBuilder(AiCompanionService.shortName(s.getItem().getDescriptionId()));
+		if (s.getCount() > 1) {
+			b.append('×').append(s.getCount());
+		}
+		if (s.getMaxDamage() > 0) {
+			b.append(" (").append(s.getMaxDamage() - s.getDamageValue()).append('/').append(s.getMaxDamage()).append(')');
+		}
+		return b.toString();
+	}
+
+	private static String equipSlotDisplay(net.minecraft.world.entity.EquipmentSlot es) {
+		return switch (es) {
+			case HEAD -> "helmet";
+			case CHEST -> "chestplate";
+			case LEGS -> "leggings";
+			case FEET -> "boots";
+			default -> "offhand";
+		};
+	}
+
 	private ToolResult handToPlayer(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
@@ -929,6 +1090,260 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 					+ "; can't hand it to you.");
 		}
 		return ToolResult.ok("Handed you " + AiCompanionService.shortName(item.value().getDescriptionId()) + " ×" + given + ".");
+	}
+
+	// ------------------------------------------------------------------
+	// 容器交互（箱子/桶/潜影盒/熔炉/漏斗/发射器/末影箱…）
+	// 打开 = ServerPlayerGameMode.useItemOn(sneak=false)（真实右键路径）→ BlockState.useWithoutItem
+	//   → player.openMenu → a.containerMenu 变成 ChestMenu/FurnaceMenu/…；
+	// 取放 = AbstractContainerMenu.quickMoveStack（原版 shift-click，容器↔玩家侧双向路由）；
+	// 关闭 = ServerPlayer.closeContainer。
+	// 容器侧槽位判定：菜单里 container != a.getInventory() 的前导槽（vanilla 保证容器槽在前）。
+	// ------------------------------------------------------------------
+
+	private ToolResult containerOpen(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("Tool player_container_open requires a player-form assistant.");
+		}
+		ToolArgs t = new ToolArgs(args);
+		int x = t.intOf("x", Integer.MIN_VALUE);
+		int y = t.intOf("y", Integer.MIN_VALUE);
+		int z = t.intOf("z", Integer.MIN_VALUE);
+		if (x == Integer.MIN_VALUE || y == Integer.MIN_VALUE || z == Integer.MIN_VALUE) {
+			return ToolResult.error("player_container_open requires integer parameters x, y, z.");
+		}
+		ServerLevel level = ctx.level();
+		if (level != ctx.owner().level()) {
+			return ToolResult.error("Can only open containers in the dimension the owner is currently in.");
+		}
+		BlockPos pos = new BlockPos(x, y, z);
+		double maxDist = a.getConfig().maxDistance;
+		if (ctx.owner().distanceToSqr(pos.getCenter()) > maxDist * maxDist) {
+			return ToolResult.error("The container is more than " + (int) maxDist + " blocks from the owner — too far.");
+		}
+		GlobalPos cfgBlock = a.getConfigBlock();
+		if (cfgBlock != null && cfgBlock.dimension().equals(level.dimension())
+				&& cfgBlock.pos().equals(pos)) {
+			return ToolResult.error("That is my config block (AI Logo Block); can't open it.");
+		}
+		BlockState state = level.getBlockState(pos);
+		if (state.isAir()) {
+			return ToolResult.error("(" + x + "," + y + "," + z + ") is air; no container there.");
+		}
+		net.minecraft.world.MenuProvider provider = state.getMenuProvider(level, pos);
+		if (provider == null) {
+			return ToolResult.error("(" + x + "," + y + "," + z + ") is not a container ("
+					+ AiCompanionService.shortName(state.getBlock().getDescriptionId())
+					+ "). Use player_find \"chest\" to locate a container block.");
+		}
+		Vec3 standPos = mineStandPos(level, pos, a.position());
+		Vec3 hitLoc = Vec3.atCenterOf(pos);
+		if (a.getEyePosition().distanceTo(hitLoc) <= REACH) {
+			return doOpenContainer(a, level, pos);
+		}
+		a.movement().moveTo(standPos, a.getConfig().speed, true);
+		a.movement().whenArrived(() -> {
+			ToolResult r = doOpenContainer(a, level, pos);
+			a.movement().completeAction(a.movement().currentActionToken(), r.message(), r.ok());
+		});
+		return ToolResult.deferred("Walking over to open the container at (" + x + "," + y + "," + z
+				+ ") — async action: the outcome [Event] will arrive automatically; do not re-issue.");
+	}
+
+	/** 真实玩家右键打开容器（sneak=false，直接调 useItemOn）。 */
+	private static ToolResult doOpenContainer(AiAssistantPlayer a, ServerLevel level, BlockPos pos) {
+		if (a.isRemoved()) {
+			return ToolResult.error("The assistant is gone; cannot open the container.");
+		}
+		boolean wasSneaking = a.isShiftKeyDown();
+		if (wasSneaking) {
+			a.setShiftKeyDown(false);
+		}
+		BlockState state = level.getBlockState(pos);
+		Vec3 center = Vec3.atCenterOf(pos);
+		Direction face = Direction.getApproximateNearest(a.getEyePosition().subtract(center));
+		BlockHitResult hit = new BlockHitResult(center, face, pos, false);
+		InteractionResult result;
+		try {
+			result = a.gameMode.useItemOn(a, level, a.getMainHandItem(), InteractionHand.MAIN_HAND, hit);
+		} catch (Exception e) {
+			com.swaydy.opencraft.logging.DebugLog.log("player_action",
+					"玩家形态助手打开容器 {} 异常: {}", pos.toShortString(), e.toString());
+			return ToolResult.error("Opening the container failed: " + e.getClass().getSimpleName());
+		} finally {
+			a.setShiftKeyDown(wasSneaking);
+		}
+		net.minecraft.world.inventory.AbstractContainerMenu menu = a.containerMenu;
+		int n = containerRegionSize(a, menu);
+		if (n <= 0) {
+			return ToolResult.error("Right-clicking the block did not open a container menu (result " + result
+					+ "); it may be locked or already opened elsewhere.");
+		}
+		com.swaydy.opencraft.logging.DebugLog.log("player_action",
+				"玩家形态助手打开容器 {}（{} 槽，菜单 {}）", pos.toShortString(), n,
+				menu.getClass().getSimpleName());
+		return ToolResult.ok("Opened " + containerName(a, menu) + " (" + n + " slots). "
+				+ "Container slots are numbered 0-" + (n - 1) + "; my inventory is on the other side. "
+				+ "Use player_container_list to see the contents, player_container_take/put to move items, "
+				+ "and player_container_close to close it.");
+	}
+
+	/**
+	 * 容器侧槽位数：菜单里 container != 玩家背包 的前导槽个数（vanilla 保证容器槽在前）。
+	 * 菜单为 null / inventoryMenu 返回 0（表示没有打开容器）。
+	 */
+	private static int containerRegionSize(Player p, net.minecraft.world.inventory.AbstractContainerMenu menu) {
+		if (menu == null || menu == p.inventoryMenu) {
+			return 0;
+		}
+		int n = 0;
+		for (net.minecraft.world.inventory.Slot slot : menu.slots) {
+			if (slot.container == p.getInventory()) {
+				break;
+			}
+			n++;
+		}
+		return n;
+	}
+
+	/** 容器的显示名（优先取容器侧的 Nameable 名；失败回退通用名）。 */
+	private static String containerName(Player p, net.minecraft.world.inventory.AbstractContainerMenu menu) {
+		int n = containerRegionSize(p, menu);
+		if (n > 0 && n <= menu.slots.size()) {
+			net.minecraft.world.inventory.Slot slot = menu.slots.get(n - 1);
+			net.minecraft.world.Container c = slot.container;
+			if (c instanceof net.minecraft.world.Nameable nameable) {
+				String name = nameable.getDisplayName().getString();
+				if (name != null && !name.isEmpty()) {
+					return name;
+				}
+			}
+		}
+		// 更精确的 fallback：ChestMenu 有 getRowCount
+		if (menu instanceof net.minecraft.world.inventory.ChestMenu cm) {
+			int rows = cm.getRowCount();
+			return rows == 1 ? "Chest (single)" : rows == 6 ? "Double chest" : "Chest (" + rows + " rows)";
+		}
+		return "Container";
+	}
+
+	private ToolResult containerList(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("Tool player_container_list requires a player-form assistant.");
+		}
+		net.minecraft.world.inventory.AbstractContainerMenu menu = a.containerMenu;
+		int n = containerRegionSize(a, menu);
+		if (n <= 0) {
+			return ToolResult.error("No container is open right now. Use player_container_open <x y z> first.");
+		}
+		List<String> containerItems = new ArrayList<>();
+		for (int i = 0; i < n && i < menu.slots.size(); i++) {
+			ItemStack s = menu.slots.get(i).getItem();
+			if (s.isEmpty()) {
+				continue;
+			}
+			containerItems.add("[" + i + "] " + itemLabel(s));
+		}
+		String name = containerName(a, menu);
+		return ToolResult.ok("Open " + name + " (" + n + " slots): "
+				+ (containerItems.isEmpty() ? "empty" : String.join(" | ", containerItems))
+				+ "; My inventory: " + formatPlayerInventory(a));
+	}
+
+	private ToolResult containerTake(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("Tool player_container_take requires a player-form assistant.");
+		}
+		ToolArgs t = new ToolArgs(args);
+		String itemId = t.strOf("item", "");
+		int amount = Math.max(1, Math.min(6400, t.intOf("amount", Integer.MAX_VALUE)));
+		Holder<net.minecraft.world.item.Item> item = AiCompanionService.resolveItem(itemId);
+		if (item == null) {
+			return ToolResult.error("I don't know the item \"" + itemId + "\"; use an item ID like minecraft:oak_planks.");
+		}
+		net.minecraft.world.inventory.AbstractContainerMenu menu = a.containerMenu;
+		int n = containerRegionSize(a, menu);
+		if (n <= 0) {
+			return ToolResult.error("No container is open right now. Use player_container_open <x y z> first.");
+		}
+		int taken = 0;
+		for (int i = 0; i < n && taken < amount; i++) {
+			ItemStack s = menu.slots.get(i).getItem();
+			if (s.isEmpty() || !s.is(item)) {
+				continue;
+			}
+			int before = s.getCount();
+			menu.quickMoveStack(a, i);
+			int after = menu.slots.get(i).getItem().getCount();
+			int moved = before - after;
+			if (moved <= 0) {
+				break; // 没移动成功（背包满等）——避免死循环
+			}
+			taken += moved;
+		}
+		String shortName = AiCompanionService.shortName(item.value().getDescriptionId());
+		if (taken == 0) {
+			return ToolResult.error("Found no " + shortName + " in the open container, or my inventory is full.");
+		}
+		return ToolResult.ok("Took " + shortName + " ×" + taken + " from the container into my inventory."
+				+ (taken < amount ? "" : " (amount cap reached)"));
+	}
+
+	private ToolResult containerPut(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("Tool player_container_put requires a player-form assistant.");
+		}
+		ToolArgs t = new ToolArgs(args);
+		String itemId = t.strOf("item", "");
+		int amount = Math.max(1, Math.min(6400, t.intOf("amount", Integer.MAX_VALUE)));
+		Holder<net.minecraft.world.item.Item> item = AiCompanionService.resolveItem(itemId);
+		if (item == null) {
+			return ToolResult.error("I don't know the item \"" + itemId + "\"; use an item ID like minecraft:oak_planks.");
+		}
+		net.minecraft.world.inventory.AbstractContainerMenu menu = a.containerMenu;
+		int n = containerRegionSize(a, menu);
+		if (n <= 0) {
+			return ToolResult.error("No container is open right now. Use player_container_open <x y z> first.");
+		}
+		// 玩家侧槽位 = 容器区域之后的所有槽（背包+快捷栏）
+		int moved = 0;
+		for (int i = n; i < menu.slots.size() && moved < amount; i++) {
+			ItemStack s = menu.slots.get(i).getItem();
+			if (s.isEmpty() || !s.is(item)) {
+				continue;
+			}
+			int before = s.getCount();
+			menu.quickMoveStack(a, i);
+			int after = menu.slots.get(i).getItem().getCount();
+			int m = before - after;
+			if (m <= 0) {
+				break; // 容器满等——避免死循环
+			}
+			moved += m;
+		}
+		String shortName = AiCompanionService.shortName(item.value().getDescriptionId());
+		if (moved == 0) {
+			return ToolResult.error("Found no " + shortName + " in my inventory, or the container is full.");
+		}
+		return ToolResult.ok("Put " + shortName + " ×" + moved + " from my inventory into the container."
+				+ (moved < amount ? "" : " (amount cap reached)"));
+	}
+
+	private ToolResult containerClose(ToolContext ctx, JsonObject args) {
+		AiAssistantPlayer a = ctx.assistantPlayer();
+		if (a == null) {
+			return ToolResult.error("Tool player_container_close requires a player-form assistant.");
+		}
+		if (a.containerMenu == a.inventoryMenu) {
+			return ToolResult.ok("No container was open (my inventory menu is already active).");
+		}
+		a.closeContainer();
+		com.swaydy.opencraft.logging.DebugLog.log("player_action", "玩家形态助手关闭容器");
+		return ToolResult.ok("Closed the container (my inventory menu is active again).");
 	}
 
 

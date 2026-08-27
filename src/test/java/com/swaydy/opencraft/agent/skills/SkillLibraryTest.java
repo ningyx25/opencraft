@@ -24,13 +24,19 @@ class SkillLibraryTest {
 			"teleport_to_player", "player_goto", "player_stop", "player_jump",
 			"player_find", "player_mine", "player_place", "player_craft",
 			"player_item_move", "player_hotbar_select", "player_hand_to_player",
+			"player_inventory",
+			"player_container_open", "player_container_list", "player_container_take",
+			"player_container_put", "player_container_close",
 			"ask_player", "task_plan");
 
 	/** 已知工具名全集（requires_tools 合法性校验用）。 */
 	private static final Set<String> KNOWN_TOOLS = Set.of(
 			"teleport_to_player", "player_goto", "player_stop", "player_jump",
 			"player_find", "player_mine", "player_place", "player_craft",
-			"player_item_move", "player_hotbar_select", "player_hand_to_player",
+			"player_inventory", "player_item_move", "player_hotbar_select",
+			"player_hand_to_player",
+			"player_container_open", "player_container_list", "player_container_take",
+			"player_container_put", "player_container_close",
 			"ask_player", "task_plan");
 
 	@Test

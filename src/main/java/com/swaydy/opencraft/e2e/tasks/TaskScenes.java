@@ -48,4 +48,31 @@ final class TaskScenes {
 			}
 		}
 	}
+
+	// ------------------------------------------------------------------
+	// 容器任务场景：在平台上放一个箱子（助手容器交互测试用）
+	// ------------------------------------------------------------------
+
+	/** 容器位置（平台上，y = 平台顶 + 1，助手出生点旁边）。 */
+	static BlockPos containerPos(E2EContext ctx) {
+		return new BlockPos(ctx.areaOrigin().getX() + 3, ctx.areaOrigin().getY() + 1, ctx.areaOrigin().getZ());
+	}
+
+	/** 在容器位置放一个箱子（服务端线程）。 */
+	static BlockPos placeChest(E2EContext ctx) {
+		ServerLevel level = ctx.level();
+		BlockPos pos = containerPos(ctx);
+		level.setBlock(pos, net.minecraft.world.level.block.Blocks.CHEST.defaultBlockState(), Block.UPDATE_ALL);
+		return pos;
+	}
+
+	/** 往箱子第 0 格放入物品（服务端线程；返回箱子位置）。 */
+	static BlockPos fillChest(E2EContext ctx, net.minecraft.world.item.Item item, int count) {
+		BlockPos pos = placeChest(ctx);
+		if (ctx.level().getBlockEntity(pos)
+				instanceof net.minecraft.world.level.block.entity.ChestBlockEntity chest) {
+			chest.setItem(0, new net.minecraft.world.item.ItemStack(item, count));
+		}
+		return pos;
+	}
 }

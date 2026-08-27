@@ -89,6 +89,25 @@ public record E2EContext(MinecraftServer server, ServerLevel level,
 		return count;
 	}
 
+	/** 坐标处容器方块（chest/barrel/furnace 等，实现 {@code Container}）内某物品的总数。 */
+	public int countInContainer(BlockPos pos, String itemId) {
+		Item item = resolveItem(itemId);
+		if (item == null) {
+			return 0;
+		}
+		if (level.getBlockEntity(pos) instanceof net.minecraft.world.Container c) {
+			int count = 0;
+			for (int i = 0; i < c.getContainerSize(); i++) {
+				ItemStack stack = c.getItem(i);
+				if (!stack.isEmpty() && stack.getItem() == item) {
+					count += stack.getCount();
+				}
+			}
+			return count;
+		}
+		return 0;
+	}
+
 	/** 以 center 为中心、边长 2*radius+1 的立方体内是否存在某方块。 */
 	public boolean hasBlockInRegion(String blockId, BlockPos center, int radius) {
 		return countBlockInRegion(blockId, center, radius) > 0;

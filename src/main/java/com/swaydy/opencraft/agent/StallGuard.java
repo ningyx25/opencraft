@@ -21,7 +21,8 @@ public final class StallGuard {
 	private static final int DEFAULT_STALL_LIMIT = 3;
 
 	/** 只读工具集合：调用这些工具不会改变世界/背包状态，纯观察。 */
-	private static final Set<String> READ_ONLY_TOOLS = Set.of("player_find");
+	private static final Set<String> READ_ONLY_TOOLS = Set.of(
+			"player_find", "player_inventory", "player_container_list");
 
 	private final int stallLimit;
 	private int streak = 0;
@@ -80,7 +81,7 @@ public final class StallGuard {
 
 	private static String nudge(int rounds) {
 		return "[Stall warning] You have spent " + rounds + " consecutive rounds using only observation tools "
-				+ "(player_find) while the world and inventory state have not changed — "
+				+ "(player_find / player_inventory / player_container_list) while the world and inventory state have not changed — "
 				+ "this task is making no progress. Immediately choose one:\n"
 				+ "- **wrap up**: explain the situation to the player in one or two sentences and end the task (stop calling tools);\n"
 				+ "- **act**: use the coordinates you already have (or `player_find` once), "

@@ -285,10 +285,10 @@ public final class AgentRuntime {
 	//   [Event] 消息把真实结果送达后续轮,模型无需轮询烧请求）
 	// ------------------------------------------------------------------
 
-	/** 启动异步动作的工具:goto/mine/place 共用一个移动控制器,一次只能有一个在途。 */
+	/** 启动异步动作的工具:goto/mine/place/container_open 共用一个移动控制器,一次只能有一个在途。 */
 	private static boolean isAsyncActionTool(String toolName) {
 		return "player_goto".equals(toolName) || "player_mine".equals(toolName)
-				|| "player_place".equals(toolName);
+				|| "player_place".equals(toolName) || "player_container_open".equals(toolName);
 	}
 
 	/** 动作等待超时:goto/place 45s（含卡住传送）;mine 50s（30s 挖掘上限 + 走路 + 缓冲）。 */

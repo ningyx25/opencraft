@@ -50,7 +50,8 @@ import java.util.Map;
  * <ul>
  * <li><b>这里管</b>：静态文本（基础人设、历史压缩指令）＋ 配置相关文本（名字指令、
  * 人设组装）＋ 动态上下文（玩家状态、助手状态——近旁方块/大范围方块计数/附近实体/
- * 按槽位背包清单,完整吸收原 player_look/player_inventory）＋ system 整段组装；</li>
+ * 按槽位背包清单,完整吸收原 player_look;背包是摘要,精确完整视图由插件工具
+ * player_inventory 按需提供）＋ system 整段组装；</li>
  * <li><b>不在这里</b>：各插件的 {@code systemPromptFragment}/{@code gameContextFragment}
  * （留在 plugins/ 各插件内,各自带 `##` 小节标题）、各预设的 personaPrompt
  * （留在 agent/presets/ 各预设类内,自带 `#` 大节标题）、守卫与工具结果文案（留在各守卫/执行器内）。</li>
@@ -179,9 +180,10 @@ public final class Prompts {
 	 * 助手自身状态段（{@code ## Assistant State} + JSON）：坐标/朝向/是否移动 + 环境 +
 	 * 半径 {@link #CONTEXT_NEARBY_RADIUS} 格近旁方块（稀有方块带相对坐标）+
 	 * 半径 {@link #CONTEXT_WIDE_RADIUS} 格方块类型计数 + 附近实体（带坐标/方位/距离）+
-	 * 按槽位的详细背包/装备清单（含耐久与主手标记,槽号与背包工具参数一致）。
-	 * 信息完整吸收原 player_look/player_inventory 工具——模型不再需要调用观察类工具,
-	 * 每轮 system 都自带最新状态。核心段——不管装配哪些插件,任何预设都需要它,
+	 * 按槽位的详细背包/装备清单（含耐久与主手标记,槽号与背包工具参数一致;上下文里
+	 * 是摘要——精确完整背包视图由插件工具 player_inventory 按需提供）。
+	 * 信息完整吸收原 player_look 工具——模型不再需要调用观察类工具来获取环境信息,
+	 * 但背包精确视图通过 player_inventory 工具按需获取,两者各有分工。
 	 * 由 {@link #system} 直接组装;非玩家形态返回 null（跳过该段）。
 	 */
 	public static String assistantState(ToolContext ctx) {
