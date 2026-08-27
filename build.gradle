@@ -254,9 +254,10 @@ publishing {
 }
 
 // ------------------------------------------------------------------
-// 端到端测试便捷任务：./gradlew runE2E [-Pe2eTask=chop_tree|all]
-// 在全新真实存档上无头跑 e2e 套件（删 run/world → spawn-protection=0 → runE2EServer）。
-// 服务器跑完套件自动退出；结果见 run/logs/e2e-results.txt。
+// 端到端测试便捷任务。
+// 单任务：./gradlew runE2E -Pe2eTask=chop_tree（删 run/world → spawn-protection=0 → runE2eServer）
+// 全部任务：./gradlew runE2E（每个任务都在自己的全新世界里跑，等价于 5 次单任务——
+//   修"all 共享世界导致后续任务受前任务残留物/负载影响而失败"的问题）
 // ------------------------------------------------------------------
 tasks.register('cleanE2EWorld') {
 	group = 'opencraft'
@@ -287,8 +288,16 @@ tasks.register('prepareE2EProps') {
 	}
 }
 
+// 单任务：./gradlew runE2E -Pe2eTask=chop_tree（删世界 + 独立服务器 + 跑完退出）
+// 全部任务每任务全新世界：bash bin/run_e2e_all.sh（GradleBuild 不支持嵌套同一项目）
 tasks.register('runE2E') {
 	group = 'opencraft'
-	description = 'Headless e2e on a fresh real save (fresh world + spawn-protection=0 + run all e2e tasks)'
-	dependsOn 'cleanE2EWorld', 'prepareE2EProps', 'runE2eServer'
+	description = 'Headless e2e on a fresh real save. -Pe2eTask=<id> 跑单个任务；不带参数则提示使用 bin/run_e2e_all.sh'
+	if (project.findProperty('e2eTask') != null) {
+		dependsOn 'cleanE2EWorld', 'prepareE2EProps', 'runE2eServer'
+	} else {
+		doLast {
+			logger.lifecycle('[E2E] 全部任务每任务全新世界: bash bin/run_e2e_all.sh')
+		}
+	}
 }

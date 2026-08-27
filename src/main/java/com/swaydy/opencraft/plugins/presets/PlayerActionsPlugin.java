@@ -460,10 +460,10 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 					+ "(player_hotbar_select) and try again.");
 		}
 		int seconds = Math.max(1, Math.round(1.0F / perTick / 20.0F));
-		// 走到方块旁（站在方块上方或旁边，让目标方块在触及范围内），
-		// 到达后开始挖掘；目标不在方块中心（y）而在邻接可站位（y+1），
-		// 避免目标点在方块内部导致移动卡住
-		Vec3 standPos = new Vec3(pos.getX() + 0.5, pos.getY() + 1, pos.getZ() + 0.5);
+		// 走到目标方块旁的可站位（不是 y+1 硬编码——树是叠的，log 上方还是 log，
+		// 站不进去；找四周/上下所有可达且有支撑的邻格，选离玩家最近的，
+		// 这样掉落物就落在玩家脚边，用原版拾取即可收集）
+		Vec3 standPos = mineStandPos(level, pos, a.position());
 		a.movement().moveTo(standPos, a.getConfig().speed, true);
 		a.movement().whenArrived(() -> {
 			int started = a.movement().startMining(a, level, pos);
@@ -483,6 +483,47 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return ToolResult.deferred("Walking over to mine (" + x + "," + y + "," + z + ") as a player — "
 				+ "digging takes ~" + seconds + "s with my current tool (real mining speed). "
 				+ "Async action: the outcome [Event] will arrive automatically; do not re-issue.");
+	}
+
+	/**
+	 * 找离玩家最近的可达站立位，使玩家能触及目标方块（标准生存互动距离 4.5）。
+	 * 候选：目标正上方（y+1，适用于地面单方块）、四周同层/上方/下方、目标正下方。
+	 * 优先选"自身所在格可站 + 头顶可站 + 脚下有支撑"的候选（否则 bot 会悬空/掉下去），
+	 * 无支撑候选兜底。
+	 */
+	private static Vec3 mineStandPos(ServerLevel level, BlockPos pos, Vec3 from) {
+		Vec3 best = null;
+		double bestDist = Double.MAX_VALUE;
+		Vec3 fallback = null;
+		java.util.List<Vec3> candidates = new java.util.ArrayList<>();
+		candidates.add(Vec3.atBottomCenterOf(pos.above())); // 正上方
+		candidates.add(Vec3.atBottomCenterOf(pos.below())); // 正下方
+		for (net.minecraft.core.Direction d : net.minecraft.core.Direction.Plane.HORIZONTAL) {
+			BlockPos side = pos.relative(d);
+			candidates.add(Vec3.atBottomCenterOf(side));         // 同层侧面
+			candidates.add(Vec3.atBottomCenterOf(side.above())); // 侧面上方
+			candidates.add(Vec3.atBottomCenterOf(side.below())); // 侧面下方
+		}
+		for (Vec3 cand : candidates) {
+			BlockPos cell = BlockPos.containing(cand);
+			if (!level.getBlockState(cell).canBeReplaced()) {
+				continue; // 自身格被实心方块占据
+			}
+			if (!level.getBlockState(cell.above()).canBeReplaced()) {
+				continue; // 头顶被挡
+			}
+			boolean hasGround = !level.getBlockState(cell.below()).canBeReplaced();
+			double d = from.distanceToSqr(cand);
+			if (hasGround) {
+				if (d < bestDist) {
+					bestDist = d;
+					best = cand;
+				}
+			} else if (fallback == null) {
+				fallback = cand;
+			}
+		}
+		return best != null ? best : (fallback != null ? fallback : Vec3.atBottomCenterOf(pos.above()));
 	}
 
 	private ToolResult place(ToolContext ctx, JsonObject args) {
@@ -604,9 +645,28 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			return ToolResult.error("Crafting " + AiCompanionService.shortName(item.value().getDescriptionId())
 					+ " requires a crafting table (3×3 grid, same as a player). Walk to a crafting table first and try again.");
 		}
+		// 诊断：合成失败时打印背包内容
+		com.swaydy.opencraft.OpenCraftMod.LOGGER.info(
+				"[OpenCraft] player_craft {} 失败：背包={}, 附近工作台={}",
+				itemId, inventorySnapshot(inv), workbench == null ? "无" : workbench.toShortString());
 		return ToolResult.error("Cannot craft "
 				+ AiCompanionService.shortName(item.value().getDescriptionId()) + " from the materials in my inventory. "
 				+ "Not enough materials or no recipe.");
+	}
+
+	/** 背包内容快照（诊断用）：非空槽位按 物品x数量 列出。 */
+	private static String inventorySnapshot(Inventory inv) {
+		StringBuilder sb = new StringBuilder();
+		int shown = 0;
+		for (int i = 0; i < inv.getContainerSize(); i++) {
+			ItemStack stack = inv.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (shown++ > 0) sb.append(", ");
+			sb.append("[").append(i).append("]")
+					.append(AiCompanionService.shortName(stack.getItem().getDescriptionId()))
+					.append("x").append(stack.getCount());
+		}
+		return shown == 0 ? "空" : sb.toString();
 	}
 
 	private ToolResult itemMove(ToolContext ctx, JsonObject args) {
@@ -705,7 +765,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 
 	/**
 	 * 槽位名/数字 → 助手自己的背包菜单（InventoryMenu）槽位索引：
-	 * 结果 0 | 合成 1-4 | 护甲 5-8（头/胸/腿/靴）| 主背包 9-35（容器 9-35）| 快捷栏 36-44（容器 0-8）| 副手 45。
+	 * 结果 0 | 合成 1-4 | 护甲 5-8（头/胸/腿/靴）| 副手 9 | 主背包 10-36（容器 9-35）| 快捷栏 37-45（容器 0-8）。
 	 */
 	private static Integer menuSlotIndex(AiAssistantPlayer a, String s) {
 		try {
@@ -713,14 +773,17 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 			if (idx < 0 || idx >= MAIN_SLOTS) {
 				return null;
 			}
-			// 容器索引：0-8 是快捷栏（菜单 36-44），9-35 是主背包（菜单索引同号）
-			return idx < 9 ? 36 + idx : idx;
+			// 玩家槽位 → InventoryMenu 槽位映射（1.21.11 的 InventoryMenu 布局）：
+			//   0-8 快捷栏 (playerInventory 0-8) → 菜单 37-45
+			//   9-35 主背包 (playerInventory 9-35) → 菜单 10-36
+			// 旧版 36+idx 是错误的（菜单 36 是主背包最后一行，不是快捷栏第一格）
+			return idx < 9 ? 37 + idx : idx + 1;
 		} catch (NumberFormatException ignored) {
 			// 命名槽位
 		}
 		return switch (s.toLowerCase(java.util.Locale.ROOT)) {
-			case "mainhand", "main_hand", "main" -> 36 + a.getInventory().getSelectedSlot();
-			case "offhand", "off_hand", "off" -> 45;
+			case "mainhand", "main_hand", "main" -> 37 + a.getInventory().getSelectedSlot();
+			case "offhand", "off_hand", "off" -> 9;
 			case "helmet", "head" -> 5;
 			case "chestplate", "chest" -> 6;
 			case "leggings", "legs" -> 7;

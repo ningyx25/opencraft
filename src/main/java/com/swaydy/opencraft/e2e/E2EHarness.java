@@ -626,17 +626,19 @@ public final class E2EHarness {
 	}
 
 	/**
-	 * autorun 完成后停服（从独立线程调用，避免阻塞服务端线程）。
+	 * 关闭服务器：保存玩家/世界数据后退出 tick 循环。
 	 *
-	 * <p>不用 {@code stopServer()} 全程：其收尾的"等区块保存完成"循环会反复 drain
-	 * 区块队列（{@code waitUntilNextTick → pollTask → DistanceManager 光照更新}），
-	 * 在真实存档 + 假玩家（主人/助手）的组合下会触发 vanilla 光照引擎的
-	 * {@code ArrayIndexOutOfBoundsException}（fastutil LongLinkedOpenHashSet），
-	 * 服务器停不下来。改用手动保存（{@code saveAllChunks} 本身没问题，崩溃只在
-	 * 之后的等待循环里）+ {@code halt(false)} 退出 tick 循环。</p>
+	 * <p>不能直接用 {@code stopServer()}——它的 {@code PlayerList.remove} 会在真实存档
+	 * 里触发光照引擎崩溃（见 {@link #dismissAssistant} 注释）。改用手动保存 +
+	 * {@code halt(false)}。
+	 *
+	 * <p><b>注意：</b>必须在服务端线程上调用 {@code halt(false)}（作为任务调度），
+	 * 不能在独立线程上调用——否则主 tick 线程的 {@code waitUntilNextTick} 在空任务队列
+	 * 上调用 {@code remove()} 抛 {@code NoSuchElementException}，导致服务器崩溃退出
+	 * 码非 0（嵌套构建模式下会中断整个 runE2EAll 流程）。
 	 */
 	private static Runnable shutdown(MinecraftServer server) {
-		return () -> new Thread(() -> {
+		return () -> server.execute(() -> {
 			try {
 				server.getPlayerList().saveAll();
 				server.saveAllChunks(true, true, false);
@@ -644,6 +646,6 @@ public final class E2EHarness {
 			} catch (Exception e) {
 				OpenCraftMod.LOGGER.warn("[OpenCraft] E2E 停服异常: {}", e.toString());
 			}
-		}, "E2E-shutdown").start();
+		});
 	}
 }

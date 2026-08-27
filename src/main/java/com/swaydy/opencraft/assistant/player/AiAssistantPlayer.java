@@ -267,10 +267,14 @@ public class AiAssistantPlayer extends ServerPlayer implements AiAssistant {
 		if (!(this.level() instanceof ServerLevel level) || this.isRemoved()) {
 			return;
 		}
+		// 原版拾取：掉落物作为 ItemEntity 生成，玩家走近即拾取。范围对齐"真实玩家
+		// 站在树根旁能捡到的区域"：水平 2.5 格、垂直 1.5 格——覆盖树根正下方洞里
+		// （~1.5 格深）和周围几格的掉落物。仍是原版模型：ItemEntity 正常生成/
+		// 掉落，靠 PlayerInventory.add 入包。
 		java.util.List<net.minecraft.world.entity.item.ItemEntity> items =
 				level.getEntitiesOfClass(
 						net.minecraft.world.entity.item.ItemEntity.class,
-						this.getBoundingBox().inflate(1.5, 0.6, 1.5),
+						this.getBoundingBox().inflate(2.5, 1.5, 2.5),
 						item -> item.isAlive() && !item.hasPickUpDelay() && !item.getItem().isEmpty());
 		for (net.minecraft.world.entity.item.ItemEntity item : items) {
 			ItemStack stack = item.getItem();
