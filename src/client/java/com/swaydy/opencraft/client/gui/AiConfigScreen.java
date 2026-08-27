@@ -196,10 +196,20 @@ public class AiConfigScreen extends Screen {
 		for (LoopStatusEntry e : this.loopStatus) {
 			if (e.id().equals(id)) {
 				return Component.translatable("screen.opencraft.config.loop.running",
-						e.phase(), e.iteration()).withColor(0xFF55FF55);
+						phaseComponent(e.phase()), e.iteration()).withColor(0xFF55FF55);
 			}
 		}
 		return Component.translatable("screen.opencraft.config.loop.stopped").withColor(0xFFAAAAAA);
+	}
+
+	/** 循环阶段枚举名 → 翻译文本（未知阶段回退原文）。 */
+	private static Component phaseComponent(String phase) {
+		return switch (phase) {
+			case "WAITING" -> Component.translatable("screen.opencraft.config.loop.phase.waiting");
+			case "EXECUTING" -> Component.translatable("screen.opencraft.config.loop.phase.executing");
+			case "MONITORING" -> Component.translatable("screen.opencraft.config.loop.phase.monitoring");
+			default -> Component.literal(phase);
+		};
 	}
 
 	/** Agent 预设的显示组件：优先从注册表取翻译键，未注册回退到旧映射/原文。 */
@@ -787,7 +797,7 @@ public class AiConfigScreen extends Screen {
 			rows.addChild(speedSlider);
 
 			// =============================================================
-			// 循环事件区域
+			// 循环事件区域（卡片式列表：每个循环一张卡片，整卡点击切换启用）
 			// =============================================================
 			java.util.List<LoopDefinition> loopDefs = LoopRegistry.all();
 			if (loopDefs.isEmpty()) {
@@ -796,9 +806,10 @@ public class AiConfigScreen extends Screen {
 						Component.translatable("screen.opencraft.config.loop.none"),
 						font));
 			} else {
-				// 区域标题
+				// 区域标题（加粗）
 				StringWidget loopHeader = new StringWidget(
-						Component.translatable("screen.opencraft.config.loops"),
+						Component.translatable("screen.opencraft.config.loops")
+								.withStyle(net.minecraft.ChatFormatting.BOLD),
 						font);
 				loopHeader.setTooltip(Tooltip.create(
 						Component.translatable("screen.opencraft.config.loops.tooltip")));
@@ -806,15 +817,11 @@ public class AiConfigScreen extends Screen {
 
 				for (LoopDefinition def : loopDefs) {
 					String id = def.id();
-					String display = def.displayName() == null ? id : def.displayName();
 					boolean selected = AiConfigScreen.this.enabledLoops.contains(id);
-
-					// 复选框 + 状态文本的水平行
-					LinearLayout loopRow = LinearLayout.horizontal().spacing(4);
-					Checkbox check = Checkbox.builder(
-									Component.literal(display), font)
-							.selected(selected)
-							.onValueChange((c, checked) -> {
+					LoopCardWidget card = new LoopCardWidget(
+							0, 0, CONTROL_WIDTH, def, selected,
+							AiConfigScreen.this.loopStatusComponent(id), font,
+							checked -> {
 								// 修改 enabledLoops 副本（避免写回不可变列表）
 								List<String> updated = new ArrayList<>(
 										AiConfigScreen.this.enabledLoops);
@@ -826,21 +833,9 @@ public class AiConfigScreen extends Screen {
 									updated.remove(id);
 								}
 								AiConfigScreen.this.enabledLoops = updated;
-							})
-							.build();
-					check.active = AiConfigScreen.this.canEdit;
-					if (def.description() != null) {
-						check.setTooltip(Tooltip.create(
-								Component.literal(def.description())));
-					}
-					loopRow.addChild(check);
-
-					// 状态文字
-					StringWidget status = new StringWidget(
-							AiConfigScreen.this.loopStatusComponent(id), font);
-					loopRow.addChild(status);
-
-					rows.addChild(loopRow);
+							});
+					card.active = AiConfigScreen.this.canEdit;
+					rows.addChild(card);
 				}
 			}
 		}
@@ -1113,6 +1108,115 @@ public class AiConfigScreen extends Screen {
 				return true;
 			}
 			return super.keyPressed(event);
+		}
+	}
+
+	// =========================================================================
+	// 循环事件卡片组件（第 3 页“行动行为”）
+	// =========================================================================
+
+	/**
+	 * 单个循环事件的卡片：深色半透明底 + 1px 边框（与聊天页日志框同款画法）。
+	 * 上行左侧自绘复选框 + 名称、右侧状态文本（右对齐）；下行灰色小字描述直接可见。
+	 * 点击卡片任意处即可切换勾选（复选框精灵用原版 Checkbox 同款 sprite 自绘——
+	 * 1.21.11 的 AbstractWidget 没有 children 机制，且 Checkbox 无 setSelected，
+	 * 无法直接内嵌一个可点击的 Checkbox 控件）。
+	 */
+	private class LoopCardWidget extends AbstractWidget {
+		private static final int PADDING = 6;
+		private static final int BOX_LABEL_GAP = 4;
+		private static final int TITLE_DESC_GAP = 4;
+		private static final int COLOR_DESC = 0xFFA0A0A0;
+		private static final int COLOR_BORDER = 0xFF3A3A3A;
+		private static final int COLOR_BORDER_HOVER = 0xFF6A6A6A;
+		private static final net.minecraft.resources.Identifier BOX_SPRITE =
+				net.minecraft.resources.Identifier.withDefaultNamespace("widget/checkbox");
+		private static final net.minecraft.resources.Identifier BOX_SELECTED_SPRITE =
+				net.minecraft.resources.Identifier.withDefaultNamespace("widget/checkbox_selected");
+		private static final net.minecraft.resources.Identifier BOX_HOVER_SPRITE =
+				net.minecraft.resources.Identifier.withDefaultNamespace("widget/checkbox_highlighted");
+		private static final net.minecraft.resources.Identifier BOX_SELECTED_HOVER_SPRITE =
+				net.minecraft.resources.Identifier.withDefaultNamespace("widget/checkbox_selected_highlighted");
+
+		private final Font font;
+		private final Component name;
+		private final Component status;
+		private final List<FormattedCharSequence> descLines;
+		private final Consumer<Boolean> onToggle;
+		private boolean selected;
+
+		LoopCardWidget(int x, int y, int width, LoopDefinition def, boolean selected,
+		               Component status, Font font, Consumer<Boolean> onToggle) {
+			super(x, y, width, cardHeight(def, width, font),
+					Component.literal(def.displayName() == null ? def.id() : def.displayName()));
+			this.font = font;
+			this.name = this.getMessage();
+			this.status = status;
+			this.descLines = def.description() == null ? List.of()
+					: font.split(Component.literal(def.description()), Math.max(1, width - PADDING * 2));
+			this.onToggle = onToggle;
+			this.selected = selected;
+		}
+
+		/** 卡片总高度：内边距 + 标题行（复选框高度）+ 描述换行行数。 */
+		private static int cardHeight(LoopDefinition def, int width, Font font) {
+			int boxSize = Checkbox.getBoxSize(font);
+			int height = PADDING + boxSize + PADDING;
+			if (def.description() != null) {
+				int lines = font.split(Component.literal(def.description()),
+						Math.max(1, width - PADDING * 2)).size();
+				height += TITLE_DESC_GAP + lines * font.lineHeight;
+			}
+			return height;
+		}
+
+		@Override
+		protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+			int right = this.getX() + this.getWidth();
+			int bottom = this.getY() + this.getHeight();
+			// 背景 + 边框（悬停时边框提亮）
+			graphics.fill(this.getX(), this.getY(), right, bottom, 0x66000000);
+			int border = this.isHovered() ? COLOR_BORDER_HOVER : COLOR_BORDER;
+			graphics.hLine(this.getX(), right, this.getY(), border);
+			graphics.hLine(this.getX(), right, bottom - 1, border);
+			graphics.vLine(this.getX(), this.getY(), bottom, border);
+			graphics.vLine(right - 1, this.getY(), bottom, border);
+
+			int boxSize = Checkbox.getBoxSize(this.font);
+			int boxX = this.getX() + PADDING;
+			int boxY = this.getY() + PADDING;
+			// 复选框精灵（原版 Checkbox 同款 sprite）
+			net.minecraft.resources.Identifier sprite = this.selected
+					? (this.isHovered() ? BOX_SELECTED_HOVER_SPRITE : BOX_SELECTED_SPRITE)
+					: (this.isHovered() ? BOX_HOVER_SPRITE : BOX_SPRITE);
+			graphics.blitSprite(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
+					sprite, boxX, boxY, boxSize, boxSize);
+			// 名称（复选框右侧，垂直居中于标题行）
+			graphics.drawString(this.font, this.name,
+					boxX + boxSize + BOX_LABEL_GAP,
+					boxY + (boxSize - this.font.lineHeight) / 2, 0xFFFFFFFF);
+			// 状态文本（右对齐，垂直居中于标题行）
+			graphics.drawString(this.font, this.status,
+					right - PADDING - this.font.width(this.status),
+					boxY + (boxSize - this.font.lineHeight) / 2, 0xFFFFFFFF);
+			// 描述（灰色小字，换行显示）
+			int y = boxY + boxSize + TITLE_DESC_GAP;
+			for (FormattedCharSequence line : this.descLines) {
+				graphics.drawString(this.font, line, this.getX() + PADDING, y, COLOR_DESC);
+				y += this.font.lineHeight;
+			}
+		}
+
+		@Override
+		public void onClick(net.minecraft.client.input.MouseButtonEvent event, boolean bl) {
+			this.selected = !this.selected;
+			this.onToggle.accept(this.selected);
+		}
+
+		@Override
+		protected void updateWidgetNarration(
+				net.minecraft.client.gui.narration.NarrationElementOutput narrationElementOutput) {
+			this.defaultButtonNarrationText(narrationElementOutput);
 		}
 	}
 
