@@ -35,6 +35,8 @@ public final class E2ERegistry {
 		register(new com.swaydy.opencraft.e2e.tasks.StoreItemsInChestTask());
 		register(new com.swaydy.opencraft.e2e.tasks.RetrieveFromChestTask());
 		register(new com.swaydy.opencraft.e2e.tasks.OrganizeContainerTask());
+		register(new com.swaydy.opencraft.e2e.tasks.SmeltOreInFurnaceTask());
+		register(new com.swaydy.opencraft.e2e.tasks.AddFuelAndOreToFurnaceTask());
 		OpenCraftMod.LOGGER.info("[OpenCraft] 端到端测试模块已注册 {} 个内置任务", TASKS.size());
 	}
 

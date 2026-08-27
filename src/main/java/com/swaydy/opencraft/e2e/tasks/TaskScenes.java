@@ -75,4 +75,25 @@ final class TaskScenes {
 		}
 		return pos;
 	}
+
+	/** 在容器位置放一个熔炉（服务端线程）。 */
+	static BlockPos placeFurnace(E2EContext ctx) {
+		ServerLevel level = ctx.level();
+		BlockPos pos = containerPos(ctx);
+		level.setBlock(pos, net.minecraft.world.level.block.Blocks.FURNACE.defaultBlockState(), Block.UPDATE_ALL);
+		return pos;
+	}
+
+	/**
+	 * 往熔炉输入槽（槽 2）放入待烧物品（服务端线程；返回熔炉位置）。
+	 * 熔炉槽位：0=成品、1=燃料、2=输入。
+	 */
+	static BlockPos fillFurnaceInput(E2EContext ctx, net.minecraft.world.item.Item item, int count) {
+		BlockPos pos = placeFurnace(ctx);
+		if (ctx.level().getBlockEntity(pos)
+				instanceof net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity furnace) {
+			furnace.setItem(2, new net.minecraft.world.item.ItemStack(item, count));
+		}
+		return pos;
+	}
 }
