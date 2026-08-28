@@ -320,10 +320,19 @@ class LlmClientTest {
 
 	@Test
 	void stalledStreamFailsWithStalledCode() throws Exception {
-		// 发 200 头后不写任何 body：客户端读阻塞 → 看门狗超时 → close → STALLED
+		// 发 200 头 + 一个未写完的 SSE data 行，然后静默：客户端收完头阻塞在读上 → 看门狗超时 → close → STALLED。
+		// 两个关键点（JDK 25 实测踩坑）：
+		// 1. 必须写出真实字节再 flush——新版 JDK 的 HttpServer 不再在 sendResponseHeaders 时把响应头
+		//    刷到网络，纯静默会让客户端一直等不到头，而看门狗（建流后才起表）根本没机会启动，
+		//    最终被 SDK 读超时以 TIMEOUT 收场（CI 上本测试 flaky 的根因）；
+		// 2. 只写半个事件（无换行收尾）——符合 SSE 规范的解析器不会把它交付成 chunk，
+		//    不会重置看门狗的 idle 计时，"服务端中断"场景成立。
 		server.createContext("/v1/chat/completions", exchange -> {
 			exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
 			exchange.sendResponseHeaders(200, 0);
+			OutputStream body = exchange.getResponseBody();
+			body.write("data:".getBytes(StandardCharsets.UTF_8));
+			body.flush();
 			try {
 				Thread.sleep(30_000);
 			} catch (InterruptedException ignored) {
