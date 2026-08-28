@@ -3,13 +3,14 @@
 	"id": "opencraft",
 	"version": "${version}",
 	"name": "OpenCraft",
-	"description": "An open-source Minecraft mod!",
+	"description": "AI game assistant companion mod for Minecraft 1.21.11. An AI-powered bot joins your server, follows you, and executes real player actions (moving, mining, placing, crafting, container interactions) via an OpenAI-compatible Chat Completions API.",
 	"authors": [
 		"SwayDy"
 	],
 	"contact": {
-		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/ningyx25/opencraft"
+		"homepage": "https://github.com/ningyx25/opencraft",
+		"sources": "https://github.com/ningyx25/opencraft",
+		"issues": "https://github.com/ningyx25/opencraft/issues"
 	},
 	"license": "CC0-1.0",
 	"icon": "assets/opencraft/icon.png",
