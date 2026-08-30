@@ -69,7 +69,8 @@ public final class GeneralAgent extends BaseAgent {
 	@Override
 	public List<String> skills() {
 		// 绑定的内置技能（skills/index.json 登记;未绑定的不注入）——
-		// 生存玩家视角:砍树 / 工具链合成
-		return List.of("gather-wood", "craft-toolchain");
+		// 生存玩家视角:砍树 / 工具链合成 / 挖矿 / 熔炉烧炼 / 箱子存取 / 搭建基础
+		return List.of("gather-wood", "craft-toolchain", "mine-ores",
+				"smelt-in-furnace", "chest-storage", "build-basics");
 	}
 }

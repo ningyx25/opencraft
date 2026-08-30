@@ -21,7 +21,7 @@ class SkillLibraryTest {
 
 	/** general_agent 预设的全部工具（渲染用）。 */
 	private static final Set<String> AGENT_TOOLS = Set.of(
-			"teleport_to_player", "player_goto", "player_stop", "player_jump",
+			"teleport_to_player", "player_goto", "player_stop", "player_teleport", "player_jump",
 			"player_find", "player_mine", "player_place", "player_craft",
 			"player_item_move", "player_hotbar_select", "player_hand_to_player",
 			"player_inventory",
@@ -31,7 +31,7 @@ class SkillLibraryTest {
 
 	/** 已知工具名全集（requires_tools 合法性校验用）。 */
 	private static final Set<String> KNOWN_TOOLS = Set.of(
-			"teleport_to_player", "player_goto", "player_stop", "player_jump",
+			"teleport_to_player", "player_goto", "player_stop", "player_teleport", "player_jump",
 			"player_find", "player_mine", "player_place", "player_craft",
 			"player_inventory", "player_item_move", "player_hotbar_select",
 			"player_hand_to_player",
