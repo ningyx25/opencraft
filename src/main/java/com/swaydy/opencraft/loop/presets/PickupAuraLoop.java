@@ -43,8 +43,8 @@ public class PickupAuraLoop extends LoopPreset {
 	private static final double SPEED_PER_BLOCK = 0.12;
 	/** 拉动速度上限。 */
 	private static final double MAX_PULL_SPEED = 0.9;
-	/** 拉动时附加的向上速度（抛物线飞向助手）。 */
-	private static final double PULL_UP_SPEED = 0.12;
+	/** 拉动时附加的向上速度（抵消重力,竖直方向也能拉）。 */
+	private static final double PULL_UP_SPEED = 0.08;
 
 	@Override
 	public String id() {
@@ -91,8 +91,12 @@ public class PickupAuraLoop extends LoopPreset {
 	// 三个组成部分（助手解析复用 Owners,缺失环节返回 null 由引擎按跳过处理）
 	// ------------------------------------------------------------------
 
-	/** 助手身边 {@value #RADIUS} 格内可收集的掉落物（可拾取、非助手自己丢弃）。 */
+	/** 助手身边 {@value #RADIUS} 格内可收集的掉落物（可拾取、非助手自己丢弃）；背包已满时不收集。 */
 	private static List<ItemEntity> collectibleNear(AiAssistantPlayer assistant) {
+		// 背包满时不再拉动——物品收不进去,只会被反复推向助手堆在脚边
+		if (assistant.getInventory().getFreeSlot() == -1) {
+			return List.of();
+		}
 		return assistant.level().getEntitiesOfClass(ItemEntity.class,
 				assistant.getBoundingBox().inflate(RADIUS),
 				item -> item.isAlive() && !item.hasPickUpDelay()
@@ -105,7 +109,7 @@ public class PickupAuraLoop extends LoopPreset {
 		return assistant != null && !collectibleNear(assistant).isEmpty();
 	}
 
-	/** 执行事件：给可收集的掉落物一个飞向助手的速度（越远越快）。 */
+	/** 执行事件：给可收集的掉落物一个飞向助手的速度（越远越快,含竖直方向）。 */
 	private static void pullItems(LoopContext ctx) {
 		AiAssistantPlayer assistant = Owners.assistantOf(ctx);
 		if (assistant == null) {
@@ -114,14 +118,13 @@ public class PickupAuraLoop extends LoopPreset {
 		List<ItemEntity> items = collectibleNear(assistant);
 		for (ItemEntity item : items) {
 			Vec3 toAssistant = assistant.position().subtract(item.position());
-			double horizSqr = toAssistant.x * toAssistant.x + toAssistant.z * toAssistant.z;
-			if (horizSqr < 1.0E-6) {
+			double dist = toAssistant.length();
+			if (dist < 0.75) {
 				continue; // 已在脚边,原版接触拾取会自动收入
 			}
-			double horiz = Math.sqrt(horizSqr);
-			double speed = Math.min(MAX_PULL_SPEED, BASE_PULL_SPEED + horiz * SPEED_PER_BLOCK);
-			item.setDeltaMovement(toAssistant.x / horiz * speed,
-					PULL_UP_SPEED, toAssistant.z / horiz * speed);
+			// 全 3D 方向拉动——只按水平算的话,正上/正下方（坑里/楼上）的物品永远拉不到
+			double speed = Math.min(MAX_PULL_SPEED, BASE_PULL_SPEED + dist * SPEED_PER_BLOCK);
+			item.setDeltaMovement(toAssistant.normalize().scale(speed).add(0, PULL_UP_SPEED, 0));
 		}
 		if (!items.isEmpty()) {
 			DebugLog.log("loop", "pickup_aura: 拉动 {} 个掉落物飞向助手", items.size());

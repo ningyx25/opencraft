@@ -24,10 +24,10 @@
 | `presets/LoopPreset.java` | **内置循环事件预设的基类（SPI）**：预设 = 三组成部分（`trigger()`/`event()`/`monitor()` 必填）+ 显示信息 + 运行参数（`intervalTicks`/`maxIterations`/`persistent` 带默认值）；`definition()`（final）组装成框架的 `LoopDefinition`。预设类继承它、覆写访问器声明自身属性（同 `agent/presets/BaseAgent` 思路）。 |
 | `presets/Owners.java` | **预设共享的锚点解析工具**（包私有）：`ownerOf(ctx)` 从锚点（绑定方块的 `GlobalPos`）解析**主人玩家**、`assistantOf(ctx)` 解析**助手本体**；无服务端/维度未加载/无绑定助手/主人离线等任何缺失环节返回 null，由调用方判空跳过本轮（引擎对 null 无感）。 |
 | `presets/HealAuraLoop.java` | **`heal_aura`（治疗光环）**：触发=绑定方块的主人玩家在线、存活、生命不满；事件=`heal(1.0F)`；监测=仍不满→CONTINUE 否则 STOP；`intervalTicks=40`（每 2 秒）、`persistent=true`（满血后闲置监视，主人再次受伤自动再治疗）。守护光环家族的模板实现。 |
-| `presets/FeedAuraLoop.java` | **`feed_aura`（饱食光环）**：主人饥饿值不满时每 2 秒 +1 饱食直到吃饱；`intervalTicks=40`、`persistent=true`。饥饿 ≥18 后原版自然回血恢复生效——与 heal_aura 组成"保命"组合。 |
+| `presets/FeedAuraLoop.java` | **`feed_aura`（饱食光环）**：主人饥饿值不满时每 2 秒 `FoodData.eat(1, 0.6F)` 恢复饥饿并等同口粮累积饱和度直到吃饱——只加饥饿不加饱和度会被自然回血烧穿、出现回血-掉饥饿拉锯；`intervalTicks=40`、`persistent=true`。饥饿 ≥18 后原版自然回血恢复生效——与 heal_aura 组成"保命"组合。 |
 | `presets/BreathAuraLoop.java` | **`breath_aura`（换气光环）**：主人氧气不满（溺水）时每 0.5 秒恢复 60 点氧气（3 个气泡）直到离水；`intervalTicks=10`（溺水是急症，间隔取短）、`persistent=true`。 |
 | `presets/ExtinguishLoop.java` | **`extinguish_fire`（灭火守护）**：主人着火时每 0.5 秒 `extinguishFire()` 灭火直到火熄灭；`intervalTicks=10`、`persistent=true`。 |
-| `presets/PickupAuraLoop.java` | **`pickup_aura`（拾取光环）**：把绑定助手 5 格内**已过拾取保护期**且**非助手自己丢弃**的掉落物以速度拉向助手（越远越快），由助手（真玩家接触拾取）收进背包；监测恒 STOP（每轮拉动一次即结束本轮）、`intervalTicks=20`、`persistent=true`。拉向**助手**而非主人：助手是"帮你收拾"的执行者，且不回收助手自己丢弃的物品（不干扰 e2e 物品流）。 |
+| `presets/PickupAuraLoop.java` | **`pickup_aura`（拾取光环）**：把绑定助手 5 格内**已过拾取保护期**且**非助手自己丢弃**的掉落物以速度拉向助手（**全 3D 方向**、越远越快——只按水平算正上/正下方的物品拉不到），由助手（真玩家接触拾取）收进背包；助手背包满（`getFreeSlot()==-1`）时不空拉；监测恒 STOP（每轮拉动一次即结束本轮）、`intervalTicks=20`、`persistent=true`。拉向**助手**而非主人：助手是"帮你收拾"的执行者，且不回收助手自己丢弃的物品（不干扰 e2e 物品流）。 |
 | `presets/RepelMonstersLoop.java` | **`mob_repel`（驱怪光环）**：主人 6 格内有敌对生物（`Enemy` 接口，含苦力怕/僵尸/骷髅/史莱姆/幻翼等）时每 1 秒 `knockback` 沿"远离主人"方向击退一次（不造成伤害、尊重击退抗性）；监测恒 STOP、`intervalTicks=20`、`persistent=true`。间隔必须短于僵尸走近时间（约 2 秒）与苦力怕引信（1.5 秒）。 |
 
 ## 生命周期接线
@@ -55,4 +55,4 @@
 ## 测试
 
 - JUnit（纯 Java，无 Minecraft 运行时）：`src/test/java/com/swaydy/opencraft/loop/LoopDefinitionTest.java`（构建器校验）、`LoopEngineTest.java`（状态机推进 / 间隔门控 / 迭代上限 / persistent 守护语义 / trigger-event-monitor 三种异常守卫 / start 幂等 / stop/stopAll/clear / 多实例 / state 跨 tick 持久）、`LoopPresetsTest.java`（全部内置预设的 `definition()` 组装校验：id 唯一小写、三组成部分非空、守护参数、persistent 语义 + 注册表注册/重复注册忽略）。
-- Gametest：`OpenCraftGameTests.healAuraLoopHealsOwner` —— 召唤自动启动 → 主人受伤后每 ~40 tick 回 1 点血 → 满血后 persistent 循环闲置不消亡 → 送走即停止；`feedAuraLoopFeedsOwner` —— 饱食光环从饥饿 5 喂到 20 + 生命周期同上；`extinguishLoopExtinguishesOwner` —— 主人着火 ~10 tick 内被扑灭 + 生命周期同上；`configLoopToggleStartsAndStops` —— 配置界面开关与循环实例启停联动。
+- Gametest：`OpenCraftGameTests.healAuraLoopHealsOwner` —— 召唤自动启动 → 主人受伤后每 ~40 tick 回 1 点血 → 满血后 persistent 循环闲置不消亡 → 送走即停止；`feedAuraLoopFeedsOwner` —— 饱食光环从饥饿 5 喂到 20 + 生命周期同上；`extinguishLoopExtinguishesOwner` —— 主人着火 ~10 tick 内被扑灭 + 生命周期同上；`breathAuraLoopRestoresAir` —— 氧气清零后 ~10 tick 内补氧回满 + 迭代断言 + 生命周期同上；`pickupAuraLoopCollectsDrops` —— 助手身边的苹果被拉向助手收进背包（布置前先把助手传送到主人身边:空结构外壳 barrier + 跟随不主动下降,见 CLAUDE.md）；`repelMonstersLoopPushesHostiles` —— `spawnWithNoFreeWill` 尸壳被推离出生点（位移或击退速度满足其一）+ 迭代断言；`configLoopToggleStartsAndStops` —— 配置界面开关与循环实例启停联动。

@@ -2758,7 +2758,8 @@ public class OpenCraftGameTests {
 	 */
 	private static GlobalPos prepareLoopTest(GameTestHelper helper, ServerPlayer player) {
 		BlockPos platform = new BlockPos(4, 1, 4);
-		for (int dx = -3; dx <= 3; dx++) {
+		// 向东多铺 5 格:驱怪光环测试的尸壳被推离主人后仍站在实地上（不会摔落消失）
+		for (int dx = -3; dx <= 8; dx++) {
 			for (int dz = -3; dz <= 3; dz++) {
 				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
 			}
@@ -2904,6 +2905,250 @@ public class OpenCraftGameTests {
 					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
 							com.swaydy.opencraft.loop.presets.ExtinguishLoop.ID)) {
 						throw new AssertionError("送走助手后 extinguish_fire 循环实例应停止");
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/** 助手主背包（36 格）里是否有指定物品（pickup_aura 测试断言用）。 */
+	private static boolean botInventoryContains(GlobalPos bindPos, net.minecraft.world.item.Item item) {
+		com.swaydy.opencraft.assistant.player.AiAssistantPlayer bot =
+				com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+		if (bot == null) {
+			return false;
+		}
+		for (net.minecraft.world.item.ItemStack stack : bot.getInventory().getNonEquipmentItems()) {
+			if (!stack.isEmpty() && stack.getItem() == item) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** 玩家主背包里是否有指定物品（pickup_aura 测试断言用:拉动路径可能先碰到主人）。 */
+	private static boolean ownerInventoryContains(ServerPlayer player, net.minecraft.world.item.Item item) {
+		for (net.minecraft.world.item.ItemStack stack : player.getInventory().getNonEquipmentItems()) {
+			if (!stack.isEmpty() && stack.getItem() == item) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * 循环事件模块端到端验证：breath_aura（换气光环）。
+	 * 1. 召唤助手绑定方块 → breath_aura 循环实例自动启动;
+	 * 2. 主人氧气清零（溺水临界）→ 每 ~10 tick 快速恢复氧气,轮询等到回升、回满;
+	 * 3. 循环迭代 ≥1（触发+事件确实在真实世界跑过）,persistent 闲置不消亡;
+	 * 4. 送走助手 → 循环实例停止。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 1000)
+	public void breathAuraLoopRestoresAir(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		GlobalPos bindPos = prepareLoopTest(helper, player);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 1) 召唤（绑定最近的未绑定方块）→ 下一 tick 进入查找表
+					if (com.swaydy.opencraft.assistant.AssistantFacade.summonNearest(player) == null) {
+						throw new AssertionError("召唤助手失败");
+					}
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.BreathAuraLoop.ID)) {
+						throw new AssertionError("召唤后 breath_aura 循环实例应已启动");
+					}
+					player.setAirSupply(0);
+				})
+				.thenWaitUntil(() -> {
+					// 2) 每 ~10 tick +60 氧气 → 轮询等到氧气回升
+					if (player.getAirSupply() <= 0) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待换气光环生效（当前氧气 " + player.getAirSupply() + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 3) 等到氧气回满（监测函数 STOP 结束本轮）
+					if (player.getAirSupply() < player.getMaxAirSupply()) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待氧气回满（当前氧气 " + player.getAirSupply() + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 4) 迭代 ≥1（触发+事件确实跑过）;persistent 闲置不消亡;5) 送走 → 停止
+					if (com.swaydy.opencraft.loop.LoopEngine.status().stream()
+							.noneMatch(s -> bindPos.equals(s.anchor())
+									&& com.swaydy.opencraft.loop.presets.BreathAuraLoop.ID.equals(s.defId())
+									&& s.iteration() > 0)) {
+						throw new AssertionError("breath_aura 循环应有补氧迭代记录");
+					}
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.BreathAuraLoop.ID)) {
+						throw new AssertionError("回满后 persistent 循环应仍在运行（闲置监视）");
+					}
+					com.swaydy.opencraft.assistant.AiAssistant bound =
+							com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(helper.getLevel(), bindPos);
+					if (bound == null) {
+						throw new AssertionError("助手不存在,无法送走");
+					}
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bound);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.BreathAuraLoop.ID)) {
+						throw new AssertionError("送走助手后 breath_aura 循环实例应停止");
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 循环事件模块端到端验证：pickup_aura（拾取光环）。
+	 * 1. 召唤助手绑定方块 → pickup_aura 循环实例自动启动;
+	 * 2. 在主人身边 2 格掉一个苹果（原版拾取保护期过后）→ 光环把掉落物拉向助手,
+	 *    途中被助手或主人接触拾取收进背包（拉动方向穿过主人时主人先碰到属正常路径）;
+	 *    没有光环的苹果只会原地不动——被收走本身即证明光环生效;
+	 * 3. 送走助手 → 循环实例停止。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 1000)
+	public void pickupAuraLoopCollectsDrops(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		GlobalPos bindPos = prepareLoopTest(helper, player);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 1) 召唤（绑定最近的未绑定方块）→ 下一 tick 进入查找表
+					if (com.swaydy.opencraft.assistant.AssistantFacade.summonNearest(player) == null) {
+						throw new AssertionError("召唤助手失败");
+					}
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.PickupAuraLoop.ID)) {
+						throw new AssertionError("召唤后 pickup_aura 循环实例应已启动");
+					}
+					// 空结构外壳是 barrier,召唤的"向上找安全点"扫描可能把助手落在头顶的
+					// barrier 上,跟随的水平移动不会主动下降（既有跟随行为,与循环模块无关）——
+					// 拾取光环依赖助手与掉落物的距离,这里直接把助手放到主人身边再布置掉落物
+					com.swaydy.opencraft.assistant.player.AiAssistantPlayer pickupBot =
+							com.swaydy.opencraft.assistant.player.PlayerAssistantService.findBoundTo(bindPos);
+					if (pickupBot == null) {
+						throw new AssertionError("找不到已召唤的助手");
+					}
+					net.minecraft.world.phys.Vec3 botSpot = helper.absoluteVec(
+							new net.minecraft.world.phys.Vec3(5.5, 2, 4.5));
+					pickupBot.teleportTo(botSpot.x, botSpot.y, botSpot.z);
+					// 掉落点在助手东侧 1 格（远离主人方向,不会被主人抢走）
+					helper.spawnItem(Items.APPLE, new BlockPos(7, 2, 4));
+				})
+				.thenWaitUntil(() -> {
+					// 3) 轮询等到苹果被收进助手背包（光环拉向助手 + 真玩家接触拾取）
+					if (!botInventoryContains(bindPos, Items.APPLE)) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+							net.minecraft.network.chat.Component.literal("等待拾取光环把苹果收进助手背包…"),
+							(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 4) 送走助手 → 循环停止
+					com.swaydy.opencraft.assistant.AiAssistant bound =
+							com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(helper.getLevel(), bindPos);
+					if (bound == null) {
+						throw new AssertionError("助手不存在,无法送走");
+					}
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bound);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.PickupAuraLoop.ID)) {
+						throw new AssertionError("送走助手后 pickup_aura 循环实例应停止");
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 循环事件模块端到端验证：mob_repel（驱怪光环）。
+	 * 1. 召唤助手绑定方块 → mob_repel 循环实例自动启动;
+	 * 2. 主人东侧 6 格放一只尸壳（僵尸变种,白天不燃烧;无自由意志,只被击退推动）
+	 *    → 每 ~20 tick 被沿"远离主人"方向击退一次;
+	 * 3. 断言击退生效（尸壳离开出生点,或击退速度尚未消耗——两种引擎路径下都确定成立）
+	 *    且循环迭代 ≥1;
+	 * 4. 清理尸壳、送走助手 → 循环实例停止。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 1000)
+	public void repelMonstersLoopPushesHostiles(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		GlobalPos bindPos = prepareLoopTest(helper, player);
+		// 尸壳引用：在序列里生成、后续断言/清理用（lambda 捕获要求容器 effectively final）
+		net.minecraft.world.entity.monster.zombie.Husk[] huskRef = new net.minecraft.world.entity.monster.zombie.Husk[1];
+		// 出生点（绝对坐标）：主人东侧 6 格,恰好在驱怪半径边缘
+		net.minecraft.world.phys.Vec3 spawnPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(10.5, 2, 4.5));
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 1) 召唤（绑定最近的未绑定方块）→ 下一 tick 进入查找表
+					if (com.swaydy.opencraft.assistant.AssistantFacade.summonNearest(player) == null) {
+						throw new AssertionError("召唤助手失败");
+					}
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.RepelMonstersLoop.ID)) {
+						throw new AssertionError("召唤后 mob_repel 循环实例应已启动");
+					}
+					huskRef[0] = helper.spawnWithNoFreeWill(EntityType.HUSK, new BlockPos(10, 2, 4));
+				})
+				.thenIdle(35)
+				.thenExecute(() -> {
+					// 3) 间隔 20 tick + 三阶段推进,35 tick 内至少完成一轮驱退;断言击退生效
+					net.minecraft.world.entity.monster.zombie.Husk husk = huskRef[0];
+					if (husk == null || !husk.isAlive()) {
+						throw new AssertionError("尸壳应存活（驱怪不造成伤害）");
+					}
+					double movedFromSpawn = husk.position().subtract(spawnPos).horizontalDistance();
+					boolean pushed = movedFromSpawn > 0.75
+							|| husk.getDeltaMovement().horizontalDistance() > 0.05;
+					if (!pushed) {
+						throw new AssertionError("尸壳应被推离出生点（位移 " + movedFromSpawn + "）");
+					}
+					if (com.swaydy.opencraft.loop.LoopEngine.status().stream()
+							.noneMatch(s -> bindPos.equals(s.anchor())
+									&& com.swaydy.opencraft.loop.presets.RepelMonstersLoop.ID.equals(s.defId())
+									&& s.iteration() > 0)) {
+						throw new AssertionError("mob_repel 循环应有驱退迭代记录");
+					}
+					// 4) 清理尸壳、送走助手 → 循环停止
+					husk.discard();
+					com.swaydy.opencraft.assistant.AiAssistant bound =
+							com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(helper.getLevel(), bindPos);
+					if (bound == null) {
+						throw new AssertionError("助手不存在,无法送走");
+					}
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bound);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.RepelMonstersLoop.ID)) {
+						throw new AssertionError("送走助手后 mob_repel 循环实例应停止");
 					}
 					AiCompanionService.resetAllHistory(player);
 					helper.succeed();

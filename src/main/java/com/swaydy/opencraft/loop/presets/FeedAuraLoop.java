@@ -34,6 +34,8 @@ public class FeedAuraLoop extends LoopPreset {
 	private static final int MAX_FOOD_LEVEL = 20;
 	/** 每轮恢复的饥饿值。 */
 	private static final int FEED_AMOUNT = 1;
+	/** 饱和度修饰符（等同一口食物：eat 会按 饥饿值×修饰符×2 累积饱和度）。 */
+	private static final float SATURATION_MODIFIER = 0.6F;
 
 	@Override
 	public String id() {
@@ -86,14 +88,15 @@ public class FeedAuraLoop extends LoopPreset {
 				&& owner.getFoodData().getFoodLevel() < MAX_FOOD_LEVEL;
 	}
 
-	/** 执行事件：给主人恢复 1 点饥饿值。 */
+	/** 执行事件：给主人恢复 1 点饥饿值,并等同一口食物累积饱和度——
+	 *  只加饥饿值不加饱和度的话,原版自然回血会把饥饿值烧掉,出现"回血-掉饥饿"拉锯。 */
 	private static void feedOwner(LoopContext ctx) {
 		ServerPlayer owner = Owners.ownerOf(ctx);
 		if (owner == null) {
 			return;
 		}
 		FoodData food = owner.getFoodData();
-		food.setFoodLevel(Math.min(food.getFoodLevel() + FEED_AMOUNT, MAX_FOOD_LEVEL));
+		food.eat(FEED_AMOUNT, SATURATION_MODIFIER);
 		DebugLog.log("loop",
 				"feed_aura: 喂食 {}（饥饿 {}/{}）",
 				owner.getName().getString(),

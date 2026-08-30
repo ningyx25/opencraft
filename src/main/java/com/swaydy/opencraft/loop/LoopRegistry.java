@@ -8,7 +8,8 @@ import java.util.Map;
 /**
  * 循环事件定义的静态注册表（在 {@code LoopModule.init()} 时注册内置定义）。
  *
- * <p>纯 Java、无 Minecraft 依赖,可 JUnit 单测。重复 id 注册时告警并忽略先注册者。
+ * <p>纯 Java、无 Minecraft 依赖,可 JUnit 单测。重复 id 注册时告警并忽略后注册的
+ * （保留先注册者）。
  */
 public final class LoopRegistry {
 	private static final Map<String, LoopDefinition> DEFINITIONS = new LinkedHashMap<>();
@@ -16,7 +17,7 @@ public final class LoopRegistry {
 	private LoopRegistry() {
 	}
 
-	/** 注册一个循环事件定义（重复 id 告警忽略）。 */
+	/** 注册一个循环事件定义（重复 id 告警并忽略,保留先注册的）。 */
 	public static void register(LoopDefinition def) {
 		if (def == null || def.id() == null) {
 			return;
