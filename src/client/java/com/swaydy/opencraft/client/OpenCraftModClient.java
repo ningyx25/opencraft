@@ -3,6 +3,7 @@ package com.swaydy.opencraft.client;
 import com.swaydy.opencraft.ai.AiConfigData;
 import com.swaydy.opencraft.client.gui.AiConfigScreen;
 import com.swaydy.opencraft.client.render.AssistantStreamOverlay;
+import com.swaydy.opencraft.client.skin.AssistantSkinState;
 import com.swaydy.opencraft.net.AiConfigPayloads;
 import com.swaydy.opencraft.net.AssistantPayloads;
 import com.swaydy.opencraft.net.AssistantStreamPayloads;
@@ -10,6 +11,7 @@ import com.swaydy.opencraft.client.gui.AssistantInventoryScreen;
 import com.swaydy.opencraft.inventory.ModMenuTypes;
 import net.minecraft.client.gui.screens.MenuScreens;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.Minecraft;
@@ -65,6 +67,16 @@ public class OpenCraftModClient implements ClientModInitializer {
 				AssistantStreamPayloads.AssistantStreamPayload.TYPE,
 				(payload, context) -> context.client().execute(() -> AssistantStreamOverlay.update(
 						payload.sessionId(), payload.name(), payload.text(), payload.done())));
+
+		// 助手皮肤同步：bot UUID → 内置皮肤 id（客户端 Mixin 在渲染时据此替换贴图；
+		// default 会从映射里移除 = 回退原版皮肤解析）
+		ClientPlayNetworking.registerGlobalReceiver(
+				AssistantPayloads.AssistantSkinPayload.TYPE,
+				(payload, context) -> context.client().execute(() ->
+						AssistantSkinState.apply(payload.botUuid(), payload.skinId())));
+		// 断线清空皮肤映射，避免跨服残留误伤同 UUID 的真实玩家
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) ->
+				AssistantSkinState.clear());
 
 		// 渲染世界内流式浮层（每次 HUD 渲染时）
 		HudRenderCallback.EVENT.register(AssistantStreamOverlay::render);

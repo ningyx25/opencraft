@@ -49,6 +49,15 @@ public final class AiBlockConfig {
 	 */
 	public String agent = "general_agent";
 
+	/**
+	 * 助手皮肤（内置皮肤 id，见 {@link com.swaydy.opencraft.assistant.skin.AssistantSkins}）：
+	 * "default" = 原版默认皮肤（客户端按 GameProfile UUID 从 18 个官方皮肤里哈希选一个）；
+	 * 其余 id 使用随模组分发的客户端贴图（assets/opencraft/textures/skins/<id>.png），
+	 * 由客户端在渲染时替换。1.21.9+ 皮肤解析在客户端且对非本地玩家强制 Mojang 签名，
+	 * 服务端只同步 id 字符串（AssistantSkinPayload），无法也不需要下发贴图本体。
+	 */
+	public String skin = com.swaydy.opencraft.assistant.skin.AssistantSkins.DEFAULT_ID;
+
 	// 助手行为参数（跟随/待命模式已整体移除，不再有 followDistance/stopDistance/teleportDistance）
 	public double maxDistance = 64.0;
 	public double speed = 1.0;
@@ -235,7 +244,8 @@ public final class AiBlockConfig {
 				model,
 				temperature, maxHistoryMessages, timeoutSeconds, language,
 				maxDistance, speed,
-				name, agent, effectiveEnabledLoops());
+				name, agent, effectiveEnabledLoops(),
+				com.swaydy.opencraft.assistant.skin.AssistantSkins.normalize(skin));
 	}
 
 	/** 用编辑器传来的数据覆盖本配置（apiKey 仅在 apiKeyChanged 时更新）。 */
@@ -255,6 +265,8 @@ public final class AiBlockConfig {
 				? "general_agent" : data.agent().trim();
 		agent = com.swaydy.opencraft.agent.AgentRegistry.agent(requestedAgent) != null
 				? requestedAgent : "general_agent";
+		// 皮肤 id 归一化（未知 id 回退 default），与 Agent 预设同样的"宽容校验"策略
+		skin = com.swaydy.opencraft.assistant.skin.AssistantSkins.normalize(data.skin());
 
 		// 跟随/待命模式已整体移除：followDistance/stopDistance/teleportDistance 不再使用
 		maxDistance = clamp(data.maxDistance(), 8.0, 512.0, 64.0);
@@ -285,6 +297,7 @@ public final class AiBlockConfig {
 		output.putInt("Timeout", timeoutSeconds);
 		output.putString("Language", language);
 		output.putString("Agent", agent);
+		output.putString("Skin", skin);
 		output.putDouble("MaxDistance", maxDistance);
 		output.putDouble("Speed", speed);
 		output.putBoolean("LoopsConfigured", loopsConfigured);
@@ -311,6 +324,8 @@ public final class AiBlockConfig {
 		// 旧存档的 "AllowActions" 标签已废弃（动作能力改由 Agent 预设的插件决定）
 		// 旧存档的 FollowDistance/StopDistance/TeleportDistance 标签已废弃（跟随模式已移除）
 		agent = input.getStringOr("Agent", "general_agent");
+		skin = com.swaydy.opencraft.assistant.skin.AssistantSkins.normalize(
+				input.getStringOr("Skin", com.swaydy.opencraft.assistant.skin.AssistantSkins.DEFAULT_ID));
 		maxDistance = input.getDoubleOr("MaxDistance", 64.0);
 		speed = input.getDoubleOr("Speed", 1.0);
 		// 循环事件开关：旧存档无该标签 → 未配置 = 所有内置循环事件启用（向后兼容）

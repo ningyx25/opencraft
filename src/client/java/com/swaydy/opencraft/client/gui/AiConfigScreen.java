@@ -20,6 +20,7 @@ import net.minecraft.client.gui.components.Checkbox;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.StringWidget;
+import net.minecraft.client.gui.components.PlayerSkinWidget;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.components.tabs.GridLayoutTab;
 import net.minecraft.client.gui.components.tabs.Tab;
@@ -93,6 +94,7 @@ public class AiConfigScreen extends Screen {
 	private int maxHistoryMessages;
 	private String name;
 	private String agent;
+	private String skin;
 
 	private double maxDistance;
 	private double speed;
@@ -160,6 +162,7 @@ public class AiConfigScreen extends Screen {
 		this.name = data.name() == null ? "" : data.name();
 		this.agent = data.agent() == null || data.agent().isBlank()
 				? "general_agent" : data.agent();
+		this.skin = com.swaydy.opencraft.assistant.skin.AssistantSkins.normalize(data.skin());
 
 		this.maxDistance = data.maxDistance();
 		this.speed = data.speed();
@@ -226,6 +229,17 @@ public class AiConfigScreen extends Screen {
 			case "general_agent" -> Component.translatable("agent.opencraft.general");
 			default -> Component.literal(agentId == null ? "" : agentId);
 		};
+	}
+
+	/** 皮肤的显示组件：内置皮肤走翻译键（skin.opencraft.<id>），未知 id 回退原文。 */
+	private static Component skinDisplayComponent(String skinId) {
+		for (com.swaydy.opencraft.assistant.skin.AssistantSkins.SkinDef def
+				: com.swaydy.opencraft.assistant.skin.AssistantSkins.all()) {
+			if (def.id().equals(skinId)) {
+				return Component.translatable(def.displayNameKey());
+			}
+		}
+		return Component.literal(skinId == null ? "" : skinId);
 	}
 
 	/** 服务器返回新数据时刷新界面 */
@@ -417,8 +431,9 @@ public class AiConfigScreen extends Screen {
 				this.speed,
 				this.name,
 				this.agent,
-				new ArrayList<>(this.enabledLoops)
-		);
+				new ArrayList<>(this.enabledLoops),
+				this.skin
+			);
 		ClientPlayNetworking.send(new AiConfigPayloads.AiConfigSavePayload(
 				configToSave.toJson(), this.blockPos, this.dimension));
 	}
@@ -833,11 +848,42 @@ public class AiConfigScreen extends Screen {
 									updated.remove(id);
 								}
 								AiConfigScreen.this.enabledLoops = updated;
-							});
+							}));
 					card.active = AiConfigScreen.this.canEdit;
-					rows.addChild(card);
 				}
 			}
+		}
+
+		@Override
+		public Component getTabTitle() {
+			return Component.translatable("screen.opencraft.config.tab.companion");
+		}
+
+		@Override
+		public Component getTabExtraNarration() {
+			return Component.empty();
+		}
+
+		@Override
+		public void visitChildren(Consumer<AbstractWidget> consumer) {
+			consumer.accept(this.maxSlider);
+			consumer.accept(this.speedSlider);
+			consumer.accept(this.loopList);
+		}
+
+		@Override
+		public void doLayout(ScreenRectangle rectangle) {
+			int x = rectangle.left() + (rectangle.width() - CONTROL_WIDTH) / 2;
+			int y = rectangle.top() + 4;
+			this.maxSlider.setPosition(x, y);
+			y += ROW_HEIGHT + 4;
+			this.speedSlider.setPosition(x, y);
+			y += ROW_HEIGHT + 8;
+			// 卡片列表吃掉标签区剩余的全部高度（列表内部滚动）,底边与页脚留 8px——
+			// 列表声明的高度永远是"实际可视高度",网格/页脚都不会被挤出去
+			this.loopList.setPosition(x, y);
+			this.loopList.setWidth(CONTROL_WIDTH);
+			this.loopList.setHeight(Math.max(60, rectangle.bottom() - 8 - y));
 		}
 	}
 
@@ -845,12 +891,24 @@ public class AiConfigScreen extends Screen {
 	// Tab 4: 聊天窗口
 	// =========================================================================
 
-	/** 聊天页：滚动对话记录 + 输入框 + 发送按钮（自定义 Tab，填满标签区域）。 */
+	/**
+	 * 聊天页：皮肤预览 + 选择器（顶部一行）+ 滚动对话记录 + 输入框 + 发送按钮
+	 * （自定义 Tab，填满标签区域）。皮肤行放本页顶部作为“助手名片”——预览每帧跟随
+	 * 选择器即时切换（宽/细模型自动），可拖拽旋转；从“对话与动作”页移入，该页保持
+	 * 纯表单行对齐。
+	 */
 	private class ChatWindowTab implements Tab {
 		private final ChatLogWidget log;
 		private final ChatInputBox input;
 		private final Button sendButton;
 		private final Button interruptButton;
+		/** 助手皮肤实时预览（PlayerSkinWidget 每帧调 supplier）。 */
+		private final PlayerSkinWidget skinPreview;
+		/** 助手皮肤选择器（按钮文本自带“助手皮肤：”前缀，独立标签省略）。 */
+		private final CycleButton<String> skinPicker;
+		/** 顶部皮肤行的预览尺寸。 */
+		private static final int SKIN_PREVIEW_WIDTH = 48;
+		private static final int SKIN_PREVIEW_HEIGHT = 72;
 
 		public ChatWindowTab() {
 			this.log = new ChatLogWidget(0, 0, 100, 100, AiConfigScreen.this);
@@ -873,6 +931,34 @@ public class AiConfigScreen extends Screen {
 					.size(46, 20)
 					.build();
 			this.interruptButton.active = false;
+
+			// 皮肤预览 + 选择器：选项动态取自 AssistantSkins（default = 原版按 UUID 随机皮肤）；
+			// id 由服务端随召唤/保存同步给客户端，贴图随模组分发、客户端 Mixin 渲染时替换
+			List<String> skinIds = new ArrayList<>();
+			for (com.swaydy.opencraft.assistant.skin.AssistantSkins.SkinDef def
+					: com.swaydy.opencraft.assistant.skin.AssistantSkins.all()) {
+				skinIds.add(def.id());
+			}
+			if (!skinIds.contains(AiConfigScreen.this.skin)) {
+				skinIds.add(0, AiConfigScreen.this.skin);
+			}
+			this.skinPicker = CycleButton.<String>builder(
+							AiConfigScreen::skinDisplayComponent, AiConfigScreen.this.skin)
+					.withValues(skinIds)
+					.withTooltip(val -> Tooltip.create(Component.translatable("screen.opencraft.config.skin.tooltip")))
+					.create(0, 0, 100, ROW_HEIGHT,
+							Component.translatable("screen.opencraft.config.skin"),
+							(btn, val) -> AiConfigScreen.this.skin = val);
+			this.skinPicker.active = AiConfigScreen.this.canEdit;
+			this.skinPreview = new PlayerSkinWidget(SKIN_PREVIEW_WIDTH, SKIN_PREVIEW_HEIGHT,
+					AiConfigScreen.this.minecraft.getEntityModels(),
+					() -> com.swaydy.opencraft.client.skin.AssistantSkinState.previewSkin(
+							AiConfigScreen.this.skin));
+			this.skinPreview.setTooltip(Tooltip.create(
+					Component.translatable("screen.opencraft.config.skin.preview.tooltip")));
+			// 只读模式同样禁止拖拽预览（active 不影响渲染，仅禁交互），与选择器状态一致
+			this.skinPreview.active = AiConfigScreen.this.canEdit;
+
 			AiConfigScreen.this.chatLogWidget = this.log;
 			AiConfigScreen.this.chatInputBox = this.input;
 			AiConfigScreen.this.chatSendButton = this.sendButton;
@@ -891,6 +977,8 @@ public class AiConfigScreen extends Screen {
 
 		@Override
 		public void visitChildren(Consumer<AbstractWidget> consumer) {
+			consumer.accept(this.skinPreview);
+			consumer.accept(this.skinPicker);
 			consumer.accept(this.log);
 			consumer.accept(this.input);
 			consumer.accept(this.sendButton);
@@ -920,9 +1008,17 @@ public class AiConfigScreen extends Screen {
 			this.input.setWidth(Math.max(0, right - sendWidth - interruptWidth - 12 - left));
 			this.input.setHeight(inputHeight);
 
-			this.log.setPosition(left, rectangle.top() + 8);
+			// 顶部皮肤行：预览靠左，选择器占满剩余宽度并垂直居中于预览高度
+			int stripTop = rectangle.top() + 8;
+			this.skinPreview.setPosition(left, stripTop);
+			int pickerX = left + SKIN_PREVIEW_WIDTH + 8;
+			this.skinPicker.setPosition(pickerX, stripTop + (SKIN_PREVIEW_HEIGHT - ROW_HEIGHT) / 2);
+			this.skinPicker.setWidth(Math.max(0, right - pickerX));
+			this.skinPicker.setHeight(ROW_HEIGHT);
+
+			this.log.setPosition(left, stripTop + SKIN_PREVIEW_HEIGHT + 8);
 			this.log.setWidth(Math.max(0, right - left));
-			this.log.setHeight(Math.max(0, inputY - 6 - (rectangle.top() + 8)));
+			this.log.setHeight(Math.max(0, inputY - 6 - (stripTop + SKIN_PREVIEW_HEIGHT + 8)));
 		}
 	}
 

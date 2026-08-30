@@ -72,6 +72,8 @@ public final class AiConfigHandler {
 		if (saveLevel != null && AssistantFacade.isConfigBlockBound(saveLevel, saveBindPos)) {
 			com.swaydy.opencraft.assistant.player.PlayerAssistantService.syncLoopsForBlock(
 					saveLevel, saveBindPos);
+			// 皮肤选择变化即时生效：重新广播该方块的助手皮肤 id（客户端替换贴图）
+			com.swaydy.opencraft.assistant.skin.AssistantSkinSync.syncForBlock(saveLevel, saveBindPos);
 		}
 		OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 更新了方块({})的 AI 配置",
 				player.getName().getString(), pos.toShortString());

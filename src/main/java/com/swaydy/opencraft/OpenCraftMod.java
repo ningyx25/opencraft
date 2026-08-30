@@ -155,6 +155,12 @@ public class OpenCraftMod implements ModInitializer {
 		PayloadTypeRegistry.playS2C().register(
 				AssistantPayloads.AssistantInteractPayload.TYPE,
 				AssistantPayloads.AssistantInteractPayload.STREAM_CODEC);
+
+		// 助手皮肤同步（S2C）：bot UUID → 内置皮肤 id，客户端 Mixin 据此替换 bot 皮肤贴图
+		// （召唤/配置保存时全服广播，登录时补发，送走时广播 default 清除，见 AssistantSkinSync）
+		PayloadTypeRegistry.playS2C().register(
+				AssistantPayloads.AssistantSkinPayload.TYPE,
+				AssistantPayloads.AssistantSkinPayload.STREAM_CODEC);
 	}
 
 	public static Identifier id(String path) {

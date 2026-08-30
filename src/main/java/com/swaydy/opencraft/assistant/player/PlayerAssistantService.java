@@ -66,6 +66,15 @@ public final class PlayerAssistantService {
 			ACTIVE.clear();
 			BY_UUID.clear();
 		});
+		// 玩家登录时补发全部活动助手的皮肤 id（客户端 Mixin 据此替换贴图；
+		// 晚于首次渲染到达也没关系——客户端皮肤 lookup 是动态查表的）
+		net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+			for (AiAssistantPlayer bot : ACTIVE.values()) {
+				if (!bot.isRemoved()) {
+					com.swaydy.opencraft.assistant.skin.AssistantSkinSync.syncTo(handler.player, bot);
+				}
+			}
+		});
 	}
 
 	/** 全部活动的玩家形态助手。 */
@@ -175,6 +184,7 @@ public final class PlayerAssistantService {
 				ACTIVE.put(block, inList);
 				BY_UUID.put(inList.getUUID(), block);
 				ensureLoopStarted(block);
+				com.swaydy.opencraft.assistant.skin.AssistantSkinSync.syncToAll(inList);
 				return inList;
 			}
 			com.swaydy.opencraft.logging.DebugLog.log("summon",
@@ -224,6 +234,8 @@ public final class PlayerAssistantService {
 				ACTIVE.put(block, player);
 		BY_UUID.put(player.getUUID(), block);
 		ensureLoopStarted(block);
+		// 皮肤同步：bot 进服后把方块配置里的内置皮肤 id 广播给全部玩家（客户端替换贴图）
+		com.swaydy.opencraft.assistant.skin.AssistantSkinSync.syncToAll(player);
 		AiConfigHandler.syncBoundBlockPoweredState(blockLevel, block);
 		OpenCraftMod.LOGGER.info("[OpenCraft] 玩家 {} 以玩家形态召唤了助手（绑定方块 {}, bot 名 {}）",
 				owner.getName().getString(), block.pos().toShortString(), profile.name());
@@ -321,6 +333,8 @@ public final class PlayerAssistantService {
 			return false;
 		}
 		BY_UUID.remove(p.getUUID());
+		// 清除全服客户端的皮肤映射（回退原版皮肤，防 UUID 将来复用串味）
+		com.swaydy.opencraft.assistant.skin.AssistantSkinSync.clearAll(p.level().getServer(), p.getUUID());
 		// 解绑：停止该方块的循环事件（治疗光环等）
 		com.swaydy.opencraft.loop.LoopEngine.stopAll(block);
 		com.swaydy.opencraft.logging.DebugLog.log("loop",

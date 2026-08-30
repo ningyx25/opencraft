@@ -29,7 +29,8 @@ public record AiConfigData(
 		double speed,
 		String name,
 		String agent,
-		List<String> enabledLoops) {
+		List<String> enabledLoops,
+		String skin) {
 
 	public AiConfigData {
 		enabledLoops = enabledLoops == null ? List.of() : List.copyOf(enabledLoops);

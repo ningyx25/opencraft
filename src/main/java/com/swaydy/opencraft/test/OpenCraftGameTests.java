@@ -216,13 +216,16 @@ public class OpenCraftGameTests {
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							sent.language(),
 							sent.maxDistance(), sent.speed(),
-							"改名小智", "general_agent", sent.enabledLoops());
+							"改名小智", "general_agent", sent.enabledLoops(), "deepseek_fish");
 					AiConfigHandler.save(player, absPos, dimension, edited.toJson());
 					if (!"in-game-edited-model".equals(blockEntity.getConfig().model)) {
 						throw new AssertionError("保存后方块配置未即时生效");
 					}
 					if (!"general_agent".equals(blockEntity.getConfig().agent)) {
 						throw new AssertionError("保存后 agent 预设应生效");
+					}
+					if (!"deepseek_fish".equals(blockEntity.getConfig().skin)) {
+						throw new AssertionError("保存后皮肤选择应生效");
 					}
 					if (!"new-secret-key-456".equals(blockEntity.getConfig().apiKey)) {
 						throw new AssertionError("更换密钥未生效");
@@ -241,7 +244,7 @@ public class OpenCraftGameTests {
 							sent.temperature(), sent.maxHistoryMessages(), sent.timeoutSeconds(),
 							sent.language(),
 							sent.maxDistance(), sent.speed(),
-							"keep-key-name", "general_agent", java.util.List.of());
+							"keep-key-name", "general_agent", java.util.List.of(), "default");
 					AiConfigHandler.save(player, absPos, dimension, keepKey.toJson());
 					if (!"new-secret-key-456".equals(blockEntity.getConfig().apiKey)) {
 						throw new AssertionError("未更换密钥时不应覆盖旧密钥");
@@ -2708,7 +2711,7 @@ public class OpenCraftGameTests {
 					AiConfigData disabled = new AiConfigData(
 							blockEntity(helper, absPos).getConfig().toData().baseUrl(), "", false, false,
 							"mock-model", 0.8, 20, 15, "zh-CN",
-							64.0, 1.0, "小智", "general_agent", java.util.List.of());
+							64.0, 1.0, "小智", "general_agent", java.util.List.of(), "default");
 					AiConfigHandler.save(player, absPos, dimension, disabled.toJson());
 				})
 				.thenExecute(() -> {
@@ -2719,7 +2722,7 @@ public class OpenCraftGameTests {
 					AiConfigData enabled = new AiConfigData(
 							blockEntity(helper, absPos).getConfig().toData().baseUrl(), "", false, false,
 							"mock-model", 0.8, 20, 15, "zh-CN",
-							64.0, 1.0, "小智", "general_agent", java.util.List.of("heal_aura"));
+							64.0, 1.0, "小智", "general_agent", java.util.List.of("heal_aura"), "default");
 					AiConfigHandler.save(player, absPos, dimension, enabled.toJson());
 				})
 				.thenExecute(() -> {
