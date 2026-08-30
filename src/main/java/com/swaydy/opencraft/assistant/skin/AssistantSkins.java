@@ -38,7 +38,7 @@ public final class AssistantSkins {
 	private AssistantSkins() {
 	}
 
-	/** 全部内置皮肤（含 default，供配置界面选择器按序展示）。 */
+	/** 全部内置皮肤（含 default——它是"未选择时的原版回退"，配置界面选择器不把它列为可选项）。 */
 	public static List<SkinDef> all() {
 		return ALL;
 	}

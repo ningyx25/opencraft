@@ -933,15 +933,22 @@ public class AiConfigScreen extends Screen {
 					.build();
 			this.interruptButton.active = false;
 
-			// 皮肤预览 + 选择器：选项动态取自 AssistantSkins（default = 原版按 UUID 随机皮肤）；
+			// 皮肤预览 + 选择器：选项动态取自 AssistantSkins，但 default（原版按 UUID 随机
+			// 皮肤）只是"未选择时的原版回退"，不作为可选项出现在选择器里；
 			// id 由服务端随召唤/保存同步给客户端，贴图随模组分发、客户端 Mixin 渲染时替换
 			List<String> skinIds = new ArrayList<>();
 			for (com.swaydy.opencraft.assistant.skin.AssistantSkins.SkinDef def
 					: com.swaydy.opencraft.assistant.skin.AssistantSkins.all()) {
-				skinIds.add(def.id());
+				if (!com.swaydy.opencraft.assistant.skin.AssistantSkins.DEFAULT_ID.equals(def.id())) {
+					skinIds.add(def.id());
+				}
 			}
-			if (!skinIds.contains(AiConfigScreen.this.skin)) {
-				skinIds.add(0, AiConfigScreen.this.skin);
+			if (skinIds.isEmpty()) {
+				// 没有任何内置皮肤可选的极端情况：退回允许选当前值（含 default），不让选择器空转
+				skinIds.add(AiConfigScreen.this.skin);
+			} else if (!skinIds.contains(AiConfigScreen.this.skin)) {
+				// 当前值是 default（新配置初始值）或已下架的皮肤：落到第一个可选项
+				AiConfigScreen.this.skin = skinIds.get(0);
 			}
 			this.skinPicker = CycleButton.<String>builder(
 							AiConfigScreen::skinDisplayComponent, AiConfigScreen.this.skin)
