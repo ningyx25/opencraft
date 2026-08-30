@@ -1,18 +1,11 @@
 package com.swaydy.opencraft.loop.presets;
 
-import com.swaydy.opencraft.assistant.player.PlayerAssistantService;
 import com.swaydy.opencraft.loop.LoopCondition;
 import com.swaydy.opencraft.loop.LoopContext;
 import com.swaydy.opencraft.loop.LoopEvent;
 import com.swaydy.opencraft.loop.LoopMonitor;
-import com.swaydy.opencraft.loop.LoopModule;
 import com.swaydy.opencraft.loop.LoopVerdict;
-import net.minecraft.core.GlobalPos;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-
-import java.util.UUID;
 
 /**
  * 内置循环事件最小实现：{@code heal_aura}（治疗光环）。
@@ -33,8 +26,10 @@ import java.util.UUID;
  * <p>参数：每 2 秒（40 tick）一轮;不限制总迭代次数。锚点 = 绑定方块的 {@link GlobalPos}
  * （一方块一助手一循环实例）。生命周期由召唤/送走接线（见 {@code PlayerAssistantService}）。
  *
- * <p>纯逻辑全部在 lambda 闭包里（经 {@link LoopModule#server()} 取实时服务端,
- * 经 {@code ctx.anchor()} 定位绑定方块）,因此核心引擎保持纯 Java 可单测。
+ * <p>纯逻辑全部在 lambda 闭包里（主人/助手解析复用 {@link Owners},经
+ * {@code LoopModule#server()} 取实时服务端,经 {@code ctx.anchor()} 定位绑定方块）,
+ * 因此核心引擎保持纯 Java 可单测。本预设是"守护光环"家族（饱食/换气/灭火/拾取/驱怪）的
+ * 最小实现模板。
  */
 public class HealAuraLoop extends LoopPreset {
 	/** 循环事件 id（LoopRegistry 键）。 */
@@ -85,19 +80,19 @@ public class HealAuraLoop extends LoopPreset {
 	}
 
 	// ------------------------------------------------------------------
-	// 三个组成部分（闭包捕获 LoopModule.server() 取实时服务端）
+	// 三个组成部分（主人解析复用 Owners,缺失环节返回 null 由引擎按跳过处理）
 	// ------------------------------------------------------------------
 
 	/** 触发条件 + 监测条件的共同判定：绑定方块的主人是否"需要治疗"。 */
 	private static boolean ownerStillHurt(LoopContext ctx) {
-		ServerPlayer owner = ownerOf(ctx);
+		ServerPlayer owner = Owners.ownerOf(ctx);
 		return owner != null && owner.isAlive()
 				&& owner.getHealth() < owner.getMaxHealth();
 	}
 
 	/** 执行事件：给主人恢复 1 点生命值。 */
 	private static void healOwner(LoopContext ctx) {
-		ServerPlayer owner = ownerOf(ctx);
+		ServerPlayer owner = Owners.ownerOf(ctx);
 		if (owner == null) {
 			return;
 		}
@@ -107,28 +102,5 @@ public class HealAuraLoop extends LoopPreset {
 				owner.getName().getString(),
 				(float) Math.floor(owner.getHealth() * 10) / 10,
 				(float) Math.floor(owner.getMaxHealth() * 10) / 10);
-	}
-
-	/** 从锚点解析绑定方块的主人玩家：无服务端/方块/绑定助手/主人在线 → null。 */
-	private static ServerPlayer ownerOf(LoopContext ctx) {
-		Object anchor = ctx.anchor();
-		if (!(anchor instanceof GlobalPos block)) {
-			return null;
-		}
-		MinecraftServer server = LoopModule.server();
-		if (server == null) {
-			return null;
-		}
-		ServerLevel level = server.getLevel(block.dimension());
-		if (level == null) {
-			return null;
-		}
-		com.swaydy.opencraft.assistant.AiAssistant assistant =
-				PlayerAssistantService.findBoundTo(block);
-		if (assistant == null) {
-			return null;
-		}
-		UUID ownerUuid = assistant.getOwnerUuid();
-		return ownerUuid == null ? null : server.getPlayerList().getPlayer(ownerUuid);
 	}
 }

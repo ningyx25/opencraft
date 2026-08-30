@@ -2606,8 +2606,9 @@ public class OpenCraftGameTests {
 					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos, "heal_aura")) {
 						throw new AssertionError("召唤后 heal_aura 循环实例应已启动");
 					}
-					// 2) 受伤到 10/20;食物 5:低于 18 无自然回血、高于 0 无饥饿掉血,
-					//    确保只有治疗光环在回血
+					// 2) 受伤到 10/20;食物 5:高于 0 无饥饿掉血。
+					//    饱食光环会同时把食物喂满（食物 ≥18 后原版自然回血恢复生效,
+					//    会加速回血）——断言只依赖"生命回升到满"的方向性,不受影响
 					player.setHealth(10.0F);
 					player.getFoodData().setFoodLevel(5);
 				})
@@ -2741,6 +2742,168 @@ public class OpenCraftGameTests {
 				.thenExecute(() -> {
 					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos, "heal_aura")) {
 						throw new AssertionError("送走助手后 heal_aura 循环实例应停止");
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	// =========================================================================
+	// 循环事件模块：守护型预设家族（feed_aura / extinguish_fire 端到端）
+	// =========================================================================
+
+	/**
+	 * 循环事件测试公共准备：铺平台 + 放配置方块 + 传主人到方块旁,
+	 * 返回绑定方块的 GlobalPos（召唤由用例自己发起,便于断言启动前后状态）。
+	 */
+	private static GlobalPos prepareLoopTest(GameTestHelper helper, ServerPlayer player) {
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		return GlobalPos.of(player.level().dimension(), helper.absolutePos(blockPos));
+	}
+
+	/**
+	 * 循环事件模块端到端验证：feed_aura（饱食光环）。
+	 * 1. 召唤助手绑定方块 → feed_aura 循环实例自动启动（LoopEngine.isRunning 为真）;
+	 * 2. 主人饥饿（食物 5,生命满以排除 heal_aura 干扰）→ 每 ~40 tick +1 饱食,
+	 *    轮询等到饥饿值回升、再等到吃饱（20）;
+	 * 3. 吃饱后 persistent 循环只结束本轮、实例仍在运行（闲置监视）;
+	 * 4. 送走助手 → 循环实例停止。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 2000)
+	public void feedAuraLoopFeedsOwner(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		GlobalPos bindPos = prepareLoopTest(helper, player);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 1) 召唤（绑定最近的未绑定方块）→ 下一 tick 进入查找表
+					if (com.swaydy.opencraft.assistant.AssistantFacade.summonNearest(player) == null) {
+						throw new AssertionError("召唤助手失败");
+					}
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					// 召唤即自动启动循环事件
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.FeedAuraLoop.ID)) {
+						throw new AssertionError("召唤后 feed_aura 循环实例应已启动");
+					}
+					player.setHealth(player.getMaxHealth());
+					player.getFoodData().setFoodLevel(5);
+				})
+				.thenWaitUntil(() -> {
+					// 2) 每 ~40 tick +1 饱食 → 轮询等到饥饿值回升
+					if (player.getFoodData().getFoodLevel() <= 5) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待饱食光环生效（当前饥饿 " + player.getFoodData().getFoodLevel() + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenWaitUntil(() -> {
+					// 3) 等到吃饱（监测函数 STOP 结束本轮）
+					if (player.getFoodData().getFoodLevel() < 20) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal(
+										"等待喂饱（当前饥饿 " + player.getFoodData().getFoodLevel() + "）…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 4) 吃饱后 persistent 循环只闲置不消亡;5) 送走助手 → 循环停止
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.FeedAuraLoop.ID)) {
+						throw new AssertionError("吃饱后 persistent 循环应仍在运行（闲置监视）");
+					}
+					com.swaydy.opencraft.assistant.AiAssistant bound =
+							com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(helper.getLevel(), bindPos);
+					if (bound == null) {
+						throw new AssertionError("助手不存在,无法送走");
+					}
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bound);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.FeedAuraLoop.ID)) {
+						throw new AssertionError("送走助手后 feed_aura 循环实例应停止");
+					}
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 循环事件模块端到端验证：extinguish_fire（灭火守护）。
+	 * 1. 召唤助手绑定方块 → extinguish_fire 循环实例自动启动;
+	 * 2. 主人着火（点燃 10 秒）→ 每 ~10 tick 尝试灭火,轮询等到火熄灭;
+	 * 3. 熄灭后 persistent 循环只结束本轮、实例仍在运行（闲置监视）;
+	 * 4. 送走助手 → 循环实例停止。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 1000)
+	public void extinguishLoopExtinguishesOwner(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		GlobalPos bindPos = prepareLoopTest(helper, player);
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					// 1) 召唤（绑定最近的未绑定方块）→ 下一 tick 进入查找表
+					if (com.swaydy.opencraft.assistant.AssistantFacade.summonNearest(player) == null) {
+						throw new AssertionError("召唤助手失败");
+					}
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					// 召唤即自动启动循环事件;生命/食物保持满,排除其它光环的干扰
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.ExtinguishLoop.ID)) {
+						throw new AssertionError("召唤后 extinguish_fire 循环实例应已启动");
+					}
+					player.setHealth(player.getMaxHealth());
+					player.getFoodData().setFoodLevel(20);
+					player.igniteForTicks(200);
+				})
+				.thenWaitUntil(() -> {
+					// 2) 每 ~10 tick 一次灭火 → 轮询等到火熄灭
+					if (player.isOnFire()) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("等待灭火守护生效…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					// 3) 熄灭后 persistent 循环只闲置不消亡;4) 送走助手 → 循环停止
+					if (!com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.ExtinguishLoop.ID)) {
+						throw new AssertionError("熄灭后 persistent 循环应仍在运行（闲置监视）");
+					}
+					com.swaydy.opencraft.assistant.AiAssistant bound =
+							com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(helper.getLevel(), bindPos);
+					if (bound == null) {
+						throw new AssertionError("助手不存在,无法送走");
+					}
+					com.swaydy.opencraft.assistant.AssistantFacade.dismiss(bound);
+				})
+				.thenIdle(5)
+				.thenExecute(() -> {
+					if (com.swaydy.opencraft.loop.LoopEngine.isRunning(bindPos,
+							com.swaydy.opencraft.loop.presets.ExtinguishLoop.ID)) {
+						throw new AssertionError("送走助手后 extinguish_fire 循环实例应停止");
 					}
 					AiCompanionService.resetAllHistory(player);
 					helper.succeed();

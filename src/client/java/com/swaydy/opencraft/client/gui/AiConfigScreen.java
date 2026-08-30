@@ -780,62 +780,63 @@ public class AiConfigScreen extends Screen {
 	// =========================================================================
 	// Tab 3: 行动行为（跟随/待命模式已移除，仅剩行动范围与速度 + 循环事件开关）
 	// =========================================================================
-	private class CompanionBehaviorTab extends GridLayoutTab {
-		public CompanionBehaviorTab() {
-			super(Component.translatable("screen.opencraft.config.tab.companion"));
-			GridLayout.RowHelper rows = this.layout.createRowHelper(1);
-			rows.defaultCellSetting().paddingVertical(2).alignHorizontallyCenter();
+	/**
+	 * 行动行为页：两个滑块 + 循环事件卡片列表。不用 GridLayoutTab——网格会把超出
+	 * 标签区的内容整体<b>垂直居中</b>，列表一多顶部滑块就被顶进标签栏；改走
+	 * {@link ChatWindowTab} 的自绘布局：在 {@link #doLayout} 里精确摆位,
+	 * 卡片列表高度 = 标签区剩余高度,超出部分由 {@link ScrollableColumn} 内部滚动。
+	 */
+	private class CompanionBehaviorTab implements Tab {
+		private final NumericSliderButton maxSlider;
+		private final NumericSliderButton speedSlider;
+		private final ScrollableColumn loopList;
 
+		public CompanionBehaviorTab() {
 			Font font = AiConfigScreen.this.font;
 
 			// 跟随/待命模式已整体移除：不再有跟随/停止/瞬移距离滑块
 			// 走丢最大距离 (10.0 ~ 128.0 格)
-			NumericSliderButton maxSlider = new NumericSliderButton(
+			this.maxSlider = new NumericSliderButton(
 					0, 0, CONTROL_WIDTH, ROW_HEIGHT,
 					Component.translatable("screen.opencraft.config.max_distance"),
 					AiConfigScreen.this.maxDistance, 10.0, 128.0, 1.0, 1, " 格",
 					val -> AiConfigScreen.this.maxDistance = val
 			);
-			maxSlider.setTooltip(Tooltip.create(Component.translatable("screen.opencraft.config.max_distance.tooltip")));
-			maxSlider.active = AiConfigScreen.this.canEdit;
-			rows.addChild(maxSlider);
+			this.maxSlider.setTooltip(Tooltip.create(
+					Component.translatable("screen.opencraft.config.max_distance.tooltip")));
+			this.maxSlider.active = AiConfigScreen.this.canEdit;
 
 			// 移动速度倍率 (0.5x ~ 2.5x)
-			NumericSliderButton speedSlider = new NumericSliderButton(
+			this.speedSlider = new NumericSliderButton(
 					0, 0, CONTROL_WIDTH, ROW_HEIGHT,
 					Component.translatable("screen.opencraft.config.speed"),
 					AiConfigScreen.this.speed, 0.5, 2.5, 0.05, 2, "x",
 					val -> AiConfigScreen.this.speed = val
 			);
-			speedSlider.setTooltip(Tooltip.create(Component.translatable("screen.opencraft.config.speed.tooltip")));
-			speedSlider.active = AiConfigScreen.this.canEdit;
-			rows.addChild(speedSlider);
+			this.speedSlider.setTooltip(Tooltip.create(
+					Component.translatable("screen.opencraft.config.speed.tooltip")));
+			this.speedSlider.active = AiConfigScreen.this.canEdit;
 
-			// =============================================================
-			// 循环事件区域（卡片式列表：每个循环一张卡片，整卡点击切换启用）
-			// =============================================================
+			// 循环事件列表：区域标题与卡片都在容器内随列表滚动；卡片直接显示描述,
+			// 右侧对齐运行状态；整卡点击切换启用
+			this.loopList = new ScrollableColumn(CONTROL_WIDTH);
 			java.util.List<LoopDefinition> loopDefs = LoopRegistry.all();
 			if (loopDefs.isEmpty()) {
-				// 无可用循环事件
-				rows.addChild(new StringWidget(
-						Component.translatable("screen.opencraft.config.loop.none"),
-						font));
+				this.loopList.addChild(new StringWidget(
+						Component.translatable("screen.opencraft.config.loop.none"), font));
 			} else {
-				// 区域标题（加粗）
 				StringWidget loopHeader = new StringWidget(
 						Component.translatable("screen.opencraft.config.loops")
 								.withStyle(net.minecraft.ChatFormatting.BOLD),
 						font);
 				loopHeader.setTooltip(Tooltip.create(
 						Component.translatable("screen.opencraft.config.loops.tooltip")));
-				rows.addChild(loopHeader);
-
+				this.loopList.addChild(loopHeader);
 				for (LoopDefinition def : loopDefs) {
 					String id = def.id();
 					boolean selected = AiConfigScreen.this.enabledLoops.contains(id);
-					LoopCardWidget card = new LoopCardWidget(
-							0, 0, CONTROL_WIDTH, def, selected,
-							AiConfigScreen.this.loopStatusComponent(id), font,
+					LoopCardWidget card = this.loopList.addChild(new LoopCardWidget(
+							def, selected, AiConfigScreen.this.loopStatusComponent(id), font,
 							checked -> {
 								// 修改 enabledLoops 副本（避免写回不可变列表）
 								List<String> updated = new ArrayList<>(
@@ -1213,10 +1214,12 @@ public class AiConfigScreen extends Screen {
 
 	/**
 	 * 单个循环事件的卡片：深色半透明底 + 1px 边框（与聊天页日志框同款画法）。
-	 * 上行左侧自绘复选框 + 名称、右侧状态文本（右对齐）；下行灰色小字描述直接可见。
-	 * 点击卡片任意处即可切换勾选（复选框精灵用原版 Checkbox 同款 sprite 自绘——
-	 * 1.21.11 的 AbstractWidget 没有 children 机制，且 Checkbox 无 setSelected，
-	 * 无法直接内嵌一个可点击的 Checkbox 控件）。
+	 * 上行左侧自绘复选框 + 名称、右侧状态文本（右对齐带颜色）；下方灰色小字描述
+	 * 直接可见（按卡片内容宽度换行,参与卡片高度——列表超高由 {@link ScrollableColumn}
+	 * 滚动,不需要为省高度隐藏描述）。点击卡片任意处即可切换勾选（复选框精灵用原版
+	 * Checkbox 同款 sprite 自绘——1.21.11 的 AbstractWidget 没有 children 机制，
+	 * 且 Checkbox 无 setSelected，无法直接内嵌一个可点击的 Checkbox 控件）。
+	 * 宽度/位置由 {@link ScrollableColumn} 分配（setWidth 时重算描述换行与高度）。
 	 */
 	private class LoopCardWidget extends AbstractWidget {
 		private static final int PADDING = 6;
@@ -1237,33 +1240,39 @@ public class AiConfigScreen extends Screen {
 		private final Font font;
 		private final Component name;
 		private final Component status;
-		private final List<FormattedCharSequence> descLines;
+		private final String description;
 		private final Consumer<Boolean> onToggle;
+		private List<FormattedCharSequence> descLines = List.of();
 		private boolean selected;
 
-		LoopCardWidget(int x, int y, int width, LoopDefinition def, boolean selected,
-		               Component status, Font font, Consumer<Boolean> onToggle) {
-			super(x, y, width, cardHeight(def, width, font),
+		LoopCardWidget(LoopDefinition def, boolean selected, Component status,
+		               Font font, Consumer<Boolean> onToggle) {
+			super(0, 0, 0, PADDING * 2 + Checkbox.getBoxSize(font),
 					Component.literal(def.displayName() == null ? def.id() : def.displayName()));
 			this.font = font;
 			this.name = this.getMessage();
 			this.status = status;
-			this.descLines = def.description() == null ? List.of()
-					: font.split(Component.literal(def.description()), Math.max(1, width - PADDING * 2));
+			this.description = def.description();
 			this.onToggle = onToggle;
 			this.selected = selected;
 		}
 
-		/** 卡片总高度：内边距 + 标题行（复选框高度）+ 描述换行行数。 */
-		private static int cardHeight(LoopDefinition def, int width, Font font) {
-			int boxSize = Checkbox.getBoxSize(font);
-			int height = PADDING + boxSize + PADDING;
-			if (def.description() != null) {
-				int lines = font.split(Component.literal(def.description()),
-						Math.max(1, width - PADDING * 2)).size();
-				height += TITLE_DESC_GAP + lines * font.lineHeight;
+		@Override
+		public void setWidth(int width) {
+			super.setWidth(width);
+			// 描述按卡片内容宽度重新换行,并据此重算卡片高度（真实宽度在滚动容器
+			// 布局时才确定,初始高度只含标题行）
+			if (this.description == null || width <= 0) {
+				this.descLines = List.of();
+			} else {
+				this.descLines = this.font.split(Component.literal(this.description),
+						Math.max(1, width - PADDING * 2));
 			}
-			return height;
+			int height = PADDING * 2 + Checkbox.getBoxSize(this.font);
+			if (!this.descLines.isEmpty()) {
+				height += TITLE_DESC_GAP + this.descLines.size() * this.font.lineHeight;
+			}
+			this.setHeight(height);
 		}
 
 		@Override
@@ -1307,6 +1316,167 @@ public class AiConfigScreen extends Screen {
 		public void onClick(net.minecraft.client.input.MouseButtonEvent event, boolean bl) {
 			this.selected = !this.selected;
 			this.onToggle.accept(this.selected);
+		}
+
+		@Override
+		protected void updateWidgetNarration(
+				net.minecraft.client.gui.narration.NarrationElementOutput narrationElementOutput) {
+			this.defaultButtonNarrationText(narrationElementOutput);
+		}
+	}
+
+	/**
+	 * 可滚动的竖排控件容器：把一组子控件装进一个视口——内容超高时滚轮滚动,
+	 * 视口外 scissor 裁剪并画细滚动条。
+	 *
+	 * <p><b>高度由外部（Tab 的 doLayout）设定为实际可视高度</b>——容器绝不向布局
+	 * 申报内容的完整高度（否则网格垂直居中会把上方控件顶出标签区），内容超出
+	 * 视口的部分在容器内部滚动；{@link #viewportBottom()} 另有"截到页脚上方"的
+	 * 兜底,双保险保证不压页脚按钮。
+	 *
+	 * <p>子控件不注册进 Screen——每帧由本容器按滚动量平移子控件位置后统一渲染
+	 * （悬停提示仍由 AbstractWidget.render 自带机制生效），并把鼠标事件按平移后的
+	 * 坐标转发给子控件；键盘焦点/旁白不经过子控件（当前只放可点击的卡片）。
+	 * 宽度/位置由外部摆放：setX/setY/setWidth 时同步重排子控件。
+	 */
+	private class ScrollableColumn extends AbstractWidget {
+		private static final int PADDING = 6;
+		private static final int ENTRY_GAP = 4;
+		private static final int SCROLL_STEP = 16;
+		private static final int MIN_VIEWPORT = 24;
+		private static final int SCROLLBAR_WIDTH = 2;
+		private static final int COLOR_THUMB = 0xFF6A6A6A;
+
+		private final List<AbstractWidget> children = new ArrayList<>();
+		/** 子控件未滚动时的 y 坐标（与 children 一一对应）。 */
+		private final List<Integer> baseYs = new ArrayList<>();
+		/** 内容总高度（含上下内边距，与视口高度无关）。 */
+		private int contentHeight;
+		private int scrollOffset;
+
+		ScrollableColumn(int width) {
+			super(0, 0, width, MIN_VIEWPORT, Component.empty());
+		}
+
+		/** 追加一个子控件（宽度/位置由本容器统一分配），返回原控件便于链式设置属性。 */
+		<T extends AbstractWidget> T addChild(T child) {
+			this.children.add(child);
+			this.baseYs.add(0);
+			this.layoutChildren();
+			return child;
+		}
+
+		private void layoutChildren() {
+			this.baseYs.clear();
+			int width = Math.max(1, this.getWidth() - PADDING * 2 - SCROLLBAR_WIDTH);
+			int y = this.getY() + PADDING;
+			for (AbstractWidget child : this.children) {
+				child.setWidth(width);
+				child.setX(this.getX() + PADDING);
+				child.setY(y);
+				this.baseYs.add(y);
+				y += child.getHeight() + ENTRY_GAP;
+			}
+			this.contentHeight = this.children.isEmpty()
+					? 0 : (y - ENTRY_GAP + PADDING) - this.getY();
+			this.scrollOffset = Math.min(this.scrollOffset, maxScroll(viewportHeight()));
+		}
+
+		@Override
+		public void setX(int x) {
+			super.setX(x);
+			this.layoutChildren();
+		}
+
+		@Override
+		public void setY(int y) {
+			super.setY(y);
+			this.layoutChildren();
+		}
+
+		@Override
+		public void setWidth(int width) {
+			super.setWidth(width);
+			this.layoutChildren();
+		}
+
+		/** 实际可视视口的底边：自身内容底与「页脚按钮上方」取小（布局 arrange 后 footer 高度可信）。 */
+		private int viewportBottom() {
+			int footerTop = AiConfigScreen.this.height - AiConfigScreen.this.layout.getFooterHeight();
+			return Math.max(this.getY() + MIN_VIEWPORT,
+					Math.min(this.getY() + this.getHeight(), footerTop - 2));
+		}
+
+		private int viewportHeight() {
+			return Math.max(1, viewportBottom() - this.getY());
+		}
+
+		private int maxScroll(int viewHeight) {
+			return Math.max(0, this.contentHeight - viewHeight);
+		}
+
+		@Override
+		public boolean isMouseOver(double mouseX, double mouseY) {
+			return this.visible && mouseX >= this.getX() && mouseX < this.getX() + this.getWidth()
+					&& mouseY >= this.getY() && mouseY < viewportBottom();
+		}
+
+		@Override
+		protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+			int viewBottom = viewportBottom();
+			int viewHeight = viewBottom - this.getY();
+			this.scrollOffset = Math.min(this.scrollOffset, maxScroll(viewHeight));
+			int shift = -this.scrollOffset;
+
+			graphics.enableScissor(this.getX(), this.getY(), this.getX() + this.getWidth(), viewBottom);
+			for (int i = 0; i < this.children.size(); i++) {
+				AbstractWidget child = this.children.get(i);
+				child.setY(this.baseYs.get(i) + shift);
+				if (child.getY() < viewBottom && child.getY() + child.getHeight() > this.getY()) {
+					child.render(graphics, mouseX, mouseY, partialTick);
+				}
+			}
+			graphics.disableScissor();
+
+			// 内容超出视口时在右侧画一条细滚动条
+			int max = maxScroll(viewHeight);
+			if (max > 0) {
+				int trackHeight = viewHeight - 4;
+				int thumbHeight = Math.max(12, (int) ((long) trackHeight * viewHeight
+						/ Math.max(1, this.contentHeight)));
+				int thumbY = this.getY() + 2
+						+ (int) ((long) (trackHeight - thumbHeight) * this.scrollOffset / max);
+				graphics.fill(this.getX() + this.getWidth() - 4, thumbY,
+						this.getX() + this.getWidth() - 2, thumbY + thumbHeight, COLOR_THUMB);
+			}
+		}
+
+		@Override
+		public boolean mouseScrolled(double mouseX, double mouseY,
+		                             double horizontalAmount, double verticalAmount) {
+			if (this.visible && this.isMouseOver(mouseX, mouseY)) {
+				int max = maxScroll(viewportHeight());
+				if (max > 0) {
+					int target = this.scrollOffset + (verticalAmount > 0 ? -SCROLL_STEP : SCROLL_STEP);
+					this.scrollOffset = Math.max(0, Math.min(target, max));
+				}
+				return true;
+			}
+			return false;
+		}
+
+		@Override
+		public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean bl) {
+			if (this.visible && this.isMouseOver(event.x(), event.y())) {
+				// 子控件位置在上一帧渲染时已按滚动量平移,按当前坐标转发即可命中
+				for (AbstractWidget child : this.children) {
+					if (child.visible && child.mouseClicked(event, bl)) {
+						return true;
+					}
+				}
+				return true; // 点到容器空白处也由本容器消费,避免穿透到下层
+			}
+			return false;
 		}
 
 		@Override

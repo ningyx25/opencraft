@@ -1,16 +1,25 @@
 package com.swaydy.opencraft.loop;
 
 import com.swaydy.opencraft.OpenCraftMod;
+import com.swaydy.opencraft.loop.presets.BreathAuraLoop;
+import com.swaydy.opencraft.loop.presets.ExtinguishLoop;
+import com.swaydy.opencraft.loop.presets.FeedAuraLoop;
 import com.swaydy.opencraft.loop.presets.HealAuraLoop;
+import com.swaydy.opencraft.loop.presets.PickupAuraLoop;
+import com.swaydy.opencraft.loop.presets.RepelMonstersLoop;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.server.MinecraftServer;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 循环事件模块的 Minecraft 接线层：把纯 Java 的 {@link LoopEngine} 挂到服务端生命周期上。
  *
  * <ul>
- * <li>注册内置循环事件定义（{@code presets/HealAuraLoop}）到 {@link LoopRegistry};</li>
+ * <li>注册内置循环事件定义（{@code presets/} 的守护型预设：治疗/饱食/换气/灭火/
+ *     拾取/驱怪,全部 persistent）到 {@link LoopRegistry};</li>
  * <li>{@code ServerTickEvents.END_SERVER_TICK} → {@link LoopEngine#tick(long)}
  *     （循环实例全部在服务端线程推进）;</li>
  * <li>{@code ServerLifecycleEvents.SERVER_STOPPING} → {@link LoopEngine#clear()};</li>
@@ -32,10 +41,24 @@ public final class LoopModule {
 	/** 在模组初始化时调用：注册内置定义（loop/presets/ 的 LoopPreset 预设）+ 服务端 tick / 生命周期回调。 */
 	public static void init() {
 		LoopRegistry.register(new HealAuraLoop());
+		LoopRegistry.register(new FeedAuraLoop());
+		LoopRegistry.register(new BreathAuraLoop());
+		LoopRegistry.register(new ExtinguishLoop());
+		LoopRegistry.register(new PickupAuraLoop());
+		LoopRegistry.register(new RepelMonstersLoop());
 		ServerTickEvents.END_SERVER_TICK.register(LoopModule::onServerTick);
 		ServerLifecycleEvents.SERVER_STOPPING.register(LoopModule::onServerStopping);
 		OpenCraftMod.LOGGER.info("[OpenCraft] 循环事件模块已就绪（内置: {}）",
-				HealAuraLoop.ID);
+				String.join(", ", builtinIds()));
+	}
+
+	/** 全部已注册的内置循环事件 id（注册顺序,日志用）。 */
+	private static List<String> builtinIds() {
+		List<String> ids = new ArrayList<>();
+		for (LoopDefinition def : LoopRegistry.all()) {
+			ids.add(def.id());
+		}
+		return ids;
 	}
 
 	/** 当前服务端（未启动/已停止时为 null）;供内置循环闭包取实时状态。 */
