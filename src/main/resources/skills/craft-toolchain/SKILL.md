@@ -15,8 +15,10 @@ Cobblestone requires a wooden pickaxe first — never skip tiers.
    - "requires a crafting table" → craft a crafting table (4 planks), `player_hotbar_select`
      its slot, `player_place` it on open ground nearby, then re-craft. Place it ONCE and
      reuse it — 3×3 works while you stand near it.
-   - "not enough materials" → gather exactly what is missing (planks from logs, sticks from
-     planks, cobblestone by mining stone with a pickaxe).
+   - "not enough materials" → count what you hold in the Assistant State against the recipe,
+     then gather exactly the missing items (planks from logs, sticks from planks, cobblestone
+     by mining stone with a pickaxe). `player_find` only locates world blocks — it cannot
+     see your inventory items, so don't search it for held materials.
 3. Tier gates: wooden pickaxe mines stone/coal; stone pickaxe mines iron; iron pickaxe mines
    gold/diamond/redstone. If `player_mine` says "too hard for my current main-hand tool",
    craft the next tier before retrying — the block drops nothing without the right tier.

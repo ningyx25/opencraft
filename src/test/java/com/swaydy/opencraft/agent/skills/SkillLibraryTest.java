@@ -85,6 +85,21 @@ class SkillLibraryTest {
 	}
 
 	@Test
+	void generalAgentBoundSkillsAllRenderForAgentTools() {
+		// 与 GeneralAgent.skills() 的绑定一一对应（新增/改名技能时两边同步修改）：
+		// 守护「绑定名都在库里且目录名一致 + requires_tools 全部命中 general_agent 真实工具集」
+		// ——绑定名拼错或工具名写错时该技能会静默不注入，这里让它在单测里暴露。
+		List<String> bound = List.of("gather-wood", "craft-toolchain", "mine-ores",
+				"smelt-in-furnace", "chest-storage", "build-basics");
+		String fragment = SkillLibrary.promptsFragment(bound, AGENT_TOOLS);
+		assertTrue(fragment.startsWith("# Skills"), "应渲染出 # Skills 大节");
+		for (String name : bound) {
+			assertTrue(fragment.contains("## " + name),
+					"general_agent 绑定的技能应对其工具集渲染: " + name);
+		}
+	}
+
+	@Test
 	void unboundSkillNeverInjects() {
 		// 绑定管理:没绑定（空列表/null/绑别的）一律不注入——不再全量加载
 		assertEquals("", SkillLibrary.promptsFragment(List.of(), AGENT_TOOLS), "空绑定列表不注入");

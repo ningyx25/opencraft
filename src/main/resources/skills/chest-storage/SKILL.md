@@ -14,7 +14,8 @@ try to get contents by mining, and don't break the player's containers at all.
 2. `player_container_list` to see what's inside before moving anything.
 3. `player_container_put <item> [amount]` to deposit, `player_container_take <item> [amount]`
    to withdraw — amount defaults to all matching stacks; pass a smaller number to move part
-   of a stack.
+   of a stack. Taken items land in a free hotbar slot and may become your selected mainhand —
+   re-select your working tool afterwards.
 4. When your inventory is nearly full, proactively deposit low-priority loot (extra
    cobblestone, dirt); keep tools, fuel and current task materials on you.
 5. When fetching materials for a task, take only what the plan needs — don't empty the chest.
