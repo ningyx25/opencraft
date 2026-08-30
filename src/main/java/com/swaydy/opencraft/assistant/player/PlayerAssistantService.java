@@ -381,6 +381,8 @@ public final class PlayerAssistantService {
 	 * {@link #FOLLOW_DISTANCE} 且当前没有手动指令时向主人走动；不超过
 	 * {@link #STOP_DISTANCE} 且没有手动指令时停下。手动指令（player_goto/
 	 * player_mine 等，movement 的 manual 标记）不会被跟随逻辑覆盖。
+	 * 三档阈值共用同一判距：助手与主人 x/y/z 三方向合成的欧氏距离（脚到脚），
+	 * 垂直差（主人在楼上/楼下）同样计入。
 	 */
 	static void keepSafeState(AiAssistantPlayer player) {
 		if (!player.getAbilities().invulnerable) {
@@ -407,7 +409,11 @@ public final class PlayerAssistantService {
 		}
 		Player owner = player.getOwner();
 		if (owner instanceof ServerPlayer ownerSp && ownerSp.level() == player.level()) {
-			double dist = player.distanceTo(ownerSp);
+			// 跟随判距：x/y/z 三方向合成的欧氏距离（脚到脚），三档阈值共用
+			double dx = ownerSp.getX() - player.getX();
+			double dy = ownerSp.getY() - player.getY();
+			double dz = ownerSp.getZ() - player.getZ();
+			double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 			if (dist > TELEPORT_DISTANCE) {
 				// 太远：直接传送回主人身边
 				Vec3 safe = AiCompanionService.findSafeSpawnPos((ServerLevel) player.level(),
