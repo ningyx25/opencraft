@@ -2,7 +2,12 @@ package com.swaydy.opencraft.agent.presets;
 
 import com.swaydy.opencraft.plugins.presets.AssistantControlPlugin;
 import com.swaydy.opencraft.plugins.presets.AssistantPlugin;
-import com.swaydy.opencraft.plugins.presets.PlayerActionsPlugin;
+import com.swaydy.opencraft.plugins.presets.PlayerContainerPlugin;
+import com.swaydy.opencraft.plugins.presets.PlayerCraftingPlugin;
+import com.swaydy.opencraft.plugins.presets.PlayerInventoryPlugin;
+import com.swaydy.opencraft.plugins.presets.PlayerMovementPlugin;
+import com.swaydy.opencraft.plugins.presets.PlayerPerceptionPlugin;
+import com.swaydy.opencraft.plugins.presets.PlayerWorldPlugin;
 
 import java.util.List;
 
@@ -53,7 +58,15 @@ public final class GeneralAgent extends BaseAgent {
 
 	@Override
 	public List<AssistantPlugin> plugins() {
-		return List.of(new AssistantControlPlugin(), new PlayerActionsPlugin());
+		// 玩家动作按 dsh 的 capability-family 拆成 6 个可组合插件，共享 PlayerActionMechanics 的玩家 bot 实现
+		return List.of(
+				new AssistantControlPlugin(),
+				new PlayerMovementPlugin(),
+				new PlayerPerceptionPlugin(),
+				new PlayerWorldPlugin(),
+				new PlayerCraftingPlugin(),
+				new PlayerInventoryPlugin(),
+				new PlayerContainerPlugin());
 	}
 
 	@Override

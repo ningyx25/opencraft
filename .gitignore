@@ -45,3 +45,6 @@ replay_*.log
 # runtime logs (JUnit test output, e2e results, Minecraft logs outside run/)
 
 logs/
+
+.claude/
+.zcode/

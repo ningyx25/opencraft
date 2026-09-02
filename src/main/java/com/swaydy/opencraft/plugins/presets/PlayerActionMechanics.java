@@ -6,9 +6,7 @@ import com.swaydy.opencraft.ai.AiCompanionService;
 import com.swaydy.opencraft.assistant.player.AiAssistantPlayer;
 import com.swaydy.opencraft.plugins.ToolArgs;
 import com.swaydy.opencraft.plugins.ToolContext;
-import com.swaydy.opencraft.plugins.ToolDefinition;
 import com.swaydy.opencraft.plugins.ToolResult;
-import com.swaydy.opencraft.plugins.ToolSchema;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
@@ -46,256 +44,27 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 玩家形态插件：让“假玩家”助手的每个动作都走原版真实玩家的操作链路——
- * <ul>
- * <li><b>挖掘</b>：真实客户端-服务端流程（{@code START_DESTROY_BLOCK} → 服务器按
- *     工具速度推进破坏进度 → {@code STOP_DESTROY_BLOCK} 校验后破坏并按工具判定掉落），
- *     挖掘耗时与真实玩家完全一致（木镐挖石头 ≈1.15s；工具不对就是抠不动）；</li>
- * <li><b>放置/交互</b>：{@code ServerPlayerGameMode.useItemOn}（贴面放置、方块先交互）；</li>
- * <li><b>合成</b>：真实配方书流程——在随身 2×2 背包菜单或工作台 3×3 {@code CraftingMenu}
- *     里 {@code handlePlacement} 自动摆料 + shift 点结果（{@code quickMoveStack}）逐次
- *     消耗材料，关菜单退回余料；</li>
- * <li><b>物品移动/装备</b>：在助手自己的 {@code InventoryMenu} 里按真实点击交换
- *     （护甲部位校验/穿戴回调/音效全原版）；丢弃走原版 {@code Player.drop}（朝看向抛出）；
- *     热键栏切换走 {@code setSelectedSlot}（与原版换手键的服务端处理一致）。</li>
- * <li><b>容器交互</b>（箱子/桶/潜影盒/熔炉…）：与真实玩家一样“右键打开 → 查看 →
- *     shift 点击取放 → 关闭”——{@code ServerPlayerGameMode.useItemOn}(sneak=false)
- *     走真实右键路径打开菜单（{@code player_container_open}），
- *     {@code AbstractContainerMenu.quickMoveStack} 做原版 shift-click 取放
- *     （{@code player_container_take/put}），{@code ServerPlayer.closeContainer} 关闭
- *     （{@code player_container_close}）；内容查看走 {@code player_container_list}。</li>
- * </ul>
- * 装备/主手变更的客户端同步由 {@code AiAssistantPlayer.tick()} 的 doTick
- * （LivingEntity 装备检测）自动完成，无需手动广播。
+ * 玩家形态助手的动作实现（capability provider）：每个工具方法都是<b>无状态静态方法</b>，
+ * 直接驱动真 {@code AiAssistantPlayer}（移动/挖掘/放置控制器、玩家背包、容器菜单），
+ * 返回喂给模型的 {@link ToolResult}。本类不是插件——模型可见的工具 surface（schema/描述/提示词）
+ * 与能力分组在同包的 6 个 capability 插件里（{@code PlayerMovementPlugin} 等，见 plugins/README），
+ * 它们的 executor 引用本类的静态方法。
  *
- * 助手天生拥有普通玩家的一切，
- * “可以不用，但不能没有”。工具全部在服务端线程执行；移动/挖掘/放置是异步的
- * （下达指令立即返回，助手自己走过去执行，模型从每轮刷新的 Assistant State
- * 上下文观察结果——观察类信息不占工具调用）。
+ * <p>与 deepseek-harness 的对应：dsh 把能力拆成 shell/fs/container 等 capability family
+ * （Service Definition / Provider / Consumer）；这里把「模型可调用的工具族」（插件）与
+ * 「玩家 bot 的操作实现」（本类）分离，工具族可单独组合进不同 Agent 预设。
  */
-public class PlayerActionsPlugin implements AssistantPlugin {
+final class PlayerActionMechanics {
 	/** 玩家交互/破坏/放置的默认触及距离（格）。 */
 	private static final double REACH = 4.5;
 	/** 玩家主背包格数（36：27 普通 + 9 快捷栏；装备槽由 1.21.11 的 EntityEquipment 管理）。 */
 	private static final int MAIN_SLOTS = 36;
 
-	@Override
-	public String id() {
-		return "player_actions";
-	}
-
-	@Override
-	public List<ToolDefinition> tools() {
-		JsonObject gotoProps = new JsonObject();
-		gotoProps.add("x", ToolSchema.prop("integer", "Target X coordinate (absolute, integer)"));
-		gotoProps.add("y", ToolSchema.prop("integer", "Target Y coordinate (absolute, integer)"));
-		gotoProps.add("z", ToolSchema.prop("integer", "Target Z coordinate (absolute, integer)"));
-		JsonObject teleportProps = new JsonObject();
-		teleportProps.add("x", ToolSchema.prop("integer", "Target X coordinate (absolute, integer)"));
-		teleportProps.add("y", ToolSchema.prop("integer", "Target Y coordinate (absolute, integer)"));
-		teleportProps.add("z", ToolSchema.prop("integer", "Target Z coordinate (absolute, integer)"));
-		JsonObject mineProps = new JsonObject();
-		mineProps.add("x", ToolSchema.prop("integer", "Block X coordinate"));
-		mineProps.add("y", ToolSchema.prop("integer", "Block Y coordinate"));
-		mineProps.add("z", ToolSchema.prop("integer", "Block Z coordinate"));
-		JsonObject placeProps = new JsonObject();
-		placeProps.add("x", ToolSchema.prop("integer", "X coordinate of the block to place against (the adjacent block)"));
-		placeProps.add("y", ToolSchema.prop("integer", "Y coordinate of the block to place against"));
-		placeProps.add("z", ToolSchema.prop("integer", "Z coordinate of the block to place against"));
-		placeProps.add("face", ToolSchema.prop("string",
-				"Which face to place on: up/down/north/south/east/west (default up)"));
-		placeProps.add("sneak", ToolSchema.prop("boolean",
-				"True to place like shift-clicking (place against functional blocks such as chests/furnaces "
-						+ "instead of opening them). Default false."));
-		JsonObject craftProps = new JsonObject();
-		craftProps.add("item", ToolSchema.prop("string",
-				"Item id to craft, e.g. minecraft:diamond_block."));
-		craftProps.add("amount", ToolSchema.prop("integer", "Amount to craft (default 1)."));
-		JsonObject listProps = new JsonObject();
-		listProps.add("whose", ToolSchema.prop("string",
-				"Whose inventory to list: \"self\" (default, the assistant's own inventory) or \"owner\"/\"player\" (the owner's inventory)."));
-		JsonObject moveProps = new JsonObject();
-		moveProps.add("from", ToolSchema.prop("string",
-				"Source slot: a number 0–35 (main inventory) or a name: mainhand (= currently selected hotbar slot), offhand, helmet, chestplate, leggings, boots."));
-		moveProps.add("to", ToolSchema.prop("string",
-				"Destination slot: same format as from, or -1 to drop the item on the ground (like pressing Q). The two slots swap contents."));
-		JsonObject hotbarProps = new JsonObject();
-		hotbarProps.add("slot", ToolSchema.prop("integer",
-				"Hotbar slot to select as the main hand (0–8, where 0 is the leftmost slot)."));
-		JsonObject handProps = new JsonObject();
-		handProps.add("item", ToolSchema.prop("string", "Item id, e.g. minecraft:cobblestone."));
-		handProps.add("amount", ToolSchema.prop("integer", "Amount (default 1)."));
-		JsonObject findProps = new JsonObject();
-		findProps.add("target", ToolSchema.prop("string",
-				"What to find: a block/item ID (minecraft:oak_log, oak_log) or a keyword (log, chest, iron, player, monster…)."));
-		findProps.add("radius", ToolSchema.prop("integer", "Search radius (default 12, max 20)."));
-		JsonObject containerOpenProps = new JsonObject();
-		containerOpenProps.add("x", ToolSchema.prop("integer", "X coordinate of the container block (chest/barrel/furnace/etc.)"));
-		containerOpenProps.add("y", ToolSchema.prop("integer", "Y coordinate of the container block"));
-		containerOpenProps.add("z", ToolSchema.prop("integer", "Z coordinate of the container block"));
-		JsonObject containerTakePutProps = new JsonObject();
-		containerTakePutProps.add("item", ToolSchema.prop("string", "Item id, e.g. minecraft:oak_planks."));
-		containerTakePutProps.add("amount", ToolSchema.prop("integer", "Amount to take/put (default = all matching stacks)."));
-		return List.of(
-				new ToolDefinition("player_goto",
-						"Have the assistant (as a player) walk to the given coordinates (absolute x,y,z). Asynchronous: "
-								+ "the call returns immediately and the conversation pauses; when the assistant arrives, "
-								+ "the outcome arrives automatically as an [Event] message — never re-issue the same goto while waiting.",
-						ToolSchema.object(gotoProps, "x", "y", "z"),
-						this::gotoTool),
-				new ToolDefinition("player_stop",
-						"Cancel the assistant's current movement and mining, making it stop.",
-						ToolSchema.object(new JsonObject()),
-						this::stopTool),
-				new ToolDefinition("player_teleport",
-						"Instantly teleport the assistant (as a player) to the given absolute coordinates (x,y,z) "
-								+ "in the current dimension. Use this when walking is impractical (steep cliffs, "
-								+ "lava/water gaps, or when player_goto keeps getting stuck). Cancels any current "
-								+ "movement/mining. Synchronous: the teleport happens immediately. "
-								+ "Still bounded by the maxDistance leash from your current position (same limit as player_goto).",
-						ToolSchema.object(teleportProps, "x", "y", "z"),
-						this::teleportTool),
-				new ToolDefinition("player_jump",
-						"Have the assistant jump in place (to hop over 1-block steps/small gaps; can be combined with player_goto "
-								+ "for a running jump; only takes effect when on the ground).",
-						ToolSchema.object(new JsonObject()),
-						this::jump),
-				new ToolDefinition("player_find",
-						"Find things around the assistant by keyword/ID, returning exact coordinates + bearing "
-								+ "(how many blocks east/south/west/north) + distance. "
-								+ "target can be a block/item ID (e.g. minecraft:oak_log, oak_log) or a plain keyword "
-								+ "(e.g. \"log\", \"chest\", \"iron\", \"player\", \"monster\"). "
-								+ "Before acting (mining/placing/going to an item), call player_find to get exact coordinates — don't guess coordinates.",
-						ToolSchema.object(findProps, "target"),
-						this::findTarget),
-				new ToolDefinition("player_mine",
-						"Have the assistant (as a player) mine the block at the given coordinates: walk up to it and break it with the "
-							+ "main-hand tool like a player; drops fall out as items and are auto-picked into the assistant's inventory. "
-							+ "Asynchronous: the loop pauses and the outcome (done / aborted, picked-up items) arrives automatically "
-							+ "as an [Event] message — never re-issue while waiting. If the block is deep underground, walking only "
-							+ "gets the assistant above it — dig down step by step instead. "
-							+ "Cannot mine air, bedrock, or containers (chests/furnaces etc.).",
-						ToolSchema.object(mineProps, "x", "y", "z"),
-						this::mine),
-				new ToolDefinition("player_place",
-						"Have the assistant (as a player) place a block at the given position with its main-hand item: place it against the "
-							+ "face of the block at (x,y,z). Requires a placeable item in the main hand (e.g. stone/planks). "
-							+ "If far away, the assistant walks over first and the outcome arrives automatically as an [Event] message.",
-						ToolSchema.object(placeProps, "x", "y", "z"),
-						this::place),
-				new ToolDefinition("player_craft",
-						"Have the assistant craft the given item using materials from its own player inventory (exactly like a player: "
-								+ "2×2 and smaller recipes can be crafted anytime, 3×3 recipes need a nearby crafting table). "
-								+ "Products go into the assistant's inventory; later you can hand them to the owner with player_hand_to_player.",
-						ToolSchema.object(craftProps, "item"),
-						this::craft),
-				new ToolDefinition("player_inventory",
-						"List the full contents of the assistant's own player inventory (or the owner's) in detail: "
-								+ "every non-empty slot with its slot number (0–35, matching player_item_move), the currently selected "
-								+ "main-hand hotbar slot, durability of tools/armor, and equipment (helmet/chestplate/leggings/boots/offhand). "
-								+ "Call this when you need an exact, complete inventory view — e.g. before planning a craft, "
-								+ "when deciding what to hand to the owner, or when the inventory summary in the Assistant State "
-								+ "context is truncated and you must know exactly what you have. Note: player_inventory is read-only "
-								+ "and never changes anything.",
-						ToolSchema.object(listProps),
-						this::listInventory),
-				new ToolDefinition("player_item_move",
-						"Move (swap) items between any two slots in the assistant's inventory. "
-								+ "Slots: numbers 0–35 for main inventory, or named slots: "
-								+ "mainhand (= currently selected hotbar slot), offhand, helmet, chestplate, leggings, boots. "
-								+ "The two slots swap contents — use this to equip armor/weapons, unequip them, or rearrange items.",
-						ToolSchema.object(moveProps, "from", "to"),
-						this::itemMove),
-				new ToolDefinition("player_hotbar_select",
-						"Select which hotbar slot (0–8) is the main hand. "
-								+ "Slot 0 is leftmost, slot 8 is rightmost. "
-								+ "Use player_item_move to put items into hotbar slots first, then select the slot here.",
-						ToolSchema.object(hotbarProps, "slot"),
-						this::hotbarSelect),
-				new ToolDefinition("player_hand_to_player",
-						"Take an item out of the assistant's inventory and hand it to the owner (goes into the owner's inventory; "
-								+ "drops at the owner's feet if their inventory is full).",
-						ToolSchema.object(handProps, "item"),
-						this::handToPlayer),
-				new ToolDefinition("player_container_open",
-						"Open a container block (chest, barrel, shulker box, furnace, hopper, dispenser, ender chest, crafting "
-								+ "table…) at the given coordinates, exactly like a player right-clicking it. "
-								+ "If far away, the assistant walks over first and the outcome arrives automatically as an [Event] "
-								+ "message. After opening, use player_container_list to see the contents and "
-								+ "player_container_take / player_container_put to move items; close with player_container_close.",
-						ToolSchema.object(containerOpenProps, "x", "y", "z"),
-						this::containerOpen),
-				new ToolDefinition("player_container_list",
-						"List the contents of the container the assistant currently has open (its slots) together with the "
-								+ "assistant's own inventory side by side, like the container GUI shows. Read-only. "
-								+ "Call this after player_container_open and whenever you need to know exactly what is inside "
-								+ "the container before taking or putting items.",
-						ToolSchema.object(new JsonObject()),
-						this::containerList),
-				new ToolDefinition("player_container_take",
-						"Take an item out of the open container into the assistant's inventory by shift-clicking matching "
-								+ "container slots (whole stacks at a time, exactly like a player). Requires an open container "
-								+ "(player_container_open first). amount caps how many to take (may overshoot by one stack).",
-						ToolSchema.object(containerTakePutProps, "item"),
-						this::containerTake),
-				new ToolDefinition("player_container_put",
-						"Put an item from the assistant's inventory into the open container by shift-clicking matching "
-								+ "inventory slots (whole stacks at a time, exactly like a player). Requires an open container "
-								+ "(player_container_open first). amount caps how many to put (may overshoot by one stack).",
-						ToolSchema.object(containerTakePutProps, "item"),
-						this::containerPut),
-				new ToolDefinition("player_container_close",
-						"Close the container the assistant currently has open (like pressing Esc). No-op if nothing is open.",
-						ToolSchema.object(new JsonObject()),
-						this::containerClose));
-	}
-
-	@Override
-	public String systemPromptFragment() {
-		return """
-				## Player Form
-
-				You have joined the Minecraft server as a real player: full player inventory, equipment slots, and player-style actions.
-
-				- **`player_goto` / `player_stop`** — walk to coordinates / stop (stop also cancels mining)
-				- **`player_teleport`** — instantly teleport to any coordinates in the current dimension (use it when walking is impractical: cliffs, lava/water, deep underground, or repeated goto stuck); cancels current movement/mining
-				- **`player_jump`** — jump over 1-block steps or small gaps (combine with a movement target for a running jump)
-				- **`player_mine` / `player_place`** — break/place blocks the player way (mining takes real time depending on the tool — pick the right tool; place with `sneak=true` to place against chests/furnaces instead of opening them; drops go straight into the inventory)
-				- **`player_craft`** — craft from inventory materials (same rules as a player; 3×3 needs a crafting table)
-				- **`player_item_move`** — swap items between any two slots (slots 0–35 = main inventory, named slots: `mainhand`/`offhand`/`helmet`/`chestplate`/`leggings`/`boots`; `-1` as destination drops the item like pressing Q)
-				- **`player_hotbar_select`** — pick which hotbar slot (0–8) is the main hand
-				- **`player_hand_to_player`** — hand an item to the owner
-				- **`player_find`** — find things by keyword/ID and return exact coordinates (always use it first to get coordinates — don't guess)
-				- **`player_inventory`** — list the FULL inventory of the assistant (or the owner) in detail: every non-empty slot with
-				  its slot number, the selected main-hand slot, durability, and equipment — call it when you need an exact,
-				  complete inventory view (planning crafts, deciding what to hand over, or the context summary is not enough)
-				- **`player_container_open` / `player_container_close`** — open/close a container block (chest, barrel, shulker box,
-				  furnace…) like a player right-clicking it; opening may be asynchronous (walking) — the [Event] outcome arrives by itself
-				- **`player_container_list`** — see the open container's contents and your inventory side by side (read-only)
-				- **`player_container_take` / `player_container_put`** — shift-click whole stacks of an item between the open
-				  container and your inventory (e.g. take all oak_planks from the chest, put cobblestone into the barrel)
-
-				Your own position, environment, nearby blocks and a summary of your inventory are provided automatically in the
-				**Assistant State** JSON of the system context every round — do not call tools just to re-check what the context
-				already shows. But that inventory summary is capped/abridged: when you need the exact, complete inventory
-				(which slot holds what, durability, every stack) call `player_inventory` (read-only, safe).
-
-				Containers (chests/barrels/shulker boxes/furnaces…) hold items and `player_mine` refuses to break them. To get
-				items from one or store items in one: `player_find` the container → `player_container_open` it → `player_container_list`
-				to see what's inside → `player_container_take` / `player_container_put` to move items → `player_container_close` when done.
-
-				Tool results begin with `[tool success/failure]` — read the marker first; never assume a tool succeeded;
-				on failure try a different approach rather than retrying identically.""";
-	}
-
-	// gameContextFragment 不再覆写:助手状态段（坐标/朝向/移动/环境/近旁方块）是任何预设
-	// 都需要的核心上下文,由 agent.Prompts.system 直接组装,不走插件的扩展点。
-
 	// ------------------------------------------------------------------
 	// 工具实现
 	// ------------------------------------------------------------------
 
-	private ToolResult gotoTool(ToolContext ctx, JsonObject args) {
+	static ToolResult gotoTool(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_goto requires a player-form assistant.");
@@ -319,7 +88,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				+ "This is an async action: the arrival [Event] will arrive automatically; do not re-issue the command.");
 	}
 
-	private ToolResult stopTool(ToolContext ctx, JsonObject args) {
+	static ToolResult stopTool(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_stop requires a player-form assistant.");
@@ -335,7 +104,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	 * teleport_to_player 相同:传送后旧目标已无意义,不停的话 bot 会朝旧目标走回去）;
 	 * 落点经 findSafeSpawnPos 向上找安全位置,避免传进墙里/地下。同步完成,结果立即返回。
 	 */
-	private ToolResult teleportTool(ToolContext ctx, JsonObject args) {
+	static ToolResult teleportTool(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_teleport requires a player-form assistant.");
@@ -379,7 +148,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				: "Teleported to (" + x + "," + y + "," + z + ").");
 	}
 
-	private ToolResult jump(ToolContext ctx, JsonObject args) {
+	static ToolResult jump(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_jump requires a player-form assistant.");
@@ -401,7 +170,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	 * 遍历注册表展开（id 路径或描述键子串匹配，限 6 种），再对半径内立方体扫描一次；
 	 * 实体：按关键词/实体类型 id 查询指定类型。
 	 */
-	private ToolResult findTarget(ToolContext ctx, JsonObject args) {
+	static ToolResult findTarget(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_find requires a player-form assistant.");
@@ -484,7 +253,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return ToolResult.ok(sb.toString());
 	}
 
-	private ToolResult mine(ToolContext ctx, JsonObject args) {
+	static ToolResult mine(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_mine requires a player-form assistant.");
@@ -598,7 +367,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return best != null ? best : (fallback != null ? fallback : Vec3.atBottomCenterOf(pos.above()));
 	}
 
-	private ToolResult place(ToolContext ctx, JsonObject args) {
+	static ToolResult place(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_place requires a player-form assistant.");
@@ -650,7 +419,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				+ "the outcome [Event] will arrive automatically; do not re-issue.");
 	}
 
-	private ToolResult craft(ToolContext ctx, JsonObject args) {
+	static ToolResult craft(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_craft requires a player-form assistant.");
@@ -741,7 +510,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return shown == 0 ? "空" : sb.toString();
 	}
 
-	private ToolResult itemMove(ToolContext ctx, JsonObject args) {
+	static ToolResult itemMove(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_item_move requires a player-form assistant.");
@@ -814,7 +583,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return ToolResult.ok("Swapped: [" + fromStr + "] " + fromName + " ↔ [" + toStr + "] " + toName + ".");
 	}
 
-	private ToolResult hotbarSelect(ToolContext ctx, JsonObject args) {
+	static ToolResult hotbarSelect(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_hotbar_select requires a player-form assistant.");
@@ -966,7 +735,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return net.minecraft.world.entity.EquipmentSlot.MAINHAND;
 	}
 
-	private ToolResult listInventory(ToolContext ctx, JsonObject args) {
+	static ToolResult listInventory(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_inventory requires a player-form assistant.");
@@ -1055,7 +824,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		};
 	}
 
-	private ToolResult handToPlayer(ToolContext ctx, JsonObject args) {
+	static ToolResult handToPlayer(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_hand_to_player requires a player-form assistant.");
@@ -1101,7 +870,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 	// 容器侧槽位判定：菜单里 container != a.getInventory() 的前导槽（vanilla 保证容器槽在前）。
 	// ------------------------------------------------------------------
 
-	private ToolResult containerOpen(ToolContext ctx, JsonObject args) {
+	static ToolResult containerOpen(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_container_open requires a player-form assistant.");
@@ -1228,7 +997,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 		return "Container";
 	}
 
-	private ToolResult containerList(ToolContext ctx, JsonObject args) {
+	static ToolResult containerList(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_container_list requires a player-form assistant.");
@@ -1252,7 +1021,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				+ "; My inventory: " + formatPlayerInventory(a));
 	}
 
-	private ToolResult containerTake(ToolContext ctx, JsonObject args) {
+	static ToolResult containerTake(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_container_take requires a player-form assistant.");
@@ -1292,7 +1061,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				+ (taken < amount ? "" : " (amount cap reached)"));
 	}
 
-	private ToolResult containerPut(ToolContext ctx, JsonObject args) {
+	static ToolResult containerPut(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_container_put requires a player-form assistant.");
@@ -1333,7 +1102,7 @@ public class PlayerActionsPlugin implements AssistantPlugin {
 				+ (moved < amount ? "" : " (amount cap reached)"));
 	}
 
-	private ToolResult containerClose(ToolContext ctx, JsonObject args) {
+	static ToolResult containerClose(ToolContext ctx, JsonObject args) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
 		if (a == null) {
 			return ToolResult.error("Tool player_container_close requires a player-form assistant.");

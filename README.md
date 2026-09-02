@@ -142,11 +142,14 @@ https://github.com/user-attachments/assets/c4a91eff-5ded-4788-9cba-8ecffc6c3d61
 src/
 ├── main/java/com/swaydy/opencraft/
 │   ├── OpenCraftMod.java          # 模组入口，注册方块/命令/网络包
-│   ├── agent/                     # Agent 框架：AgentRuntime、预设注册、插件接口
+│   ├── agent/                     # Agent 框架：薄驱动 AgentRuntime、工具管线 ToolExecutor、
+│   │                              #   hooks/（LoopHook 生命周期钩子）、GameContext（动态上下文）、
+│   │                              #   HistoryCompactor（历史压缩）
 │   │   └── presets/               # Agent 预设：chat_agent、general_agent
 │   ├── assistant/                 # 助手抽象：AiAssistant 统一接口、AssistantFacade、
 │   │                              #   player/（AiAssistantPlayer 真 ServerPlayer bot）
-│   ├── plugins/                   # 内置插件：助手控制、移动、感知、挖掘、物品、合成
+│   ├── plugins/                   # 内置插件：助手控制 + 玩家动作能力族（移动/感知/挖掘放置/
+│   │                              #   合成/背包物品/容器，共享 PlayerActionMechanics）
 │   ├── ai/                        # LLM 客户端（SSE 流式 + 工具调用）、配置模型
 │   ├── block/                     # AI 徽标方块与方块实体
 │   ├── command/                   # /opencraft 指令
@@ -159,6 +162,9 @@ src/
 │   └── render/                    # 助手实体渲染器、世界内流式浮层
 └── main/resources/                # fabric.mod.json、语言文件、贴图、配方、战利品表
 ```
+
+Agent 架构细节（DeepSeek Harness 包映射、扩展方式与验证要求）见
+[docs/agent-architecture.md](docs/agent-architecture.md)。
 
 ---
 

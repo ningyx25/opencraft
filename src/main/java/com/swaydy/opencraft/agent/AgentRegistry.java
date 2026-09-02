@@ -37,10 +37,16 @@ public final class AgentRegistry {
 		}
 		initialized = true;
 		registerPlugin(new com.swaydy.opencraft.plugins.presets.AssistantControlPlugin());
-		// 玩家形态插件：假玩家（ServerPlayer 客户端形态）的真实玩家动作。
+		// 玩家动作按能力族拆成 6 个可组合插件（实现共享 PlayerActionMechanics）：
+		// 移动 / 感知定位 / 挖掘放置 / 合成 / 背包物品 / 容器交互。
 		// 注意：插件只是“能力单元”；身体形态（玩家 bot）不由预设决定——
 		// 助手一律以真正的 ServerPlayer 身份进服，预设只装配 LLM 可调用的工具。
-		registerPlugin(new com.swaydy.opencraft.plugins.presets.PlayerActionsPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.presets.PlayerMovementPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.presets.PlayerPerceptionPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.presets.PlayerWorldPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.presets.PlayerCraftingPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.presets.PlayerInventoryPlugin());
+		registerPlugin(new com.swaydy.opencraft.plugins.presets.PlayerContainerPlugin());
 
 		registerAgent(new ChatAgent().definition());
 		registerAgent(new GeneralAgent().definition());

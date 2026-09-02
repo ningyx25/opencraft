@@ -20,7 +20,7 @@ public final class MovementQueries {
 	 * goto 参数 (x,y,z) 是否与当前在途移动目标一致（容差 {@code tolerance} 格）。
 	 *
 	 * <p>工具下达目标时用的是方块中心 {@code (x+0.5, y, z+0.5)}（见
-	 * PlayerActionsPlugin.gotoTool），这里把参数同样换算到方块中心再比对。
+	 * PlayerActionMechanics.gotoTool），这里把参数同样换算到方块中心再比对。
 	 * 参数缺失/非法返回 false（豁免不生效，走常规执行与守卫路径）。
 	 *
 	 * @param args     工具参数 JSON（x/y/z 整数，数字或数字字符串——与 ToolArgs 语义一致）
