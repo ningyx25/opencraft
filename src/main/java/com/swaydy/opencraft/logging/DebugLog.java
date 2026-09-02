@@ -87,8 +87,10 @@ public final class DebugLog {
 				Path dir = FabricLoader.getInstance().getGameDir().resolve("logs");
 				Files.createDirectories(dir);
 				file = dir.resolve("opencraft-debug.log");
-			} catch (IOException e) {
-				file = Path.of("opencraft-debug.log");
+			} catch (IOException | IllegalStateException | NoClassDefFoundError e) {
+				// 无 Fabric 运行时（纯 JVM 单测里 OPEN_CRAFT_DEBUG 被误带进环境时走到这里）：
+				// 退到临时目录，绝不向上抛——调试日志永远不能弄崩宿主流程。
+				file = Path.of(System.getProperty("java.io.tmpdir"), "opencraft-debug.log");
 			}
 			logFile = file;
 		}
