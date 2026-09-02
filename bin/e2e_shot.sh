@@ -11,8 +11,8 @@
 #            然后本地 ffplay tcp://127.0.0.1:$E2E_LIVE_PORT
 #
 # 用法:
-#   bin/e2e_shot.sh [task] [interval_sec_ignored]
-#     task          e2e 任务 id（默认 all；如 mine_stone / chop_tree）
+#   bin/e2e_shot.sh <task> [interval_sec_ignored]
+#     task          e2e 任务 id（必填，如 chop_tree / craft_furnace）
 #     interval_sec  保留兼容、无效果（有实时视频了，不再逐帧截图省内存）
 # 环境变量:
 #   E2E_HOLD_MS     任务后服务器保持毫秒（默认 120000）
@@ -26,7 +26,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-TASK="${1:-all}"
+TASK="${1:-}"
 INTERVAL="${2:-5}"   # 兼容占位：不再逐帧截图
 DISPLAY_NUM="${DISPLAY_NUM:-99}"
 PORT="${PORT:-25565}"
@@ -37,7 +37,10 @@ FPS="${E2E_FPS:-10}"
 LIVE_PORT="${E2E_LIVE_PORT:-}"
 STAMP="$(date +%H%M%S)"
 
-echo "[shot] 任务=$TASK  显示=:$DISPLAY_NUM  hold=${HOLD_MS}ms  视频=${DO_VIDEO}  fps=${FPS}  直播端口=${LIVE_PORT:-无}"
+if [ -z "$TASK" ]; then
+	echo "[shot] 用法: bin/e2e_shot.sh <task>（例如 chop_tree）"
+	exit 2
+fi
 
 # 1) 起虚拟显示
 Xvfb ":$DISPLAY_NUM" -screen 0 "$SCREEN" >/tmp/e2e-xvfb.log 2>&1 &
@@ -88,11 +91,11 @@ if [ "$DO_VIDEO" != "0" ] && command -v ffmpeg >/dev/null 2>&1; then
 	fi
 fi
 
-# 2) 起 e2e 服务器（无头，后台；自动删 run/world 拿全新存档 + 写 spawn-protection=0 / online-mode=false）
+# 2) 起 e2e 服务器（无头，后台；自动删 run/world，用固定种子重新生成自然世界）
 BASE_URL_ARG=""
 [ -n "${E2E_BASE_URL:-}" ] && BASE_URL_ARG="-Pe2eBaseUrl=$E2E_BASE_URL"
 export DISPLAY=":$DISPLAY_NUM"
-./gradlew runE2E -Pe2eTask="$TASK" -Pe2eHoldMs="$HOLD_MS" $BASE_URL_ARG >/tmp/e2e-server.log 2>&1 &
+./gradlew runE2E -Pe2eTask="$TASK" -Pe2eHoldMs="$HOLD_MS" -Pe2eSeed="${E2E_SEED:-opencraft-e2e-2026-09-02-04}" $BASE_URL_ARG >/tmp/e2e-server.log 2>&1 &
 SERVER_PID=$!
 
 # 3) 等服务器端口就绪

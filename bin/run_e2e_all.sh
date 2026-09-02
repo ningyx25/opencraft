@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenCraft e2e — 全部 5 个任务，每个任务在全新世界里依次跑。
+# OpenCraft natural e2e — 每个任务在固定种子的新生成真实世界里依次运行。
 #
-# 等价于依次执行：
-#   ./gradlew runE2E -Pe2eTask=chop_tree
-#   ./gradlew runE2E -Pe2eTask=place_workbench
-#   ...
-# 每个任务独立删档（cleanE2EWorld）+ 独立服务器 → 单任务语义。
-# PASS/FAIL 以 run/logs/e2e-results.txt 里该任务套件的真实结果为准
+# 每个任务独立删档 + 写固定种子 + 启动独立服务器，测试区为自然世界出生点。
+# PASS/FAIL 以 run/logs/e2e-results.txt 里该任务的真实结果为准
 # （gradle 退出码永远是 0，因为服务器正常跑完就会退出）。
 #
 # 用法:
@@ -17,24 +13,26 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 # 任务列表自动发现：从 e2e/tasks/*.java 的 id() 提取（新增任务无需改本脚本）
+E2E_SEED="${E2E_SEED:-opencraft-e2e-2026-09-02-04}"
 TASKS=$(./gradlew e2eList -q 2>/dev/null || true)
 if [ -z "$TASKS" ]; then
 	echo "[E2E] 无法获取任务列表（./gradlew e2eList 失败）"
 	exit 1
 fi
+echo "[E2E] 自然世界种子: $E2E_SEED"
 echo "[E2E] 任务列表: $(echo "$TASKS" | tr '\n' ' ')"
 PASSED=0
 FAILED=0
 
 for task in $TASKS; do
 	echo ""
-	echo "[E2E] ============ 任务 $task 开始（全新世界）============"
+	echo "[E2E] ============ 任务 $task 开始（自然新生成世界）============"
 	before=$(wc -l < run/logs/e2e-results.txt 2>/dev/null || echo 0)
-	if ./gradlew runE2E -Pe2eTask="$task" "$@"; then
+	if ./gradlew runE2E -Pe2eTask="$task" -Pe2eSeed="$E2E_SEED" "$@"; then
 		after=$(wc -l < run/logs/e2e-results.txt 2>/dev/null || echo 0)
 		res=""
 		if [ "$after" -gt "$before" ]; then
-			res=$(tail -n $((after - before)) run/logs/e2e-results.txt | grep -E "套件结果" | tail -1)
+			res=$(tail -n $((after - before)) run/logs/e2e-results.txt | grep -E "任务结果" | tail -1)
 		fi
 		case "$res" in
 			*": 0/"*) echo "[E2E] FAIL $task"; FAILED=$((FAILED + 1)) ;;

@@ -9,16 +9,17 @@ import com.swaydy.opencraft.assistant.player.AiAssistantPlayer;
 import com.swaydy.opencraft.block.AiLogoBlockEntity;
 import com.swaydy.opencraft.block.ModBlocks;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
-import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.phys.AABB;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -29,49 +30,14 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * 端到端测试编排器：在<b>无头真实存档</b>（独立服务器）里，用真实 LLM + general_agent
- * 驱动玩家形态 AI 助手完成内置任务，并按世界方块状态 / 助手背包物品计数验证真实结果。
+ * 自然世界端到端测试编排器：在固定种子的新生成真实存档里，用真实 LLM + general_agent
+ * 驱动玩家形态助手从真实新玩家状态开始游玩，并按真实背包结果验收。
  *
- * <p><b>为什么不是 gametest</b>：gametest 的空结构世界与脚本化断言面向单元验证；
- * e2e 在 {@code ./gradlew runServer} 起的真实世界里跑完整 agentic loop
- * （真实 LLM → 工具调用 → 真玩家式移动/挖掘/放置/合成 → 世界状态变化），
- * 是"助手像真实玩家一样进服干活"的验收。</p>
- *
- * <p><b>无头驱动</b>：所有 /opencraft 命令原本要求玩家源（{@code getPlayerOrException}），
- * 本模块绕开命令层，直接用公共 API：合成一个<b>主人玩家</b>并像助手一样用
- * {@code PlayerList.placeNewPlayer} + 黑洞连接正式进服（对 mod 就是一个真客户端，
- * 跟随/治疗/网络广播全部照常），{@code AssistantFacade.summon} 召唤、
- * {@code AiCompanionService.ask} 下发任务、{@code AgentRuntime.isBusy} 轮询完成状态。
- * 每任务一个独立主人（用完送走），避免 PlayerList UUID 冲突。</p>
- *
- * <p><b>运行入口</b>：
- * <ul>
- *   <li>控制台命令 {@code /opencraft e2e run <id|all>}（无玩家在线也能跑）；</li>
- *   <li>自动运行 {@code -Dopencraft.e2e.autorun=<id|all>}（配合 gradle 任务
- *       {@code ./gradlew runE2E}，先删 {@code run/world} 拿全新存档，跑完自动退出）。</li>
- * </ul>
- * 结果写入 {@code run/logs/e2e-results.txt}（追加，每次套件带分隔头）并打日志。</p>
+ * <p>没有人工测试区：不铺平台、不清空地形、不种树、不埋矿、不预放容器。
+ * 合成主人通过原版 PlayerList.placeNewPlayer 自然进入世界，助手出生在主人旁边，
+ * 只在自然地面上临时放置一个 AI 配置方块（任务结束恢复原状态）。</p>
  */
 public final class E2EHarness {
-	/** 每个任务独立测试区：x 方向间隔（格），避免跨任务干扰（平台/树/助手/主人各自独立）。 */
-	private static final int AREA_STRIDE = 50;
-	/** 测试区基因原点（每任务 + index*AREA_STRIDE）。y=120 高于所有地形，真实世界的树木/石头
-	 * 不会干扰任务场景，玩家式 find 也扫不到（find 半径 ≤ 20 格）。 */
-	private static final BlockPos AREA_BASE = new BlockPos(300, 120, 300);
-
-	/** 第 index 个任务的测试区原点。 */
-	private static BlockPos areaOrigin(int index) {
-		return new BlockPos(AREA_BASE.getX() + index * AREA_STRIDE, AREA_BASE.getY(), AREA_BASE.getZ());
-	}
-	/** 平台半边长（平台边长 2*PLATFORM_HALF+1）。 */
-	private static final int PLATFORM_HALF = 8;
-
-	/** 平台半边长（供任务验证区域扫描使用）。 */
-	public static int platformRadius() {
-		return PLATFORM_HALF;
-	}
-	/** 平台上方清空高度。 */
-	private static final int CLEAR_HEIGHT = 24;
 	/** 结果文件（相对服务器工作目录 run/）。 */
 	private static final String RESULTS_FILE = "logs/e2e-results.txt";
 	/** 当前套件的详细日志文件（含工具序列/验证细节等；每次套件独立文件）。 */
@@ -80,6 +46,8 @@ public final class E2EHarness {
 	private static volatile String suiteLogPath = "";
 	/** 当前任务的详细记录（工具事件/周期状态），任务结束写入套件日志文件。 */
 	private static volatile StringBuilder currentTaskLog = new StringBuilder();
+	/** 当前任务的 AI 配置方块原自然状态（服务端线程写入/清理）。 */
+	private static final java.util.Map<GlobalPos, BlockState> ORIGINAL_CONFIG_STATES = new java.util.HashMap<>();
 
 	private E2EHarness() {
 	}
@@ -88,10 +56,9 @@ public final class E2EHarness {
 	// 入口：命令 / autorun
 	// ------------------------------------------------------------------
 
-	/** 注册 autorun 钩子（{@code -Dopencraft.e2e.autorun=<id|all>}，服务器启动后自动跑并退出）。 */
+	/** 注册 autorun 钩子（{@code -Dopencraft.e2e.autorun=<id>}，服务器启动后自动跑并退出）。 */
 	public static void registerAutoRunHook() {
 		registerShotClientGlue();
-		// 工具执行观察者：把每轮工具调用录进当前任务详细日志
 		com.swaydy.opencraft.agent.AgentRuntime.addToolListener((toolName, result) -> {
 			StringBuilder sb = currentTaskLog;
 			if (sb != null) {
@@ -112,21 +79,29 @@ public final class E2EHarness {
 			com.swaydy.opencraft.e2e.E2ERegistry.init();
 			server.execute(() -> {
 				ServerLevel level = server.overworld();
-				List<com.swaydy.opencraft.e2e.E2ETask> tasks;
-				if ("all".equalsIgnoreCase(autorun.trim())) {
-					tasks = com.swaydy.opencraft.e2e.E2ERegistry.all();
-				} else {
-					com.swaydy.opencraft.e2e.E2ETask task = com.swaydy.opencraft.e2e.E2ERegistry.byId(autorun.trim());
-					if (task == null) {
-						log("[E2E] 未知任务: " + autorun + "（可用: " + taskIds() + "）");
-						shutdown(server).run();
-						return;
+				if (Boolean.getBoolean("opencraft.e2e.probe")) {
+					if (level != null) {
+						probeWorld(level);
 					}
-					tasks = List.of(task);
+					shutdown(server).run();
+					return;
 				}
-				log("[E2E] 自动运行 " + tasks.size() + " 个任务: " + taskIds(tasks));
-				// -Dopencraft.e2e.holdMs=<毫秒>：任务跑完后服务器保持运行这段时间
-				// （真截图客户端启动慢，需要窗口期连上、被粘到助手眼睛并截图；默认 0 = 立即退出）
+				if (level == null) {
+					log("[E2E] 自动运行失败：主世界不可用");
+					shutdown(server).run();
+					return;
+				}
+				if ("all".equalsIgnoreCase(autorun.trim())) {
+					log("[E2E] 拒绝 autorun=all：自然 e2e 每个任务必须使用独立新生成世界；请运行 bash bin/run_e2e_all.sh");
+					shutdown(server).run();
+					return;
+				}
+				com.swaydy.opencraft.e2e.E2ETask task = com.swaydy.opencraft.e2e.E2ERegistry.byId(autorun.trim());
+				if (task == null) {
+					log("[E2E] 未知任务: " + autorun + "（可用: " + taskIds() + "）");
+					shutdown(server).run();
+					return;
+				}
 				long holdMs = 0;
 				String holdProp = System.getProperty("opencraft.e2e.holdMs");
 				if (holdProp != null && !holdProp.isBlank()) {
@@ -136,45 +111,40 @@ public final class E2EHarness {
 					}
 				}
 				final long hold = holdMs;
-				Runnable onAllDone = () -> new Thread(() -> {
+				Runnable onDone = () -> new Thread(() -> {
 					if (hold > 0) {
-						log("[E2E] 套件结束，保持服务器运行 " + (hold / 1000) + "s 供截图客户端连入…");
+						log("[E2E] 任务结束，保持服务器运行 " + (hold / 1000) + "s 供截图客户端连入…");
 						try {
 							Thread.sleep(hold);
 						} catch (InterruptedException e) {
 							return;
 						}
 					}
-					shotTarget = null; // hold 结束才解除 glue
+					shotTarget = null;
 					shutdown(server).run();
 				}, "E2E-hold").start();
-				runTasks(level, tasks, onAllDone);
+				runTasks(level, List.of(task), onDone);
 			});
 		});
 	}
 
-	/** 当前 e2e 任务的助手（截图客户端要粘到它的眼睛上）；hold 结束/下个任务时更新。 */
-	private static volatile com.swaydy.opencraft.assistant.player.AiAssistantPlayer shotTarget;
+	/** 当前 e2e 任务的助手（截图客户端要粘到它的眼睛上）；任务结束/hold 时清除。 */
+	private static volatile AiAssistantPlayer shotTarget;
 
-	/**
-	 * 注册"截图客户端 glue"：e2e 任务进行中（{@link #shotTarget} 非空）时，每 tick 把
-	 * 连接进来的"非助手、非 E2E_ 合成主人"的玩家（即 Xvfb 真客户端）TP 到助手眼睛坐标、
-	 * 朝向对齐助手——这样客户端截图画面就是助手的第一人称视角。
-	 * 幂等（每次注册钩子只挂一次；靠 {@code shotTarget} 是否为空决定是否生效）。
-	 */
+	/** 真客户端 glue：任务进行中把连接进来的真客户端 TP 到助手眼睛位置并同步朝向。 */
 	private static void registerShotClientGlue() {
 		net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents.END_SERVER_TICK.register(server -> {
-			com.swaydy.opencraft.assistant.player.AiAssistantPlayer target = shotTarget;
+			AiAssistantPlayer target = shotTarget;
 			if (target == null || target.isRemoved()) {
 				return;
 			}
-			for (net.minecraft.server.level.ServerPlayer p : server.getPlayerList().getPlayers()) {
+			for (ServerPlayer p : server.getPlayerList().getPlayers()) {
 				if (p == target || p.isRemoved()) {
 					continue;
 				}
 				String name = p.getName().getString();
 				if (name == null || name.startsWith("E2E_")) {
-					continue; // 合成主人，不是截图客户端
+					continue;
 				}
 				p.teleportTo(target.level(),
 						target.getX(), target.getY() + 1.62, target.getZ(),
@@ -183,21 +153,28 @@ public final class E2EHarness {
 		});
 	}
 
-	/** 在指定维度依次运行一组任务（入口需在服务端线程；完成后回调 onAllDone）。 */
+	/** 运行一个自然世界任务（标准语义：一次只能一个任务，保证一个任务一个新世界）。 */
 	public static void runTasks(ServerLevel level, List<com.swaydy.opencraft.e2e.E2ETask> tasks,
 	                            Runnable onAllDone) {
 		if (tasks == null || tasks.isEmpty()) {
+			log("[E2E] 自然 e2e 没有任务可运行");
 			if (onAllDone != null) {
 				onAllDone.run();
 			}
 			return;
 		}
-		// 新建本套件的详细日志文件（含任务头/工具序列/周期状态/验证细节）
+		if (tasks.size() != 1) {
+			log("[E2E] 自然 e2e 一次只能运行一个任务；全量请使用 bin/run_e2e_all.sh（每任务一个新世界）");
+			if (onAllDone != null) {
+				onAllDone.run();
+			}
+			return;
+		}
 		String stamp = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(new java.util.Date());
 		suiteLogPath = String.format(E2E_LOG_FILE, stamp);
-		appendLogFile("======== E2E 详细日志 " + stamp + " ========");
+		appendLogFile("======== E2E 自然世界详细日志 " + stamp + " ========");
 		writeSuiteHeader();
-		log("[E2E] 开始端到端套件，共 " + tasks.size() + " 个任务");
+		log("[E2E] 开始自然世界端到端任务: " + tasks.get(0).id());
 		runNext(level, tasks, 0, new ArrayList<>(), onAllDone);
 	}
 
@@ -223,16 +200,14 @@ public final class E2EHarness {
 		}
 		com.swaydy.opencraft.e2e.E2ETask task = tasks.get(index);
 		currentTaskLog = new StringBuilder();
-		log("[E2E] 任务 " + (index + 1) + "/" + tasks.size() + " 「" + task.id() + "」开始（超时 "
-				+ (task.timeoutMillis() / 1000) + "s）");
+		log("[E2E] 任务 「" + task.id() + "」开始（超时 " + (task.timeoutMillis() / 1000) + "s）");
 		taskLog("==== 任务 " + task.id() + " ====");
 		taskLog("描述: " + task.description());
 		taskLog("超时: " + (task.timeoutMillis() / 1000) + "s");
 		taskLog("指令: " + task.taskPrompt());
-		taskLog("区域原点: " + areaOrigin(index).toShortString());
 		com.swaydy.opencraft.e2e.E2EContext ctx;
 		try {
-			ctx = setupTask(level, task, index);
+			ctx = setupTask(level, task);
 		} catch (Exception e) {
 			com.swaydy.opencraft.e2e.E2EResult fail =
 					new com.swaydy.opencraft.e2e.E2EResult(task.id(), false, 0, "任务启动失败: " + e);
@@ -250,7 +225,6 @@ public final class E2EHarness {
 		startWatcher(level, tasks, index, results, ctx, task, start, onAllDone);
 	}
 
-	/** 守护线程轮询 {@link com.swaydy.opencraft.agent.AgentRuntime#isBusy}，完成后切回服务端线程验证。 */
 	private static void startWatcher(ServerLevel level, List<com.swaydy.opencraft.e2e.E2ETask> tasks, int index,
 	                                 List<com.swaydy.opencraft.e2e.E2EResult> results,
 	                                 com.swaydy.opencraft.e2e.E2EContext ctx,
@@ -265,16 +239,14 @@ public final class E2EHarness {
 					stillBusy = false;
 					break;
 				}
-				// 每 10s 记录一次助手状态（位置/历史/背包）
 				int elapsed = (int) ((System.currentTimeMillis() - start) / 1000);
 				if (elapsed - lastStatusSec >= 10) {
 					lastStatusSec = elapsed;
 					int hist = AiCompanionService.historySize(ctx.configBlock());
-					com.swaydy.opencraft.assistant.player.AiAssistantPlayer a = ctx.assistant();
-					int slots = ctx.nonEmptySlotCount();
+					AiAssistantPlayer a = ctx.assistant();
 					taskLog("[t+" + elapsed + "s] 位置=("
 							+ (int) a.getX() + "," + (int) a.getY() + "," + (int) a.getZ()
-							+ ") 历史=" + (hist - histBefore) + " 条  背包非空=" + slots + " 格");
+							+ ") 历史=" + (hist - histBefore) + " 条  背包非空=" + ctx.nonEmptySlotCount() + " 格");
 				}
 				try {
 					Thread.sleep(200);
@@ -283,7 +255,6 @@ public final class E2EHarness {
 				}
 			}
 			final boolean timedOut = stillBusy;
-			// 收尾宽限：loop 结束后给掉落物拾取/动作收尾一点时间再验证（防 flaky）
 			if (!timedOut) {
 				try {
 					Thread.sleep(1500);
@@ -298,7 +269,6 @@ public final class E2EHarness {
 		watcher.start();
 	}
 
-	/** 服务端线程：验证 + 清理 + 报告 + 续跑。详细日志写入当前任务 log。 */
 	private static void finishTask(ServerLevel level, List<com.swaydy.opencraft.e2e.E2ETask> tasks, int index,
 	                               List<com.swaydy.opencraft.e2e.E2EResult> results,
 	                               com.swaydy.opencraft.e2e.E2EContext ctx,
@@ -308,20 +278,22 @@ public final class E2EHarness {
 		String message;
 		boolean passed;
 		int hist = AiCompanionService.historySize(ctx.configBlock());
-		com.swaydy.opencraft.assistant.player.AiAssistantPlayer a = ctx.assistant();
+		AiAssistantPlayer a = ctx.assistant();
 		taskLog("用时: " + (duration / 1000) + "s  历史: " + hist + " 条");
 		taskLog("助手位置: (" + (int) a.getX() + "," + (int) a.getY() + "," + (int) a.getZ() + ")");
-		// 背包快照
 		StringBuilder inv = new StringBuilder();
-		for (net.minecraft.world.item.ItemStack stack
-				: a.getInventory().getNonEquipmentItems()) {
-			if (stack.isEmpty()) continue;
-			if (inv.length() > 0) inv.append(", ");
+		for (net.minecraft.world.item.ItemStack stack : a.getInventory().getNonEquipmentItems()) {
+			if (stack.isEmpty()) {
+				continue;
+			}
+			if (inv.length() > 0) {
+				inv.append(", ");
+			}
 			inv.append(java.util.Objects.toString(
 					net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()), "?"));
 			inv.append("x").append(stack.getCount());
 		}
-		taskLog("背包: " + (inv.length() > 0 ? inv.toString() : "空"));
+		taskLog("背包: " + (inv.length() > 0 ? inv : "空"));
 		if (timedOut) {
 			com.swaydy.opencraft.agent.AgentRuntime.interrupt(ctx.configBlock());
 			message = "超时（" + (duration / 1000) + "s 未完成），已中断；历史 " + hist + " 条";
@@ -349,7 +321,6 @@ public final class E2EHarness {
 		com.swaydy.opencraft.e2e.E2EResult result =
 				new com.swaydy.opencraft.e2e.E2EResult(task.id(), passed, duration, message);
 		results.add(result);
-		// 将当前任务详细日志刷入套件日志文件
 		flushTaskLog();
 		report(result);
 		runNext(level, tasks, index + 1, results, onAllDone);
@@ -360,11 +331,11 @@ public final class E2EHarness {
 		for (com.swaydy.opencraft.e2e.E2EResult r : results) {
 			log("[E2E]   - " + r.summaryLine());
 		}
-		String summary = "[E2E] 套件结果: " + passed + "/" + results.size() + " 通过";
+		String summary = "[E2E] 任务结果: " + passed + "/" + results.size() + " 通过";
 		log(summary);
 		appendFile(summary);
 		if (suiteLogPath != null && !suiteLogPath.isEmpty()) {
-			log("[E2E] 详细日志: " + java.nio.file.Path.of(suiteLogPath).toAbsolutePath());
+			log("[E2E] 详细日志: " + Path.of(suiteLogPath).toAbsolutePath());
 		}
 		if (onAllDone != null) {
 			onAllDone.run();
@@ -372,98 +343,61 @@ public final class E2EHarness {
 	}
 
 	// ------------------------------------------------------------------
-	// 场景准备
+	// 自然世界场景准备
 	// ------------------------------------------------------------------
 
 	private static com.swaydy.opencraft.e2e.E2EContext setupTask(ServerLevel level,
-	                                                             com.swaydy.opencraft.e2e.E2ETask task,
-	                                                             int index) {
-		BlockPos areaOrigin = areaOrigin(index);
-		prepareArea(level, areaOrigin); // 清空 + 铺平台
-		taskLog("已铺 3 层石质平台 @ " + areaOrigin.toShortString());
-		BlockPos blockPos = new BlockPos(
-				areaOrigin.getX() - PLATFORM_HALF, areaOrigin.getY() + 1, areaOrigin.getZ() - PLATFORM_HALF);
-		GlobalPos configBlock = placeConfigBlock(level, blockPos);
-		taskLog("配置方块: " + blockPos.toShortString()
+	                                                             com.swaydy.opencraft.e2e.E2ETask task) {
+		BlockPos worldSpawn = level.getRespawnData().pos();
+		ProbeResult probe = probeNaturalWorld(level, worldSpawn);
+		taskLog("固定种子: " + level.getSeed());
+		taskLog("世界出生点: " + worldSpawn.toShortString());
+		taskLog("地形勘察: " + probe.summary());
+		if (!probe.passed()) {
+			throw new IllegalStateException("自然出生点不满足 e2e 勘察条件: " + probe.summary());
+		}
+
+		ServerPlayer owner = createOwner(level, task.id());
+		owner.getInventory().clearContent();
+		BlockPos actualSpawn = owner.adjustSpawnLocation(level, worldSpawn);
+		owner.teleportTo(actualSpawn.getX() + 0.5, actualSpawn.getY(), actualSpawn.getZ() + 0.5);
+		taskLog("合成主人自然落点: " + owner.getName().getString() + " @ "
+				+ actualSpawn.toShortString());
+
+		BlockPos configPos = findConfigPos(level, actualSpawn);
+		if (configPos == null) {
+			throw new IllegalStateException("出生点 8 格内没有安全的自然地面可放配置方块");
+		}
+		GlobalPos configBlock = placeConfigBlock(level, configPos);
+		taskLog("配置方块: " + configPos.toShortString()
 				+ "（baseUrl=" + AiBlockConfig.defaultBaseUrl()
 				+ ", model=" + AiBlockConfig.defaultModel()
 				+ ", agent=general_agent）");
-		// 合成一个"真实存在"的主人玩家（加进 PlayerList，黑洞连接——对 mod 就是一个进服的客户端，
-		// 跟随/治疗/网络广播全部照常工作）；每任务一个独立 UUID，留在世界不送走。
-		ServerPlayer owner = createOwner(level, task.id(), areaOrigin);
-		taskLog("主人: " + owner.getName().getString() + " (" + owner.getUUID() + ")");
+
 		AiAssistantPlayer assistant = AssistantFacade.summon(owner, configBlock);
 		if (assistant == null) {
 			throw new IllegalStateException("召唤助手失败（方块/维度不可用？）");
 		}
-		// 评测期间助手不死亡：无敌旗标（挡所有普通伤害）+ 实体级 Invulnerable（挡虚空掉落/
-		// 绕过无敌的伤害）；summonFor 已设 abilities.invulnerable，这里再兜底并回满血
+		assistant.getInventory().clearContent();
 		assistant.getAbilities().invulnerable = true;
 		assistant.setInvulnerable(true);
 		assistant.setHealth(assistant.getMaxHealth());
 		taskLog("助手: 系统名=" + assistant.getName().getString()
 				+ " 显示名=" + assistant.getConfig().effectiveName()
 				+ " 出生点=(" + (int) assistant.getX() + "," + (int) assistant.getY() + "," + (int) assistant.getZ() + ")"
-				+ "（已设无敌）");
-		shotTarget = assistant; // 截图客户端粘到本任务助手的眼睛上
-		com.swaydy.opencraft.e2e.E2EContext ctx = new com.swaydy.opencraft.e2e.E2EContext(
-				level.getServer(), level, owner, assistant, configBlock, areaOrigin);
-		task.setup(ctx); // 种树等场景
-		return ctx;
-	}
-
-	/** 清空测试区 + 铺石质平台（每个任务独立区域，保证确定性，不依赖世界生成）。
-	 * 平台<b>3 层厚</b>：挖掉表面一块只会掉进浅坑（1 格），不会挖穿平台掉到下方地形
-	 * （平台 y=120 浮空，下方是地形——单层平台被挖穿 bot 会掉 40+ 格，掉落物留在平台上
-	 * 超出拾取范围，验证永远失败）。 */
-	private static void prepareArea(ServerLevel level, BlockPos areaOrigin) {
-		int ox = areaOrigin.getX(), oy = areaOrigin.getY(), oz = areaOrigin.getZ();
-		for (int dx = -PLATFORM_HALF; dx <= PLATFORM_HALF; dx++) {
-			for (int dz = -PLATFORM_HALF; dz <= PLATFORM_HALF; dz++) {
-				for (int dy = -2; dy <= 0; dy++) {
-					level.setBlock(new BlockPos(ox + dx, oy + dy, oz + dz),
-							Blocks.STONE.defaultBlockState(), Block.UPDATE_ALL);
-				}
-				for (int dy = 1; dy <= CLEAR_HEIGHT; dy++) {
-					level.setBlock(new BlockPos(ox + dx, oy + dy, oz + dz), Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
-				}
-			}
-		}
-		// 清掉区域里遗留的掉落物
-		AABB box = new AABB(ox - PLATFORM_HALF - 2, oy - 3, oz - PLATFORM_HALF - 2,
-				ox + PLATFORM_HALF + 2, oy + CLEAR_HEIGHT + 2, oz + PLATFORM_HALF + 2);
-		for (ItemEntity item : level.getEntitiesOfClass(ItemEntity.class, box)) {
-			item.discard();
-		}
-	}
-
-	/** 放置 AI 徽标方块并把 LLM 配置（.env 注入的真实默认值）写进去。 */
-	private static GlobalPos placeConfigBlock(ServerLevel level, BlockPos pos) {
-		level.setBlock(pos, ModBlocks.AI_LOGO_BLOCK.defaultBlockState(), Block.UPDATE_ALL);
-		if (level.getBlockEntity(pos) instanceof AiLogoBlockEntity be) {
-			AiBlockConfig cfg = be.getConfig();
-			cfg.baseUrl = AiBlockConfig.defaultBaseUrl();
-			cfg.apiKey = AiBlockConfig.defaultApiKey();
-			cfg.model = AiBlockConfig.defaultModel();
-			cfg.agent = "general_agent";
-			be.markConfigChanged();
-		} else {
-			throw new IllegalStateException("AI 徽标方块实体未创建于 " + pos);
-		}
-		return GlobalPos.of(level.dimension(), pos);
+				+ "（真实空背包，已设无敌）");
+		shotTarget = assistant;
+		return new com.swaydy.opencraft.e2e.E2EContext(
+				level.getServer(), level, owner, assistant, configBlock,
+				actualSpawn, worldSpawn, ORIGINAL_CONFIG_STATES.get(configBlock));
 	}
 
 	/**
-	 * 合成一个"真实存在"的主人玩家：像助手一样用 {@code PlayerList.placeNewPlayer} +
-	 * 黑洞连接正式进服（对 mod 就是一个真客户端，网络广播/跟随/治疗全部照常）。
-	 * 每任务一个独立名字+UUID（任务结束送走，避免 PlayerList 冲突）；placeNewPlayer
-	 * 会把它摆到世界出生点，所以随后重摆到测试区并保持无敌/食物满/不摔伤。
+	 * 合成一个真实进入 PlayerList 的主人玩家，并用原版出生点调整逻辑确定自然落点。
+	 * 不铺平台；对 mod 而言它就是一个刚进服的真实新玩家。
 	 */
-	private static ServerPlayer createOwner(ServerLevel level, String taskId, BlockPos areaOrigin) {
+	private static ServerPlayer createOwner(ServerLevel level, String taskId) {
 		MinecraftServer server = level.getServer();
-		// 名字必须 ≤16 字符：player_info_update 的 ADD_PLAYER 广播按 16 上限编码，
-		// 超长（如 E2E_place_workbench=19）会在服务端编码时抛 EncoderException，
-		// 把连接中的真截图客户端整个踢下线（实测"String too big (was 19, max 16)"）。
 		String name = "E2E_" + taskId;
 		if (name.length() > 16) {
 			name = name.substring(0, 16);
@@ -474,26 +408,116 @@ public final class E2EHarness {
 		server.getPlayerList().placeNewPlayer(
 				new com.swaydy.opencraft.assistant.player.FakeConnection(), owner,
 				CommonListenerCookie.createInitial(profile, false));
-		// placeNewPlayer 摆到出生点：重摆到测试区平台 + 无敌/食物满（站桩不掉血/不饿死/不摔伤）
-		owner.teleportTo(areaOrigin.getX() + 0.5, areaOrigin.getY() + 1, areaOrigin.getZ() + 0.5);
+		owner.setGameMode(net.minecraft.world.level.GameType.SURVIVAL);
 		owner.getAbilities().invulnerable = true;
+		owner.setInvulnerable(true);
 		owner.getFoodData().setFoodLevel(20);
 		owner.getFoodData().setSaturation(20f);
 		return owner;
 	}
 
+	/** 只读勘察自然出生点：树、可采石头和安全条件，不修改任何方块。 */
+	private static ProbeResult probeNaturalWorld(ServerLevel level, BlockPos spawn) {
+		int oakLogs = 0;
+		int exposedStone = 0;
+		int hazards = 0;
+		int water = 0;
+		for (int dx = -20; dx <= 20; dx++) {
+			for (int dy = -20; dy <= 20; dy++) {
+				for (int dz = -20; dz <= 20; dz++) {
+					BlockPos pos = spawn.offset(dx, dy, dz);
+					BlockState state = level.getBlockState(pos);
+					if (state.is(Blocks.OAK_LOG)) {
+						oakLogs++;
+					}
+					if (state.is(Blocks.STONE) && hasAirNeighbor(level, pos)) {
+						exposedStone++;
+					}
+					if (state.is(Blocks.LAVA) || state.is(Blocks.FIRE) || state.is(Blocks.CACTUS)
+							|| state.is(Blocks.MAGMA_BLOCK) || state.is(Blocks.POWDER_SNOW)) {
+						hazards++;
+					}
+					if (Math.abs(dx) <= 4 && Math.abs(dz) <= 4 && state.getFluidState().is(net.minecraft.world.level.material.Fluids.WATER)) {
+						water++;
+					}
+				}
+			}
+		}
+		boolean groundSafe = !level.getBlockState(spawn).isSolid()
+				&& !level.getBlockState(spawn.above()).isSolid()
+				&& level.getBlockState(spawn.below()).isSolid()
+				&& level.getFluidState(spawn).isEmpty();
+		boolean passed = oakLogs >= 3 && exposedStone >= 8 && hazards == 0
+				&& water <= 16 && groundSafe;
+		return new ProbeResult(passed, oakLogs, exposedStone, hazards, water, groundSafe);
+	}
+
+	private static boolean hasAirNeighbor(ServerLevel level, BlockPos pos) {
+		for (Direction dir : Direction.values()) {
+			if (level.getBlockState(pos.relative(dir)).isAir()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** 在自然出生点 8 格内找配置方块位置：原位置为空气、可站、不替换自然方块。 */
+	private static BlockPos findConfigPos(ServerLevel level, BlockPos spawn) {
+		BlockPos best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (int dx = -8; dx <= 8; dx++) {
+			for (int dz = -8; dz <= 8; dz++) {
+				for (int dy = -4; dy <= 4; dy++) {
+					BlockPos pos = spawn.offset(dx, dy, dz);
+					BlockState state = level.getBlockState(pos);
+					BlockState above = level.getBlockState(pos.above());
+					BlockState below = level.getBlockState(pos.below());
+					if (!state.isAir() || !above.isAir() || !below.isSolid()
+							|| !level.getFluidState(pos).isEmpty() || !level.getFluidState(pos.below()).isEmpty()) {
+						continue;
+					}
+					if (below.is(Blocks.LAVA) || below.is(Blocks.MAGMA_BLOCK) || below.is(Blocks.CACTUS)) {
+						continue;
+					}
+					double distance = spawn.distSqr(pos);
+					if (distance < bestDistance) {
+						bestDistance = distance;
+						best = pos;
+					}
+				}
+			}
+		}
+		return best;
+	}
+
+	/** 放置 AI 徽标方块并写入真实默认 LLM 配置；返回其 GlobalPos。 */
+	private static GlobalPos placeConfigBlock(ServerLevel level, BlockPos pos) {
+		BlockState originalState = level.getBlockState(pos);
+		level.setBlock(pos, ModBlocks.AI_LOGO_BLOCK.defaultBlockState(), Block.UPDATE_ALL);
+		if (level.getBlockEntity(pos) instanceof AiLogoBlockEntity be) {
+			AiBlockConfig cfg = be.getConfig();
+			cfg.baseUrl = AiBlockConfig.defaultBaseUrl();
+			cfg.apiKey = AiBlockConfig.defaultApiKey();
+			cfg.model = AiBlockConfig.defaultModel();
+			cfg.agent = "general_agent";
+			be.markConfigChanged();
+			ORIGINAL_CONFIG_STATES.put(GlobalPos.of(level.dimension(), pos), originalState);
+			return GlobalPos.of(level.dimension(), pos);
+		}
+		throw new IllegalStateException("AI 徽标方块实体未创建于 " + pos.toShortString());
+	}
+
 	/**
-	 * 任务收尾：只清对话记忆，<b>不送走助手/主人</b>。
-	 *
-	 * <p>在真实存档里 {@code PlayerList.remove(假玩家)} 会在距离管理器里一次移除它
-	 * 视野半径内的全部区块票券，触发 vanilla 光照引擎 {@code LeveledPriorityQueue}
-	 * 的 {@code ArrayIndexOutOfBoundsException}（fastutil LongLinkedOpenHashSet 的
-	 * fixPointers 拿到 -1 下标）——gametest 小世界不触发，真实世界必现。因此 e2e 不
-	 * 主动移除假玩家，把它们留在各自平台上；服务器停服时用 saveAllChunks + halt
-	 * 直接退出（JVM 退出，不做 PlayerList.removeAll），假玩家随进程消失。</p>
+	 * 任务收尾：恢复配置方块原自然状态，并清空对话记忆。
+	 * 不移除假玩家，避免真实存档 PlayerList.remove 触发 vanilla 光照引擎崩溃。
 	 */
 	private static void dismissAssistant(com.swaydy.opencraft.e2e.E2EContext ctx) {
+		if (ctx.configOriginalState() != null) {
+			ctx.level().setBlock(ctx.configBlock().pos(), ctx.configOriginalState(), Block.UPDATE_ALL);
+		}
+		ORIGINAL_CONFIG_STATES.remove(ctx.configBlock());
 		AiCompanionService.resetHistory(ctx.configBlock());
+		shotTarget = null;
 	}
 
 	// ------------------------------------------------------------------
@@ -506,7 +530,9 @@ public final class E2EHarness {
 	}
 
 	private static void writeSuiteHeader() {
-		appendFile("======== E2E 套件 " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) + " ========");
+		appendFile("======== E2E 自然世界套件 "
+				+ new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())
+				+ " ========");
 	}
 
 	private static void appendFile(String line) {
@@ -528,7 +554,6 @@ public final class E2EHarness {
 		appendLogFile(line);
 	}
 
-	/** 追加到当前任务的详细日志（仅写详细日志文件，不打控制台）。 */
 	private static void taskLog(String line) {
 		StringBuilder sb = currentTaskLog;
 		if (sb != null) {
@@ -538,7 +563,6 @@ public final class E2EHarness {
 		}
 	}
 
-	/** 把当前任务详细日志刷入套件日志文件。 */
 	private static void flushTaskLog() {
 		StringBuilder sb = currentTaskLog;
 		if (sb != null) {
@@ -548,7 +572,6 @@ public final class E2EHarness {
 		}
 	}
 
-	/** 追加一行到套件详细日志文件（run/logs/e2e-<时间戳>.log）。 */
 	private static void appendLogFile(String text) {
 		if (suiteLogPath == null || suiteLogPath.isEmpty()) {
 			return;
@@ -565,7 +588,6 @@ public final class E2EHarness {
 		}
 	}
 
-	/** 历史最后一条消息的纯文本（只取 TextBlock，剥离包装）。 */
 	private static String lastHistoryText(GlobalPos key) {
 		try {
 			List<com.swaydy.opencraft.ai.LlmClient.Message> history = AiCompanionService.getHistory(key);
@@ -581,7 +603,6 @@ public final class E2EHarness {
 		return "（无历史消息）";
 	}
 
-	/** 把消息的块内容拼成纯文本（TextBlock 取 text，其余跳过）。 */
 	private static String messageText(com.swaydy.opencraft.ai.LlmClient.Message m) {
 		if (m == null || m.content() == null) {
 			return "";
@@ -614,38 +635,54 @@ public final class E2EHarness {
 		return sb.toString();
 	}
 
-	private static String taskIds(List<com.swaydy.opencraft.e2e.E2ETask> tasks) {
-		StringBuilder sb = new StringBuilder();
-		for (com.swaydy.opencraft.e2e.E2ETask t : tasks) {
-			if (sb.length() > 0) {
-				sb.append(", ");
+	/** 只读输出自然出生点勘察 JSON（opencraft.e2e.probe=true 时，不召唤助手）。 */
+	private static void probeWorld(ServerLevel level) {
+		BlockPos spawn = level.getRespawnData().pos();
+		ProbeResult result = probeNaturalWorld(level, spawn);
+		String json = """
+				{
+				  "seed": %d,
+				  "spawn": {"x": %d, "y": %d, "z": %d},
+				  "passed": %s,
+				  "oakLogs": %d,
+				  "exposedStone": %d,
+				  "hazards": %d,
+				  "nearbyWater": %d,
+				  "groundSafe": %s
+				}
+				""".formatted(level.getSeed(), spawn.getX(), spawn.getY(), spawn.getZ(),
+				result.passed(), result.oakLogs(), result.exposedStone(), result.hazards(),
+				result.nearbyWater(), result.groundSafe());
+		try {
+			Path path = Path.of("logs/e2e-world-probe.json");
+			if (path.getParent() != null) {
+				Files.createDirectories(path.getParent());
 			}
-			sb.append(t.id());
+			Files.writeString(path, json, StandardCharsets.UTF_8);
+			log("[E2E] 世界勘察完成: " + result.summary() + " → " + path.toAbsolutePath());
+		} catch (Exception e) {
+			log("[E2E] 写世界勘察 JSON 失败: " + e);
 		}
-		return sb.toString();
 	}
 
-	/**
-	 * 关闭服务器：保存玩家/世界数据后退出 tick 循环。
-	 *
-	 * <p>不能直接用 {@code stopServer()}——它的 {@code PlayerList.remove} 会在真实存档
-	 * 里触发光照引擎崩溃（见 {@link #dismissAssistant} 注释）。改用手动保存 +
-	 * {@code halt(false)}。
-	 *
-	 * <p><b>注意：</b>必须在服务端线程上调用 {@code halt(false)}（作为任务调度），
-	 * 不能在独立线程上调用——否则主 tick 线程的 {@code waitUntilNextTick} 在空任务队列
-	 * 上调用 {@code remove()} 抛 {@code NoSuchElementException}，导致服务器崩溃退出
-	 * 码非 0（嵌套构建模式下会中断整个 runE2EAll 流程）。
-	 */
 	private static Runnable shutdown(MinecraftServer server) {
 		return () -> server.execute(() -> {
 			try {
 				server.getPlayerList().saveAll();
 				server.saveAllChunks(true, true, false);
-				server.halt(false); // running=false，tick 循环退出 → JVM 退出
+				server.halt(false);
 			} catch (Exception e) {
 				OpenCraftMod.LOGGER.warn("[OpenCraft] E2E 停服异常: {}", e.toString());
 			}
 		});
+	}
+
+	private record ProbeResult(boolean passed, int oakLogs, int exposedStone,
+	                           int hazards, int nearbyWater, boolean groundSafe) {
+		private String summary() {
+			return "pass=" + passed + ", oak_log=" + oakLogs + "/3, exposed_stone=" + exposedStone
+					+ "/8, hazards=" + hazards + "/0, nearby_water=" + nearbyWater
+					+ "/16, ground_safe=" + groundSafe;
+		}
 	}
 }

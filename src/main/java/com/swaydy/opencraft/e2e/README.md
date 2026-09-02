@@ -1,124 +1,99 @@
-# OpenCraft 端到端测试模块
+# OpenCraft 自然世界端到端测试
 
-在**无头真实存档**（独立服务器，`runServer`）里，用真实 LLM + general_agent 驱动玩家形态 AI 助手完成内置任务，按世界方块状态与助手背包/容器物品计数验证真实结果。
+在固定种子的新生成真实存档里，用真实 LLM + `general_agent` 驱动玩家形态 AI 助手，从**真实新玩家状态**开始，在自然世界出生点附近完成早期生存任务，并按真实背包结果验收。
 
 ## 设计思路
 
-- **不是 gametest**：gametest 的空结构世界与脚本化断言面相单元验证；e2e 在真实世界跑完整 agentic loop（真实 LLM → 工具调用 → 真玩家式移动/挖掘/放置/合成/容器交互 → 世界状态变化），是"助手像真实玩家一样进服干活"的验收。
-- **围绕一条任务线**：全部任务沿「做一把钻石镐」的工具链展开——砍树→做工作台→合成木镐→挖石头→合成石镐→挖铁矿石/煤矿石→挖8石头→合成熔炉→烧铁锭→合成铁镐→挖钻石矿→合成钻石镐（13 个节点）。拆分为 **3 个小任务（1-3 节点）+ 3 个中等任务（4-8 节点）+ 1 个最终任务**，逐级验证助手的能力，最终合成钻石镐。
-- **无头驱动**：所有 `/opencraft` 命令原本要求玩家源（`getPlayerOrException`），本模块绕开命令层，直接用公共 API。合成一个"主人玩家"并像助手一样用 `PlayerList.placeNewPlayer` + 黑洞连接（`FakeConnection`）正式进服——对 mod 就是一个真客户端，跟随/治疗/网络广播全部照常；每任务一个独立主人（独立 UUID/名字，留世界不送走）。
-- **验证机制**：不是文本匹配，而是真实世界状态——`countInInventory(itemId)`、`countInOwnerInventory(itemId)`、`countInContainer(pos, itemId)`（读容器方块物品数）、`countBlockInRegion(blockId, center, radius)`、`hasBlockInRegion(...)`。
+- **没有独立测试区**：不铺人工平台、不清空地形、不种树、不埋矿、不预放工作台或熔炉。
+- **测试区 = 自然出生点附近**：合成主人由 `PlayerList.placeNewPlayer` 正式进服，使用原版出生点选择与调整逻辑；助手召唤在主人旁边。
+- **真实新玩家状态**：助手与主人背包均为空，不预给工具、材料或场景资源。
+- **真实能力验证**：真实 LLM → `player_find`/`player_mine`/`player_craft` 等玩家式工具 → 自然世界状态变化 → 助手/主人背包物品计数。
+- **唯一基础设施**：自然地面上的 AI 配置方块（LLM 绑定/记忆键）；任务结束后恢复原自然方块状态。其他真实游玩修改不回滚。
+
+## 固定世界
+
+默认固定种子：`opencraft-e2e-2026-09-02-04`（Minecraft `1.21.11` 下勘察通过）。
+
+`runE2E` 会在每次任务前删除 `run/world`，写入：
+
+- `level-seed=<固定种子>`
+- `level-type=minecraft:normal`
+- `generate-structures=true`
+- `spawn-protection=0`
+- `online-mode=false`
+
+自然出生点勘察条件：
+
+- 半径 20 格内至少 3 个 `oak_log`
+- 半径 20 格内至少 8 个暴露 `stone`
+- 无岩浆、火、仙人掌等危险方块
+- 出生点地面安全，附近无大片水体
+
+只读勘察命令：
+
+```bash
+./gradlew runE2E -Pe2eTask=chop_tree -Pe2eProbe=true
+```
+
+结果写入 `run/logs/e2e-world-probe.json`。不召唤助手、不调用 LLM、不修改任何方块。
 
 ## 内置任务
 
-### 小任务（1-3 节点，逐步验证工具链早期）
+所有任务都从空背包开始，只允许使用自然生成资源，不提示目标坐标。
 
-| id | 描述 | 节点 | 初始条件 | 验证内容 |
-|---|---|---|---|---|
-| `chop_tree` | 砍一棵树并收集原木 | 1 | 平台种一棵橡树，空手 | 树干全破坏（区域无 `oak_log` 站立）+ ≥3 根原木入包/主人 |
-| `craft_workbench` | 用原木合成工作台 | 2 | 给 4 块橡木原木 | 背包/主人有 `crafting_table` |
-| `craft_wooden_pickaxe` | 用原木做一把木镐 | 3 | 给 8 块橡木原木 + 平台放好工作台 | 背包/主人有 `wooden_pickaxe` |
+| id | 描述 | 验证 | 超时 |
+|---|---|---|---|
+| `chop_tree` | 在自然出生点附近砍树并收集原木 | 助手/主人背包 `oak_log >= 3` | 6 分钟 |
+| `craft_workbench` | 从零收集木材并合成工作台 | `crafting_table >= 1` | 6 分钟 |
+| `craft_wooden_pickaxe` | 从零收集木材并合成木镐 | `wooden_pickaxe >= 1` | 8 分钟 |
+| `craft_stone_pickaxe` | 从零完成早期工具链并合成石镐 | `stone_pickaxe >= 1` | 10 分钟 |
+| `mine_natural_stone` | 用木镐自然寻找并开采石头 | `cobblestone >= 3` | 8 分钟 |
+| `place_workbench` | 在自然地面上放置工作台 | 出生点 24 格内有 `crafting_table` | 5 分钟 |
+| `craft_furnace` | 给工作台和木镐，自然挖 8 石并合成熔炉 | `furnace >= 1` | 12 分钟 |
 
-### 中等任务（4-8 节点，完整工具链/矿石/熔炉）
+## 运行
 
-| id | 描述 | 节点 | 初始条件 | 验证内容 |
-|---|---|---|---|---|
-| `craft_stone_pickaxe` | 从零做石镐（完整早期工具链） | 7 | 平台种橡树，空手 | 背包/主人有 `stone_pickaxe` |
-| `craft_furnace` | 挖铁/煤/8石头，合成熔炉 | 5 | 给石镐 + 平台放好工作台 + 埋铁矿石×3/煤炭矿石×3 | 背包/主人有 `furnace` + `raw_iron` + `coal` |
-| `smelt_iron_and_iron_pickaxe` | 用熔炉烧铁锭，合成铁镐 | 6 | 平台放好熔炉+工作台 + 给 3 原铁、4 煤炭、2 木棍 | 背包/主人有 `iron_pickaxe` |
+### 单任务（每任务一个新生成世界）
 
-### 最终任务（完整任务线）
+```bash
+./gradlew runE2E -Pe2eTask=chop_tree
+./gradlew runE2E -Pe2eTask=craft_furnace
+```
 
-| id | 描述 | 节点 | 初始条件 | 验证内容 |
-|---|---|---|---|---|
-| `craft_diamond_pickaxe` | 从零开始做一把钻石镐（完整 13 节点任务线） | 13 | **刚进游戏状态**：空手、空背包；平台上有 1 棵橡树 + 铁矿石×3 + 煤炭矿石×3 + 钻石矿石×3 | 背包/主人有 `diamond_pickaxe` |
+`runE2E` 不接受 `all`，因为自然 e2e 要求每个任务都在独立世界中运行。
 
-助手需完整走：砍树→木板→木棍→工作台→木镐→挖石头(圆石)→石镐→挖铁矿石(原铁)/煤炭矿石(煤炭)→挖8石头→熔炉→烧铁锭→铁镐→挖钻石矿石(钻石)→钻石镐。超时 15 分钟。
-
-**工具门槛**（决定各任务初始条件）：挖石头需木镐；挖铁矿石需石镐；挖钻石矿石需铁镐；合成熔炉（8 圆石 3×3）、铁镐、钻石镐需工作台；烧铁锭需熔炉 + 燃料。
-
-## 运行方式
-
-### 全部任务（每任务全新世界）
+### 全量（每任务删除世界后重新生成）
 
 ```bash
 bash bin/run_e2e_all.sh
 ```
 
-等价于依次跑每个单任务（每任务先删 `run/world` 全新存档 + 独立服务器）。任务列表由 `./gradlew e2eList` 从 `e2e/tasks/*.java` 的 `id()` 自动发现——新增任务无需改脚本。
+脚本通过 `./gradlew e2eList` 自动发现任务，逐个调用 `runE2E`。
+
+### 手动单任务
+
+已有服务器中可使用：
 
 ```bash
-./gradlew e2eList    # 查看当前发现的任务列表
-```
-
-### 单个任务（全新存档 + 跑完自动退出）
-
-```bash
-./gradlew runE2E -Pe2eTask=chop_tree
-./gradlew runE2E -Pe2eTask=craft_furnace
-./gradlew runE2E -Pe2eTask=craft_diamond_pickaxe
-```
-
-流程：删除 `run/world`（全新存档）→ 写 `run/server.properties`（`spawn-protection=0` + `online-mode=false`）→ 启动独立服务器 → 加载 mod → 自动运行该任务 → 写结果到 `run/logs/e2e-results.txt` → 优雅退出。
-
-> **为什么不用 `runE2E` 一次跑全部？** 早期 `runE2E`（autorun=all）在**同一个世界里连续跑多个任务**，共享世界的残留假玩家/已加载区块会拖慢后续任务的掉落物拾取（挖 4 根原木只捡到 2 根 vs 新世界 3 根），导致 craft 类任务材料不足而失败。`bin/run_e2e_all.sh` 让每个任务都在自己的全新世界里跑（= 单任务语义），实测全量稳定通过。
-
-### 手动运行（已有服务器 / 控制台）
-
-```bash
-./gradlew runServer
-# 在控制台输入：
 /opencraft e2e list
 /opencraft e2e run chop_tree
-/opencraft e2e run all
 ```
 
-## 架构
-
-```
-e2e/
-├── E2ETask.java        SPI：id/描述/任务指令/setup/verify/teardown
-├── E2EContext.java     运行上下文：server/level/合成主人/助手/绑定方块/区域原点 + 验证辅助
-├── E2EResult.java      结果 record
-├── E2ERegistry.java    静态任务注册表
-├── E2EHarness.java     编排器（场景准备/召唤/ask/等待/验证/报告/autorun/真实客户端截图 glue）
-├── README.md
-└── tasks/
-    ├── TaskScenes.java                 共用场景工具（种树/清树/放工作台/放熔炉/埋矿石）
-    ├── ChopTreeTask.java
-    ├── CraftWorkbenchTask.java
-    ├── CraftWoodenPickaxeTask.java
-    ├── CraftStonePickaxeTask.java
-    ├── CraftFurnaceTask.java
-    ├── SmeltIronAndIronPickaxeTask.java
-    └── CraftDiamondPickaxeTask.java
-```
+`/opencraft e2e run all` 已拒绝，避免在同一世界里连续执行多个任务。
 
 ## 结果
 
-- 文本结果 `run/logs/e2e-results.txt`（追加，每次套件带时间戳分隔头）。
-- 详细日志 `run/logs/e2e-<时间戳>.log`（任务头/工具序列/周期状态/验证细节；`run_e2e_all.sh` 的结果判定也据此）。
-- **原版画质截图** `run/screenshots/`：见下方"真客户端截图"。
+- 汇总：`run/logs/e2e-results.txt`
+- 详细日志：`run/logs/e2e-<timestamp>.log`
+- 地形勘察：`run/logs/e2e-world-probe.json`
 
-## 真客户端截图（原版画质）
-
-需要：`xvfb`、`mesa-utils`（llvmpipe 软渲染）、游戏资源（首次 `runClient` 自动下载）。
-
-```bash
-bin/e2e_shot.sh [task] [interval_sec]    # 例: bin/e2e_shot.sh chop_tree 5
-```
-
-流程：起 Xvfb 虚拟显示 → 起 e2e 服务器（`online-mode=false` + `spawn-protection=0` 自动写好）→ 任务跑完后服务器 **hold**（`-Pe2eHoldMs`，默认 120s，让慢启动的客户端连入）→ 起真客户端（`--quickPlayMultiplayer` 自动进服 + 软渲染）→ 服务器每 tick 把客户端玩家粘到助手眼睛位置/朝向 → 客户端每 N 秒调 `Screenshot.grab` → 截图落 `run/screenshots/`（画面 = 助手第一人称）。
-
-已实测验证：mock LLM + `-Pe2eBaseUrl=http://127.0.0.1:18923/v1` 下跑通，客户端在 Xvfb + llvmpipe（OpenGL 4.5）正常启动、hold 期间连入、连续产出 46 张含天空+平台的截图。
-
-代码：客户端 `client/ShotAutoCapture.java`（`OPEN_CRAFT_SHOT_AUTOCAPTURE=<秒>` 或 `-Dopencraft.shot.autocapture=<秒>` 触发）+ 服务器 glue（`E2EHarness.registerShotClientGlue`，任务进行中把"非助手、非 E2E_ 合成主人"的玩家粘到 `shotTarget` 眼睛上；hold 结束才解除 glue）+ 任务后保持服务器（`-Dopencraft.e2e.holdMs` / `-Pe2eHoldMs`）。
+详细日志包含固定种子、自然出生点、地形勘察、配置方块位置、助手/主人落点、工具序列、周期状态、最终背包与验证结果。
 
 ## 注意事项
 
-- 需要真实 LLM 端点（`.env` 配置的 `OPEN_CRAFT_BASE_URL`/`API_KEY`/`MODEL` 指向可用的 OpenAI 兼容服务）。
-- 每任务默认超时 4 分钟；`run_e2e_all.sh` 全部 7 个任务约 5-25 分钟。
-- 测试区在 (300, 120, 300) 起、每任务 x 方向间隔 50 格（远离出生点，避开出生点保护圈）；平台 3 层厚（防挖穿掉落）；`runE2E` 写 `spawn-protection=0` 兜底。
-- 矿石/容器场景：`TaskScenes` 在平台上放工作台/熔炉（`placeWorkbench`/`placeFurnace`）或埋矿石（`placeOre(ctx, block, index)`，平台顶部 y=120，index 错开位置）；熔炉槽位 0=成品、1=燃料、2=输入；验证用 `countInContainer(pos, itemId)`。
-- 合成主人玩家随任务创建（`PlayerList.placeNewPlayer` + `FakeConnection` 黑洞连接），对 mod 就是真客户端——助手会正常跟随主人；任务结束不送走假玩家（真实存档中 `PlayerList.remove` 会触发 vanilla 光照引擎崩溃），停服时 `saveAllChunks`+`halt` 直接退出（`halt(false)` 需在服务端线程上调用，否则空任务队列会抛 `NoSuchElementException` 崩溃）。
-- gametest 不依赖 e2e 模块，互不影响。
+- 需要真实 LLM 端点（`.env` 的 `OPEN_CRAFT_BASE_URL` / `OPEN_CRAFT_API_KEY` / `OPEN_CRAFT_MODEL`）。
+- `player_find` 搜索半径上限为 20 格；固定种子保证出生点附近有可达树木和石头。
+- 助手设置为无敌，只用于避免随机环境死亡；不改变挖掘、合成或移动难度。
+- 任务结束不移除假玩家，避免真实存档中 `PlayerList.remove` 触发 vanilla 光照引擎崩溃。
+- 停服用 `saveAllChunks` + `halt(false)`，且必须通过服务端线程调度。
+- gametest 与 e2e 互不影响。

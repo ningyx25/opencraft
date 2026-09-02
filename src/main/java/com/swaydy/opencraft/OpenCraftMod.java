@@ -63,7 +63,7 @@ public class OpenCraftMod implements ModInitializer {
 		// 循环事件模块：注册内置循环事件 + 挂服务端 tick / 生命周期
 		com.swaydy.opencraft.loop.LoopModule.init();
 
-		// 端到端测试模块：注册内置任务 + autorun 钩子（-Dopencraft.e2e.autorun=<id|all>）
+		// 端到端测试模块：自然世界任务 + autorun 钩子（-Dopencraft.e2e.autorun=<id>）
 		com.swaydy.opencraft.e2e.E2ERegistry.init();
 		com.swaydy.opencraft.e2e.E2EHarness.registerAutoRunHook();
 

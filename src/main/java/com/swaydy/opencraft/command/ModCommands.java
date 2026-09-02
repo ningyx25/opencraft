@@ -355,9 +355,8 @@ public final class ModCommands {
 	}
 
 	/**
-	 * /opencraft e2e run <task|all>：在真实世界里跑端到端测试任务（无头，无需玩家在线）。
-	 * 任务在服务端线程启动，异步等待 agentic loop 完成后验证并报告；结果追加到
-	 * run/logs/e2e-results.txt。自动运行用 -Dopencraft.e2e.autorun=<task|all>。
+	 * /opencraft e2e run <task>：在自然世界里运行单个端到端测试任务。
+	 * 每个任务必须使用独立新生成世界；全量入口是 bin/run_e2e_all.sh。
 	 */
 	private static int e2eRun(CommandSourceStack source, String taskId) {
 		net.minecraft.server.level.ServerLevel level = source.getServer().overworld();
@@ -366,10 +365,8 @@ public final class ModCommands {
 			return 0;
 		}
 		if ("all".equalsIgnoreCase(taskId)) {
-			com.swaydy.opencraft.e2e.E2EHarness.runTasks(level,
-					com.swaydy.opencraft.e2e.E2ERegistry.all(), null);
-			source.sendSuccess(() -> Component.literal("开始运行全部 e2e 任务…（结果见 run/logs/e2e-results.txt）"), false);
-			return 1;
+			source.sendFailure(Component.literal("自然 e2e 不支持 all；请使用 bash bin/run_e2e_all.sh（每任务一个新世界）"));
+			return 0;
 		}
 		if (com.swaydy.opencraft.e2e.E2ERegistry.byId(taskId) == null) {
 			source.sendFailure(Component.literal("未知任务: " + taskId + "（/opencraft e2e list 查看可用任务）"));

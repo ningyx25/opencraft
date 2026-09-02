@@ -42,12 +42,14 @@ loom {
 			vmArg "-Dfabric-api.gametest.filter=${project.findProperty('gametestFilter') ?: 'opencraft:*'}"
 			vmArg '-Dfabric-api.gametest.report-file=build/gametest-results.xml'
 		}
-		// 运行端到端测试（无头真实存档 + 真实 LLM + general_agent）：
-		//   ./gradlew runE2E [-Pe2eTask=chop_tree|all]
-		// 服务器启动后自动运行 e2e 套件并自动退出（见 e2e/E2EHarness.registerAutoRunHook）。
+		// 运行端到端测试（自然世界出生点 + 真实 LLM + general_agent）：
+		//   ./gradlew runE2E -Pe2eTask=chop_tree
+		// 每个任务都必须使用独立新生成世界；全量入口见 bin/run_e2e_all.sh。
 		e2eServer {
 			server()
-			vmArg "-Dopencraft.e2e.autorun=${project.findProperty('e2eTask') ?: 'all'}"
+			vmArg "-Dopencraft.e2e.autorun=${project.findProperty('e2eTask') ?: ''}"
+			// 可选：-Pe2eProbe=true 只做出生点自然地形勘察，不召唤助手/不调用 LLM
+			vmArg "-Dopencraft.e2e.probe=${project.findProperty('e2eProbe') ?: 'false'}"
 			// 可选：-Pe2eHoldMs=<毫秒> 任务跑完后服务器保持运行（真客户端启动慢，
 			// 需要这段时间连上、被粘到助手眼睛、截图）；默认 0 = 立即退出
 			vmArg "-Dopencraft.e2e.holdMs=${project.findProperty('e2eHoldMs') ?: '0'}"
@@ -272,19 +274,25 @@ tasks.register('cleanE2EWorld') {
 // 已有文件则替换该行，否则创建最小配置。
 tasks.register('prepareE2EProps') {
 	group = 'opencraft'
-	description = 'Ensure run/server.properties has spawn-protection=0 for e2e'
+	description = 'Prepare a fresh natural e2e world with fixed seed and spawn access'
 	doLast {
 		def props = file('run/server.properties')
 		def lines = []
 		if (props.exists()) {
 			lines = props.readLines('UTF-8')
 		}
-		def filtered = lines.findAll { !it.trim().startsWith('spawn-protection=') && !it.trim().startsWith('online-mode=') }
+		def keys = ['level-seed', 'level-type', 'generate-structures',
+		            'spawn-protection', 'online-mode']
+		def filtered = lines.findAll { line -> keys.every { key -> !line.trim().startsWith(key + '=') } }
+		def seed = project.findProperty('e2eSeed') ?: (project.findProperty('opencraft.e2e.seed') ?: 'opencraft-e2e-2026-09-02-04')
+		filtered << "level-seed=${seed}"
+		filtered << 'level-type=minecraft:normal'
+		filtered << 'generate-structures=true'
 		filtered << 'spawn-protection=0'
 		filtered << 'online-mode=false'
 		props.parentFile.mkdirs()
 		props.text = filtered.join('\n') + '\n'
-		logger.lifecycle('[E2E] 已设置 spawn-protection=0 和 online-mode=false')
+		logger.lifecycle("[E2E] 已准备自然世界: seed=${seed}, spawn-protection=0, online-mode=false")
 	}
 }
 
@@ -311,12 +319,17 @@ tasks.register('e2eList') {
 // 全部任务每任务全新世界：bash bin/run_e2e_all.sh（GradleBuild 不支持嵌套同一项目）
 tasks.register('runE2E') {
 	group = 'opencraft'
-	description = 'Headless e2e on a fresh real save. -Pe2eTask=<id> 跑单个任务；不带参数则提示使用 bin/run_e2e_all.sh'
-	if (project.findProperty('e2eTask') != null) {
-		dependsOn 'cleanE2EWorld', 'prepareE2EProps', 'runE2eServer'
-	} else {
+	description = 'Natural-world e2e at the real spawn. Use -Pe2eTask=<id>; run bin/run_e2e_all.sh for all tasks'
+	def e2eTask = project.findProperty('e2eTask')
+	if (e2eTask == null || e2eTask.toString().isBlank()) {
 		doLast {
-			logger.lifecycle('[E2E] 全部任务每任务全新世界: bash bin/run_e2e_all.sh')
+			throw new GradleException('必须指定 -Pe2eTask=<id>；全量请运行 bash bin/run_e2e_all.sh')
 		}
+	} else if ('all'.equalsIgnoreCase(e2eTask.toString())) {
+		doLast {
+			throw new GradleException('all 会在同一世界连续执行，违反自然 e2e 语义；请运行 bash bin/run_e2e_all.sh')
+		}
+	} else {
+		dependsOn 'cleanE2EWorld', 'prepareE2EProps', 'runE2eServer'
 	}
 }

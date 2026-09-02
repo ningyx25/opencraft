@@ -31,9 +31,9 @@ public final class E2ERegistry {
 		register(new com.swaydy.opencraft.e2e.tasks.CraftWorkbenchTask());
 		register(new com.swaydy.opencraft.e2e.tasks.CraftWoodenPickaxeTask());
 		register(new com.swaydy.opencraft.e2e.tasks.CraftStonePickaxeTask());
+		register(new com.swaydy.opencraft.e2e.tasks.MineNaturalStoneTask());
+		register(new com.swaydy.opencraft.e2e.tasks.PlaceWorkbenchTask());
 		register(new com.swaydy.opencraft.e2e.tasks.CraftFurnaceTask());
-		register(new com.swaydy.opencraft.e2e.tasks.SmeltIronAndIronPickaxeTask());
-		register(new com.swaydy.opencraft.e2e.tasks.CraftDiamondPickaxeTask());
 		OpenCraftMod.LOGGER.info("[OpenCraft] 端到端测试模块已注册 {} 个内置任务", TASKS.size());
 	}
 
