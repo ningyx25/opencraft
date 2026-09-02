@@ -1179,7 +1179,7 @@ public class OpenCraftGameTests {
 	/**
 	 * 端到端验证内置技能真实注入到发给 LLM 的 HTTP 请求：
 	 * （skills/index.json 登记的技能经 general_agent 绑定 + requires_tools 双重过滤后，
-	 * 由 Prompts.system 渲染进每轮请求 system 消息——请求体里是 messages[0] 的 role=system）
+	 * 由 Prompts.staticSystem 渲染进请求的 system 消息（messages[0] role=system，跨轮恒定））
 	 * 1. 用 mock 方块聊天触发 agentic loop（mod → 真实 HTTP 请求 → mock 服务器）；
 	 * 2. 等回复完成，从 mock 的 GET /v1/requests 拉回全部请求体；
 	 * 3. 断言：至少一个请求的 system 含 "# Skills" 大节与 ## gather-wood / ## craft-toolchain；
@@ -1266,6 +1266,111 @@ public class OpenCraftGameTests {
 						throw new AssertionError("system 应注入 ## craft-toolchain 技能小节");
 					}
 					// 清理
+					com.swaydy.opencraft.assistant.AssistantFacade.dismissAllFor(player);
+					AiCompanionService.resetAllHistory(player);
+					helper.succeed();
+				});
+	}
+
+	/**
+	 * 端到端验证「KV 前缀缓存友好」的请求形状（修复"输入 45k 仅 4k 命中"的回归防线）：
+	 * mock 对带 tools 的首次请求回一次工具调用、对含工具结果的续轮请求回文本——一次提问
+	 * 产生 ≥2 条真实 HTTP 请求。用唯一问题标记筛出本会话的请求后断言：
+	 * ① 各请求的 system（messages[0]）逐字节一致（静态 system 跨轮恒定）；
+	 * ② system 不含 "# Game Context"/"Current Task Plan"（动态内容已移出 system——
+	 *    旧版每轮微变的时间/坐标会让全部历史缓存失效）；
+	 * ③ "# Game Context" 完整快照随提问 user 消息进入消息流（模型仍能看到它）；
+	 * ④ 历史严格 append-only：后一条请求的 messages 以前一条的全部 messages 为前缀，
+	 *    且本轮确实追加了 assistant(工具调用)/tool(结果) 等新消息。
+	 */
+	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 2000)
+	public void promptCacheFriendlyRequestShape(GameTestHelper helper) {
+		dismissAllPlayerBots();
+		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+
+		BlockPos platform = new BlockPos(4, 1, 4);
+		for (int dx = -3; dx <= 3; dx++) {
+			for (int dz = -3; dz <= 3; dz++) {
+				helper.setBlock(platform.offset(dx, -1, dz), Blocks.STONE.defaultBlockState());
+			}
+		}
+		for (int dy = 0; dy <= 3; dy++) {
+			helper.setBlock(platform.offset(0, dy, 0), Blocks.AIR.defaultBlockState());
+		}
+		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
+				new net.minecraft.world.phys.Vec3(4.5, 2, 4.5));
+		player.teleportTo(playerPos.x, playerPos.y, playerPos.z);
+
+		BlockPos blockPos = new BlockPos(4, 1, 1);
+		configureMockBlock(helper, blockPos, player);
+		ResourceKey<net.minecraft.world.level.Level> dimension = player.level().dimension();
+		BlockPos absPos = helper.absolutePos(blockPos);
+		GlobalPos bindPos = GlobalPos.of(dimension, absPos);
+		final String marker = "CACHEPROBE7731";
+
+		helper.startSequence()
+				.thenExecute(() -> {
+					AiConfigHandler.chatWithBlock(player, absPos, dimension,
+							marker + " 看一下你的背包");
+					if (AiCompanionService.historySize(bindPos) != 1) {
+						throw new AssertionError("发送消息后历史应新增 1 条 user 消息，实际 "
+								+ AiCompanionService.historySize(bindPos));
+					}
+				})
+				.thenWaitUntil(() -> {
+					if (AiCompanionService.historySize(bindPos) < 2) {
+						throw new net.minecraft.gametest.framework.GameTestAssertException(
+								net.minecraft.network.chat.Component.literal("等待 agentic loop 收尾写入历史…"),
+								(int) helper.getTick());
+					}
+				})
+				.thenExecute(() -> {
+					java.util.List<com.google.gson.JsonObject> mine = new java.util.ArrayList<>();
+					for (com.google.gson.JsonObject req : fetchMockRequests(
+							"http://127.0.0.1:18923/v1/requests")) {
+						if (req.toString().contains(marker)) {
+							mine.add(req);
+						}
+					}
+					if (mine.size() < 2) {
+						throw new AssertionError("agentic loop 应产生 ≥2 条请求（工具轮+文本轮），实际 "
+								+ mine.size());
+					}
+					com.google.gson.JsonObject first = mine.get(0);
+					com.google.gson.JsonObject last = mine.get(mine.size() - 1);
+					com.google.gson.JsonArray m0 = first.getAsJsonArray("messages");
+					com.google.gson.JsonArray m1 = last.getAsJsonArray("messages");
+					// ① system 跨轮逐字节一致
+					if (!m0.get(0).equals(m1.get(0))) {
+						throw new AssertionError("system 消息跨轮漂移——KV 前缀缓存会被击穿");
+					}
+					String system = m0.get(0).getAsJsonObject().get("content").getAsString();
+					// ② 动态内容不在 system 里
+					if (system.contains("# Game Context") || system.contains("Current Task Plan")) {
+						throw new AssertionError("system 不应再含动态段（Game Context/Task Plan）");
+					}
+					// ③ 完整游戏上下文随提问消息进入消息流
+					boolean ctxInStream = false;
+					for (com.google.gson.JsonElement m : m0) {
+						if (m.getAsJsonObject().has("content")
+								&& m.getAsJsonObject().get("content").getAsString()
+										.contains("# Game Context")) {
+							ctxInStream = true;
+						}
+					}
+					if (!ctxInStream) {
+						throw new AssertionError("初始 # Game Context 应随提问 user 消息注入消息流");
+					}
+					// ④ append-only：m1 以 m0 全部消息为前缀，且确实追加了新消息
+					if (m1.size() <= m0.size()) {
+						throw new AssertionError("续轮请求应更长（追加工具结果/新消息），m0="
+								+ m0.size() + " m1=" + m1.size());
+					}
+					for (int i = 0; i < m0.size(); i++) {
+						if (!m0.get(i).equals(m1.get(i))) {
+							throw new AssertionError("历史消息 #" + i + " 被就地修改——append-only 被破坏");
+						}
+					}
 					com.swaydy.opencraft.assistant.AssistantFacade.dismissAllFor(player);
 					AiCompanionService.resetAllHistory(player);
 					helper.succeed();

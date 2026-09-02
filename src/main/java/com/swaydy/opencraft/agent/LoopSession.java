@@ -54,12 +54,13 @@ public final class LoopSession {
 	/** 本轮请求的重试计数（跨重试调度保持，最多 {@link LlmRetryPolicy#MAX_RETRIES} 次）。 */
 	public final int[] llmRetries = {0};
 
-	/** 本轮请求的 system 文本（每轮在 runRound 重建；总结轮/提问恢复复用，保持上下文一致）。 */
+	/** 任务会话的静态 system 文本（任务启动时一次性组装，跨轮恒定不变以最大化 KV 前缀缓存命中）。 */
 	public String system = null;
 
-	/** 模型通过 task_plan 维护的当前任务计划（格式化文本），null = 无计划；注入 system。 */
-	public String planText = null;
-	/** 解析后的任务计划（终止守卫判断「是否还有未完成步骤」）；null = 无计划。 */
+	/** 上一条尾部状态观测（{@code [Current State]}）的摘要文本;相同则本轮不再追加（省 token、保前缀稳定）。 */
+	public String lastStateDigest = null;
+
+	/** 解析后的任务计划（终止守卫判断「是否还有未完成步骤」+ 尾部观测携带摘要）；null = 无计划。 */
 	public TaskPlan plan = null;
 	/** 本轮是否成功更新过任务计划（停滞守卫据此判定「做了实事」；每轮 dispatch 前由 runtime 重置）。 */
 	public boolean planUpdatedThisRound = false;

@@ -22,8 +22,8 @@ import java.util.Set;
  * </pre>
  *
  * <p><b>注入方式</b>：{@code promptsFragment(绑定列表, 可用工具集)} 渲染 {@code # Skills}
- * 大节（每个命中技能一个 {@code ##} 小节:description + 正文）,由 {@code Prompts.system}
- * 拼在 Capabilities 之后。<b>绑定优先</b>：技能由预设（{@code AgentDefinition.skills}）点名
+ * 大节（每个命中技能一个 {@code ##} 小节:description + 正文）,由 {@code Prompts.staticSystem}
+ * 拼在 Capabilities 之后（静态 system,跨轮恒定以命中 KV 前缀缓存）。<b>绑定优先</b>：技能由预设（{@code AgentDefinition.skills}）点名
  * 才会注入——未绑定的技能不加载、不占上下文;绑定了还要过 {@code requires_tools}
  * （当前预设的可用工具全命中）——纯聊天预设即使绑了挖掘技能也收不到。内置技能都是
  * 人工精选的短文档,直接整体注入——

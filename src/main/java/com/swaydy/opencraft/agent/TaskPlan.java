@@ -13,7 +13,8 @@ import java.util.Set;
  * 任务计划（参考 deepseek-harness 的 {@code dsh-tool-todo} 插件）。
  *
  * <p>模型通过 {@code task_plan} 工具维护一份结构化步骤清单（整单替换，每次调用都发完整列表），
- * AgentRuntime 每轮把当前计划注入 system 上下文——助手在多步任务中始终记得"做到哪一步、还剩哪些"，
+ * 计划摘要随工具成功结果回显给模型、进行中步骤由每轮尾部 {@code [Current State]} 观测携带
+ * （不进 system——保 KV 前缀缓存）——助手在多步任务中始终记得"做到哪一步、还剩哪些"，
  * 不会做晕头做重复。纯 Java、无 Minecraft 依赖，便于 JUnit 单测。
  *
  * <p>步骤状态：{@code pending}（待办）/ {@code in_progress}（进行中）/ {@code completed}（已完成）。
@@ -70,7 +71,8 @@ public final class TaskPlan {
 		return new TaskPlan(out);
 	}
 
-	/** 给模型看的计划正文（注入 system 上下文用,结构化提示词的数据段）:紧凑 JSON steps 数组。 */
+	/** 计划正文（紧凑 JSON steps 数组,结构化数据段——按需给展示/调试用；发给模型的是
+	 *  {@link #summary()} 与 {@link #currentStep()}（工具结果回显 + 尾部观测））。 */
 	public String format() {
 		JsonArray arr = new JsonArray();
 		for (Step s : steps) {
@@ -92,6 +94,16 @@ public final class TaskPlan {
 			}
 		}
 		return false;
+	}
+
+	/** 第一个进行中步骤的内容（无 in_progress 步骤返回 null）——尾部状态观测的 plan_now 字段用。 */
+	public String currentStep() {
+		for (Step s : steps) {
+			if (s.status().equals("in_progress")) {
+				return s.content();
+			}
+		}
+		return null;
 	}
 
 	/** 简短摘要（工具结果回显 + 日志）：N step(s)（完成 M，进行中 K，待办 L）。 */

@@ -99,13 +99,30 @@ public final class LlmDebugLogger {
 	 * 记录一次完整回复：finish reason、各类内容块（截断），失败时只记录 code + message。
 	 */
 	public static void logResponse(List<Block> content, FinishReason reason, LlmFailure failure) {
+		logResponse(content, reason, failure, null);
+	}
+
+	/**
+	 * 记录一次完整回复（带 token 用量统计，含缓存命中数）。
+	 */
+	public static void logResponse(List<Block> content, FinishReason reason, LlmFailure failure, LlmClient.Usage usage) {
 		if (failure != null) {
 			DebugLog.log("llm", "← 失败 [{}] {}", failure.code(), failure.message());
 			return;
 		}
 		StringBuilder sb = new StringBuilder();
-		sb.append("← ").append(reason == null ? "stop" : reason.kind().name().toLowerCase(Locale.ROOT))
-				.append('\n');
+		sb.append("← ").append(reason == null ? "stop" : reason.kind().name().toLowerCase(Locale.ROOT));
+		if (usage != null) {
+			int hit = usage.cacheReadTokens() == null ? 0 : usage.cacheReadTokens();
+			sb.append(" [tokens 未缓存输入: ").append(usage.inputTokens())
+					.append("，缓存命中: ").append(hit)
+					.append("，输出: ").append(usage.outputTokens());
+			if (usage.reasoningTokens() != null) {
+				sb.append("，思维链: ").append(usage.reasoningTokens());
+			}
+			sb.append("]");
+		}
+		sb.append('\n');
 		for (Block b : content) {
 			switch (b) {
 				case TextBlock t -> {
@@ -146,6 +163,7 @@ public final class LlmDebugLogger {
 	private static final class LoggingChunkSink implements ChunkSink {
 		private final ChunkSink delegate;
 		private final List<Block> blocks = new ArrayList<>();
+		private LlmClient.Usage usage = null;
 
 		LoggingChunkSink(ChunkSink delegate) {
 			this.delegate = delegate;
@@ -155,8 +173,10 @@ public final class LlmDebugLogger {
 		public void onChunk(Chunk chunk) {
 			if (chunk instanceof BlockEnd be) {
 				blocks.add(be.block());
+			} else if (chunk instanceof LlmClient.Usage u) {
+				this.usage = u;
 			} else if (chunk instanceof Finish f) {
-				logResponse(blocks, f.reason(), f.failure());
+				logResponse(blocks, f.reason(), f.failure(), usage);
 			}
 			delegate.onChunk(chunk);
 		}

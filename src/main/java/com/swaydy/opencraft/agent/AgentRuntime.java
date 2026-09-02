@@ -63,9 +63,9 @@ import java.util.stream.Collectors;
  *   或行动有破坏性/不可逆影响时调用核心工具 {@code ask_player},循环暂停并向玩家提问；玩家用
  *   /opencraft answer 回答后恢复循环；超时（{@link #ASK_TIMEOUT_MS}）未答则按合理假设继续并说明。
  *   有效提问在整批工具分派前短路（确认先于动作）；暂停/恢复机制仍在本驱动（pauseForAnswer/answer）。
- * - <b>任务计划跟踪</b>（{@code TaskPlanHook},参考 dsh-tool-todo + system-prompt 注入）:模型用核心
- *   工具 {@code task_plan} 维护结构化步骤清单（整单替换）,每轮循环把当前计划注入 system 上下文,
- *   多步任务不丢失进度。
+ * - <b>任务计划跟踪</b>（{@code TaskPlanHook},参考 dsh-tool-todo）:模型用核心
+ *   工具 {@code task_plan} 维护结构化步骤清单（整单替换）,计划摘要随工具结果回显、进行中步骤
+ *   进入每轮尾部 [Current State] 观测,多步任务不丢失进度（计划不进 system——保前缀缓存）。
  * - <b>停滞守卫</b>（{@code StallHook} 封装 {@link StallGuard}）:连续多轮只调纯观察工具而世界/背包
  *   无变化时注入提醒,打断"卡在观察"空转。
  * - <b>终止守卫</b>（{@code CompletionHook} 封装 {@link TaskCompletionGuard},参考 dsh agent/turn-stopping）:
@@ -567,8 +567,19 @@ public final class AgentRuntime {
 		// system 独立于消息列表（新词汇:Message 只有 USER/ASSISTANT）,随请求经 Request.system 传入
 		List<LlmClient.Message> messages =
 				HistoryCompactor.trimToRecent(history, config.maxHistoryMessages);
+
+		// 注入初始动态游戏上下文（环境/玩家/助手状态），作为本轮首条 user 消息的内容。
+		// 随不可变历史在多轮中保持不变，使后续轮次的 KV Cache 前缀完全稳定（Prompt Caching 命中率 90%+）。
+		String initialContext = Prompts.formatGameContext(player, assistant, agent);
+		if (!initialContext.isBlank() && !messages.isEmpty()) {
+			int lastIdx = messages.size() - 1;
+			LlmClient.Message last = messages.get(lastIdx);
+			messages.set(lastIdx, LlmClient.Message.user(last.text() + "\n\n" + initialContext));
+		}
+
 		LoopSession ctx = new LoopSession(player, assistant, config, agent, messages,
 				lockKey, historyKey, guiBlockPos, guiDimension, gui, sessionId);
+		ctx.system = Prompts.staticSystem(config, agent);
 		LIVE.put(lockKey, ctx);
 		runRound(ctx, 0);
 	}
@@ -580,10 +591,7 @@ public final class AgentRuntime {
 	/**
 	 * 发起一轮循环（LLM 请求 + 回复处理）。
 	 *
-	 * <p>每轮重建 system 会读取世界状态（坐标/方块/实体/群系）——必须在服务端线程执行：
-	 * 从工作线程（EXECUTOR）直接读 ServerLevel 会与服务端 tick 争抢区块锁（gametest 冲刺
-	 * tick 下会几乎永久阻塞——round 2 的 system 重建因此卡死）。已在服务端线程（第 0 轮
-	 * startLoop 路径）则直接执行,否则排队回服务端线程。</p>
+	 * <p>请求准备与调度在服务端线程执行，网络请求交由工作线程异步执行。</p>
 	 */
 	private static void runRound(LoopSession ctx, int round) {
 		if (ctx == null || ctx.cancelled) {
@@ -600,7 +608,7 @@ public final class AgentRuntime {
 		}
 	}
 
-	/** 在服务端线程上执行一轮循环（system 重建 + 请求发起）。 */
+	/** 在服务端线程上执行一轮循环（静态 system 保证 + 请求发起）。 */
 	private static void doRunRound(LoopSession ctx, int round) {
 		if (ctx == null || ctx.cancelled) {
 			// 已被中断:不再发起下一轮（RUNNING/LIVE 已由 interrupt 清理）
@@ -612,9 +620,21 @@ public final class AgentRuntime {
 			LIVE.remove(ctx.lockKey);
 			return;
 		}
-		// 每轮重建 system（保持单条 system 开头约束,让游戏上下文/「当前任务计划」每轮都是
-		// 最新的,而不是提问那一刻的静态快照）并存入 ctx,供总结轮/提问恢复复用
-		ctx.system = Prompts.systemWithPlan(ctx.config, ctx.agent, ctx.player, ctx.assistant, ctx.planText);
+		// 静态 system 提示词：同预设同助手下全局稳定不变（# Identity + # Capabilities + # Skills），
+		// 确保 vLLM / DeepSeek / OpenAI 等平台的前缀缓存（KV Cache）100% 命中前缀。
+		if (ctx.system == null) {
+			ctx.system = Prompts.staticSystem(ctx.config, ctx.agent);
+		}
+		// 每轮尾部轻量状态观测（仅变化时追加）:作为 [Current State] user 消息追加到消息流末尾,
+		// 之前的历史保持字节稳定 → KV 前缀缓存命中延伸到全部历史;与上一条观测相同则不再追加（省 token）。
+		// 第 0 轮不追加——完整 Game Context 快照已随提问消息注入。
+		if (round > 0) {
+			String digest = GameContext.stateDigest(ctx.player, ctx.assistant, ctx.plan);
+			if (digest != null && !digest.equals(ctx.lastStateDigest)) {
+				ctx.lastStateDigest = digest;
+				ctx.messages.add(LlmClient.Message.user("[Current State] " + digest));
+			}
+		}
 		// 插件工具 + 核心工具（ask_player / task_plan,随每个请求附加）→ 新词汇 ToolSchema
 		// 插件工具 + 钩子贡献的核心工具 schema（task_plan / ask_player；对齐 dsh:工具由插件贡献）
 		List<com.google.gson.JsonObject> toolJson = new ArrayList<>(ctx.agent.toolsJson());
@@ -674,6 +694,12 @@ public final class AgentRuntime {
 				} else if (chunk instanceof LlmClient.BlockEnd be && be.block() instanceof LlmClient.ToolCallBlock t) {
 					// 新协议:块结束携带组装好的完整工具调用（id/name/arguments）
 					toolCalls.add(t);
+				} else if (chunk instanceof LlmClient.Usage u) {
+					int hit = u.cacheReadTokens() == null ? 0 : u.cacheReadTokens();
+					com.swaydy.opencraft.logging.DebugLog.log("llm",
+							"第 {} 轮 Token 消耗: 未缓存输入={} 缓存命中={} 输出={} 思维链={}",
+							round + 1, u.inputTokens(), hit, u.outputTokens(),
+							u.reasoningTokens() == null ? 0 : u.reasoningTokens());
 				} else if (chunk instanceof LlmClient.Finish f) {
 					if (f.ok()) {
 						onDone(f);

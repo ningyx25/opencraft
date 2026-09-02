@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.swaydy.opencraft.ai.AiCompanionService;
+import com.swaydy.opencraft.assistant.AiAssistant;
 import com.swaydy.opencraft.assistant.player.AiAssistantPlayer;
 import com.swaydy.opencraft.plugins.ToolContext;
 import net.minecraft.core.BlockPos;
@@ -36,16 +37,19 @@ import java.util.Map;
  * 模型可见的动态游戏上下文（参考 deepseek-harness 的 {@code context/} 包：
  * 「Model-visible request context: workspace instructions, time context, references」）。
  *
- * <p>本类只负责<b>观察世界 → 组装每轮注入 system 的状态数据段</b>：
- * {@code ## Player State}（主人：位置/环境/时间/生命饥饿/经验/模式/身体/效果/装备/注视/背包摘要）
- * 与 {@code ## Assistant State}（助手：坐标/朝向/移动 + 环境 + 近旁方块（带相对坐标）+ 大范围方块
- * 计数 + 附近实体 + 按槽位背包装备清单）。这些数据每轮在服务端线程重建（见
- * {@code AgentRuntime.doRunRound} 对 system 的刷新），因此始终是最新的，不是提问时的静态快照；
- * 背包在此只是摘要，精确完整视图由插件工具 {@code player_inventory} 按需提供。
+ * <p>本类负责<b>观察世界 → 组装动态状态数据段</b>：完整快照（{@code ## Player State}（主人：
+ * 位置/环境/时间/生命饥饿/经验/模式/身体/效果/装备/注视/背包摘要）与 {@code ## Assistant State}
+ * （助手：坐标/朝向/移动 + 环境 + 近旁方块（带相对坐标）+ 大范围方块计数 + 附近实体 + 按槽位
+ * 背包装备清单））在<b>任务首轮</b>随提问消息注入消息流（见 {@code AgentRuntime.startLoop}）,
+ * 之后作为不可变历史被 KV 前缀缓存；后续轮次用 {@link #stateDigest} 的单行轻量摘要在变化时
+ * 追加 {@code [Current State]} 观测保鲜（见 {@code AgentRuntime.doRunRound}）。
+ * 背包在完整段里只是摘要，精确完整视图由插件工具 {@code player_inventory} 按需提供。
  *
  * <p>与 {@link Prompts} 的分工（对齐 dsh {@code context/} vs {@code system-prompt/}）：
- * <b>GameContext</b> 产出动态数据段（读世界/背包 → ```json，本类）；<b>Prompts</b> 负责整段
- * system 的小节组装（人设 / Capabilities / Skills / Game Context / Task Plan）。
+ * <b>GameContext</b> 产出动态数据段（读世界/背包 → ```json，本类）；<b>Prompts</b> 负责
+ * 跨轮恒定的静态 system 小节组装（人设 / Capabilities / Skills / Message Protocol）与
+ * {@code # Game Context} 大节的拼装——<b>动态内容绝不进 system</b>（历史教训：每轮微变的
+ * 时间/坐标会让后续全部历史缓存失效）。
  *
  * <p>每次构建的状态 JSON 同步落快照到 {@code logs/opencraft/player.json} 与
  * {@code logs/opencraft/assistant.json}（{@link com.swaydy.opencraft.logging.StateSnapshots}），
@@ -77,9 +81,9 @@ public final class GameContext {
 	// ------------------------------------------------------------------
 
 	/**
-	 * 玩家（主人）状态段（{@code ## Player State} + JSON）：每轮请求都会重建
-	 * （见 {@code AgentRuntime.runRound} 对 system 的刷新）,因此位置/天气/装备等都是最新的,
-	 * 不是提问那一刻的静态快照。
+	 * 玩家（主人）状态段（{@code ## Player State} + JSON）：任务首轮随提问消息注入
+	 * （见 {@code AgentRuntime.startLoop}）,之后作为不可变历史;后续轮次的位置/天气等新鲜度
+	 * 由 {@code [Current State]} 尾部观测与工具差分送达——不再每轮重建 system。
 	 */
 	public static String playerState(ServerPlayer player) {
 		try {
@@ -136,7 +140,7 @@ public final class GameContext {
 	 * 是摘要——精确完整背包视图由插件工具 player_inventory 按需提供）。
 	 * 信息完整吸收原 player_look 工具——模型不再需要调用观察类工具来获取环境信息,
 	 * 但背包精确视图通过 player_inventory 工具按需获取,两者各有分工。
-	 * 由 {@link #system} 直接组装;非玩家形态返回 null（跳过该段）。
+	 * 由 {@link Prompts#formatGameContext} 直接组装（任务首轮注入消息流）;非玩家形态返回 null（跳过该段）。
 	 */
 	public static String assistantState(ToolContext ctx) {
 		AiAssistantPlayer a = ctx.assistantPlayer();
@@ -197,6 +201,50 @@ public final class GameContext {
 	/** ```json 围栏包裹的紧凑 JSON（结构化提示词的数据段统一出口）。 */
 	private static String jsonBlock(JsonObject json) {
 		return "```json\n" + json + "\n```";
+	}
+
+	/**
+	 * 每轮尾部观测用的紧凑状态摘要（一行）：助手坐标/朝向/移动/主手 + 主人坐标与距离 +
+	 * 生命饥饿 + 时段 + 任务计划（摘要与进行中步骤）。{@code AgentRuntime.doRunRound} 仅在
+	 * 内容与上一条不同才把它追加为 {@code [Current State]} user 消息——system 保持静态、
+	 * 历史保持 append-only,请求前缀逐轮字节稳定,模型服务商的 KV 前缀缓存命中得以延伸到
+	 * 全部历史消息。刻意只含粗粒度信息（时段而非精确分钟、坐标而非环境全览）：细节观察由
+	 * {@code player_find}/{@code player_inventory} 按需获取,完整快照仍在首轮上下文中。
+	 */
+	public static String stateDigest(ServerPlayer player, AiAssistant assistant, TaskPlan plan) {
+		try {
+			StringBuilder sb = new StringBuilder();
+			if (assistant instanceof com.swaydy.opencraft.assistant.player.AiAssistantPlayer a
+					&& a.movement() != null) {
+				BlockPos ap = a.blockPosition();
+				sb.append("you at (").append(ap.getX()).append(',').append(ap.getY()).append(',').append(ap.getZ())
+						.append(") facing ").append(AiCompanionService.facingName(a.getYRot()));
+				var mv = a.movement();
+				sb.append(mv.isMining() ? ", mining" : mv.isMoving() ? ", walking" : ", standing");
+				ItemStack hand = a.getMainHandItem();
+				sb.append("; hand: ").append(hand.isEmpty() ? "empty"
+						: AiCompanionService.shortName(hand.getItem().getDescriptionId())
+								+ (hand.getCount() > 1 ? " ×" + hand.getCount() : ""));
+				sb.append("; hp ").append((int) Math.round(a.getHealth()))
+						.append(" food ").append(a.getFoodData().getFoodLevel());
+				BlockPos op = player.blockPosition();
+				sb.append("; owner at (").append(op.getX()).append(',').append(op.getY()).append(',').append(op.getZ())
+						.append(") ").append(Math.round(a.distanceTo(player) * 10.0) / 10.0).append(" blocks away");
+			}
+			Level level = player.level();
+			long timeOfDay = level.getDayTime() % 24000;
+			sb.append("; time ").append(phaseOfTime(timeOfDay));
+			if (plan != null) {
+				sb.append("; plan ").append(plan.summary());
+				String now = plan.currentStep();
+				if (now != null) {
+					sb.append(", now: ").append(now);
+				}
+			}
+			return sb.toString();
+		} catch (Exception e) {
+			return null;
+		}
 	}
 
 	// ------------------------------------------------------------------
@@ -311,7 +359,7 @@ public final class GameContext {
 	/**
 	 * 半径 {@link #CONTEXT_WIDE_RADIUS} 格的方块类型计数（JSON,吸收原 player_look 的方块观察）:
 	 * 只按类型聚合计数、不给坐标（贴身定位看 nearby_blocks,远处定位用 player_find）;
-	 * y 按 2 格步长抽样控制扫描成本——该段每轮都注入 system。
+	 * y 按 2 格步长抽样控制扫描成本——该段随任务首轮注入一次消息流。
 	 */
 	private static JsonElement wideBlocksJson(ServerLevel level, BlockPos pos) {
 		try {

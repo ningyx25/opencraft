@@ -12,7 +12,7 @@ Agentic loop 的**生命周期钩子（LoopHook）**——对齐 [DeepSeek Harne
 | loop 只负责 call-model / run-tools / repeat，其余交给监听器 | `AgentRuntime` 只保留调度/流式/暂停恢复等**机制**；策略全部下沉到本包 |
 | `tools/post-execute` 事件 + `repeat-tool-reminder` 插件 | `LoopHook.afterTool` + `RepeatCallHook`（封装 `RepeatToolGuard`） |
 | `agent/turn-stopping` 可否决本轮结束 | `LoopHook.onFinalText` + `CompletionHook`（封装 `TaskCompletionGuard`） |
-| `todo_write` 工具 + system-prompt 计划段 | `task_plan` 工具由 `TaskPlanHook` 贡献/认领，计划文本仍由 `Prompts` 每轮注入 system |
+| `todo_write` 工具 + system-prompt 计划段 | `task_plan` 工具由 `TaskPlanHook` 贡献/认领；计划不进 system（保 KV 前缀缓存），摘要+进行中步骤随工具结果回显并进入尾部 `[Current State]` 观测 |
 | `ask_user` 等待人类输入的工具 | `ask_player` 工具由 `AskPlayerHook` 贡献/认领；暂停/恢复机制仍在 `AgentRuntime` |
 | bundle 里 mount 的插件组合 | `LoopHooks.createDefaults()`——新增能力 = 写一个 `LoopHook` 并在此登记 |
 
@@ -38,7 +38,7 @@ Agentic loop 的**生命周期钩子（LoopHook）**——对齐 [DeepSeek Harne
 |---|---|
 | `LoopHook.java` | 钩子 SPI 接口（默认 no-op 生命周期方法 + `functionTool`/`parseArgsObject` 静态工具）。 |
 | `LoopHooks.java` | 默认组合工厂：`createDefaults()` 每次任务新建 `[TaskPlanHook, AskPlayerHook, RepeatCallHook, StallHook, CompletionHook]`。新增内置能力在此登记。 |
-| `TaskPlanHook.java` | 贡献并认领 `task_plan`：解析 `TaskPlan` 写回 `session.plan/planText`（`Prompts` 每轮注入 system；`CompletionHook` 读 `plan`）。成功=「做了实事」重置停滞、不计重复链；失败计入重复链防错误参数死循环。 |
+| `TaskPlanHook.java` | 贡献并认领 `task_plan`：解析 `TaskPlan` 写回 `session.plan`（计划摘要+进行中步骤随工具结果回显给模型、进入尾部 `[Current State]` 观测，并由 `CompletionHook` 读 `plan`；不注入 system——保持 system 跨轮恒定以命中 KV 前缀缓存）。成功=「做了实事」重置停滞、不计重复链；失败计入重复链防错误参数死循环。 |
 | `AskPlayerHook.java` | 贡献并认领 `ask_player`：`beforeBatch` 扫描整批，有效提问→`ToolHandle.ask`（暂停等回答、跳过同批其余工具），缺参→错误结果其余照常。 |
 | `RepeatCallHook.java` | 封装 `RepeatToolGuard`：`afterTool` 对计入重复链的调用观察，撞阈值追加提醒（冗余 goto / 成功 task_plan 经 `ToolExec.countForRepeat` 排除）。 |
 | `StallHook.java` | 封装 `StallGuard`：`afterBatch` 判定「连续多轮只调只读观察工具且无状态变化」，追加停滞提醒。 |

@@ -10,12 +10,12 @@ import com.swaydy.opencraft.plugins.ToolResult;
 import java.util.List;
 
 /**
- * {@code task_plan} 核心工具钩子（参考 deepseek-harness 的 {@code dsh-tool-todo} 插件 +
- * system-prompt 计划段注入）。
+ * {@code task_plan} 核心工具钩子（参考 deepseek-harness 的 {@code dsh-tool-todo} 插件）。
  *
  * <p>贡献 {@code task_plan} 工具 schema 并认领其调用：模型以「整单替换」维护结构化步骤清单，
- * 成功时把解析后的 {@link TaskPlan} 与格式化文本写回 session（runtime 每轮把 {@code planText}
- * 注入 system 的 {@code # Current Task Plan} 段、终止守卫读 {@code plan} 判断是否还有未完成步骤）。
+ * 成功时把解析后的 {@link TaskPlan} 与格式化文本写回 session（计划摘要随本工具的成功结果
+ * 回显给模型、并进入每轮尾部状态观测；{@code CompletionHook} 读 {@code plan} 判断是否还有
+ * 未完成步骤。计划不再注入 system——保持 system 跨轮恒定以命中 KV 前缀缓存）。
  *
  * <p>与旧内联行为一致：成功 = 「做了实事」（重置停滞计数）且<b>不</b>计入重复调用链；
  * 失败（参数错误）计入重复调用链——防止模型用错误参数无限重试。
@@ -44,11 +44,11 @@ public final class TaskPlanHook implements LoopHook {
 							+ "status ∈ [pending|in_progress|completed], content non-empty and unique, at least one step."));
 		}
 		session.plan = plan;
-		session.planText = plan.format();
 		session.planUpdatedThisRound = true;
 		return ToolHandle.handled(ToolResult.ok(
-				"Task plan updated: " + plan.summary() + ". I will see this plan every round; "
-						+ "follow it and update the status as you go."));
+				"Task plan updated: " + plan.summary()
+						+ (plan.currentStep() != null ? "; current step: " + plan.currentStep() : "")
+						+ ". Follow it and update the status as you go."));
 	}
 
 	/** { type: object, properties: { steps: [{content, status}] }, required: [steps] } */

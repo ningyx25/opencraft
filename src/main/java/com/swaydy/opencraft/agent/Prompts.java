@@ -7,24 +7,20 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 
 /**
- * system 提示词组装（参考 deepseek-harness 的 {@code system-prompt/} 包：有序小节拼装）。
+ * system 提示词与动态上下文组装（参考 deepseek-harness 的 {@code system-prompt/} 包：有序小节拼装）。
  *
- * <p>本类只负责<b>整段 system 的小节组装</b>，不读世界：
- * <pre>
- *   # Identity（基础人设 + 名字 + 预设 personaPrompt）
- *   # Capabilities（各插件的 systemPromptFragment）
- *   # Skills（内置技能 SKILL.md，按绑定 + 可用工具过滤）
- *   # Game Context
- *     ## Player State（{@link GameContext#playerState}）
- *     ## Assistant State（{@link GameContext#assistantState}）
- *     ## 插件自有 gameContextFragment
- *   # Current Task Plan（task_plan 数据，systemWithPlan 追加）
- * </pre>
+ * <p><b>KV 前缀缓存友好设计</b>：
+ * <ul>
+ *   <li><b>静态 System（{@link #staticSystem}）</b>：只含 {@code # Identity}、{@code # Capabilities}、
+ *       {@code # Skills} 与 {@code # Message Protocol}。同预设同助手下跨轮恒定不变，满足
+ *       "单条 system 且在开头"约束，使模型服务商的 KV 前缀缓存（Prompt Caching）能 100% 命中该前缀。</li>
+ *   <li><b>动态 Game Context（{@link #formatGameContext}）</b>：包含玩家与助手的动态世界状态。
+ *       移至会话消息中注入，不再污染静态 system，防止时间刻/坐标微变导致后续全部多轮历史消息缓存失效。</li>
+ * </ul>
  *
  * <p><b>结构化约定</b>：整段用 Markdown，每个来源一个 {@code #} 大节、插件/状态片段用 {@code ##} 小节；
  * 动态数据段一律是 ```json 围栏的自描述 JSON。动态世界状态的<em>观察</em>（读世界/背包 → JSON +
- * 落 {@code logs/opencraft/*.json} 快照）在 {@link GameContext}（dsh {@code context/} 对应），
- * 各插件片段在各插件内、预设 persona 在 {@code agent/presets} 各预设类内、守卫文案在各守卫/执行器内。
+ * 落 {@code logs/opencraft/*.json} 快照）在 {@link GameContext}（dsh {@code context/} 对应）。
  */
 public final class Prompts {
 	private Prompts() {
@@ -59,47 +55,58 @@ public final class Prompts {
 	}
 
 	/**
-	 * 组装完整 system 文本（Markdown 结构）:
-	 * 人设（# Identity）→ 插件能力（# Capabilities）→ 内置技能（# Skills）→
-	 * 游戏上下文（# Game Context：## Player State + ## Assistant State + 插件状态）。
-	 * 动态状态段由 {@link GameContext} 观察世界产出。
+	 * 组装静态 system 文本（# Identity → # Capabilities → # Skills → # Message Protocol）。
+	 * <p>本方法为纯文本组装，不读世界状态，结果在同预设同助手（含技能/工具配置）下跨轮恒定不变，
+	 * 是实现 KV 前缀缓存（Prompt Caching）高命中率的核心基础——<b>任何每轮变化的内容都不得加入
+	 * 本方法输出</b>（历史教训：游戏上下文曾进 system，时间/坐标每轮微变导致全部多轮历史
+	 * 每轮重新 prefill，45k 输入仅 4k 命中）。</p>
 	 */
-	public static String system(AiBlockConfig config, AgentDefinition agent,
-	                            ServerPlayer player, AiAssistant assistant) {
+	public static String staticSystem(AiBlockConfig config, AgentDefinition agent) {
 		StringBuilder sb = new StringBuilder();
 		sb.append(persona(config, agent));
-		String frags = agent.systemPromptFragments();
-		if (!frags.isBlank()) {
-			sb.append("\n\n# Capabilities\n\n").append(frags);
+		if (agent != null) {
+			String frags = agent.systemPromptFragments();
+			if (frags != null && !frags.isBlank()) {
+				sb.append("\n\n# Capabilities\n\n").append(frags);
+			}
+			// 内置技能(SKILL.md 文档):预设绑定(skills 列表) + 可用工具双重过滤后整节注入——
+			// 教模型"某类任务怎么做"的结构化经验(如阶梯下沉挖法)
+			String skills = com.swaydy.opencraft.agent.skills.SkillLibrary
+					.promptsFragment(agent.skills(), agent.toolMap().keySet());
+			if (!skills.isBlank()) {
+				sb.append("\n\n").append(skills);
+			}
 		}
-		// 内置技能(SKILL.md 文档):预设绑定(skills 列表) + 可用工具双重过滤后整节注入——
-		// 教模型"某类任务怎么做"的结构化经验(如阶梯下沉挖法)
-		String skills = com.swaydy.opencraft.agent.skills.SkillLibrary
-				.promptsFragment(agent.skills(), agent.toolMap().keySet());
-		if (!skills.isBlank()) {
-			sb.append("\n\n").append(skills);
-		}
-		sb.append("\n\n# Game Context\n\n").append(GameContext.playerState(player));
+		// 消息协议（静态）:动态上下文移出 system 后,模型需要被告知怎么读消息流里的
+		// 系统生成观测消息（[Event] 动作结果 / [Current State] 轻量状态快照）。
+		sb.append("\n\n# Message Protocol\n\n")
+				.append("Besides the player, the conversation may contain system-generated user messages you must understand: ")
+				.append("`[Event]` messages report the outcome of your async actions (goto/mine/place/container_open) — ")
+				.append("after one arrives, decide your next step from its result; ")
+				.append("`[Current State]` messages carry a compact live snapshot (your position, what you hold, ")
+				.append("the owner's position, time of day). The most recent observation always overrides older ones.");
+		return sb.toString();
+	}
+
+	/**
+	 * 组装动态游戏上下文片段（# Game Context：## Player State + ## Assistant State + 插件状态）。
+	 * 任务首轮随提问消息注入消息流（见 {@code AgentRuntime.startLoop}）——不进 system。
+	 */
+	public static String formatGameContext(ServerPlayer player, AiAssistant assistant, AgentDefinition agent) {
+		StringBuilder sb = new StringBuilder("# Game Context\n\n");
+		sb.append(GameContext.playerState(player));
 		ToolContext ctx = new ToolContext(player.level().getServer(), assistant, player,
 				(ServerLevel) player.level());
 		String assistantFrag = GameContext.assistantState(ctx);
 		if (assistantFrag != null && !assistantFrag.isBlank()) {
 			sb.append("\n\n").append(assistantFrag);
 		}
-		String ctxFrags = agent.gameContextFragments(ctx);
-		if (!ctxFrags.isBlank()) {
-			sb.append("\n\n").append(ctxFrags);
+		if (agent != null) {
+			String ctxFrags = agent.gameContextFragments(ctx);
+			if (ctxFrags != null && !ctxFrags.isBlank()) {
+				sb.append("\n\n").append(ctxFrags);
+			}
 		}
 		return sb.toString();
-	}
-
-	/** 在基础 system 上追加当前任务计划（# Current Task Plan + ```json;planText 本身是 JSON）。 */
-	public static String systemWithPlan(AiBlockConfig config, AgentDefinition agent,
-	                                    ServerPlayer player, AiAssistant assistant, String planText) {
-		String base = system(config, agent, player, assistant);
-		if (planText == null || planText.isBlank()) {
-			return base;
-		}
-		return base + "\n\n# Current Task Plan\n\n```json\n" + planText + "\n```";
 	}
 }
