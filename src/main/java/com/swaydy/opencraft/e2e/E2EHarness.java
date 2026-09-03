@@ -301,16 +301,32 @@ public final class E2EHarness {
 			taskLog("结果: 超时（已中断）");
 		} else {
 			String lastReply = lastHistoryText(ctx.configBlock());
-			taskLog("助手最后回复: " + lastReply);
-			try {
-				passed = task.verify(ctx);
-			} catch (Exception e) {
-				passed = false;
-				lastReply = "验证异常: " + e;
+			// 循环提前结束但最后一条非空消息就是任务指令本身 = 助手从未产出文本
+			// （典型成因：LLM 连续重试后请求失败，整轮被杀）。直接把任务指令当成
+			// 「助手最后回复」会把 LLM/网络故障误读成模型行为，这里显式标注。
+			if (lastReply != null && lastReply.trim().equals(task.taskPrompt().trim())) {
+				taskLog("助手最后回复: （无——循环未产出任何助手文本，疑似 LLM 请求失败，"
+						+ "LLM 逐轮日志见 logs/e2e-debug-" + task.id() + ".log）");
+				try {
+					passed = task.verify(ctx);
+				} catch (Exception e) {
+					passed = false;
+				}
+				message = (passed ? "验证通过" : "验证失败")
+						+ " | 助手未产出回复（LLM 循环中断，详见 logs/e2e-debug-"
+						+ task.id() + ".log）";
+			} else {
+				taskLog("助手最后回复: " + lastReply);
+				try {
+					passed = task.verify(ctx);
+				} catch (Exception e) {
+					passed = false;
+					lastReply = "验证异常: " + e;
+				}
+				message = (passed ? "验证通过" : "验证失败")
+						+ " | 助手最后回复: " + truncate(lastReply, 120);
+				taskLog("验证: " + (passed ? "PASS" : "FAIL") + "  |  " + lastReply);
 			}
-			message = (passed ? "验证通过" : "验证失败")
-					+ " | 助手最后回复: " + truncate(lastReply, 120);
-			taskLog("验证: " + (passed ? "PASS" : "FAIL") + "  |  " + lastReply);
 		}
 		try {
 			task.teardown(ctx);
@@ -322,6 +338,7 @@ public final class E2EHarness {
 				new com.swaydy.opencraft.e2e.E2EResult(task.id(), passed, duration, message);
 		results.add(result);
 		flushTaskLog();
+		preserveDebugLog(task.id());
 		report(result);
 		runNext(level, tasks, index + 1, results, onAllDone);
 	}
@@ -359,10 +376,34 @@ public final class E2EHarness {
 
 		ServerPlayer owner = createOwner(level, task.id());
 		owner.getInventory().clearContent();
-		BlockPos actualSpawn = owner.adjustSpawnLocation(level, worldSpawn);
+		// 重新掷点直到「实际落点」满足勘察条件：
+		// 世界种子固定，但 vanilla 新玩家落点（adjustSpawnLocation）用实体随机源
+		// 螺旋搜索，同一存档每次落点不同；玩家式工具的搜索半径只有 20 格，
+		// 若落到（勘察通过的世界出生点之外的）无树山顶，任务不可能完成——
+		// 那是环境缺陷不是模型能力，必须在这里挡住。
+		BlockPos actualSpawn = null;
+		ProbeResult spawnProbe = null;
+		int spawnAttempts = 0;
+		for (int attempt = 1; attempt <= 40; attempt++) {
+			spawnAttempts = attempt;
+			BlockPos candidate = owner.adjustSpawnLocation(level, worldSpawn);
+			ProbeResult r = probeNaturalWorld(level, candidate);
+			if (attempt <= 3 || r.passed()) {
+				taskLog("出生点掷点 #" + attempt + ": " + candidate.toShortString() + " → " + r.summary());
+			}
+			if (r.passed()) {
+				actualSpawn = candidate;
+				spawnProbe = r;
+				break;
+			}
+		}
+		if (actualSpawn == null) {
+			throw new IllegalStateException("40 次出生点掷点都不满足勘察条件（落点附近无树/无暴露石头）；"
+					+ "末次: " + (spawnProbe == null ? "?" : spawnProbe.summary()));
+		}
 		owner.teleportTo(actualSpawn.getX() + 0.5, actualSpawn.getY(), actualSpawn.getZ() + 0.5);
 		taskLog("合成主人自然落点: " + owner.getName().getString() + " @ "
-				+ actualSpawn.toShortString());
+				+ actualSpawn.toShortString() + "（掷点 " + spawnAttempts + " 次）");
 
 		BlockPos configPos = findConfigPos(level, actualSpawn);
 		if (configPos == null) {
@@ -387,9 +428,35 @@ public final class E2EHarness {
 				+ " 出生点=(" + (int) assistant.getX() + "," + (int) assistant.getY() + "," + (int) assistant.getZ() + ")"
 				+ "（真实空背包，已设无敌）");
 		shotTarget = assistant;
-		return new com.swaydy.opencraft.e2e.E2EContext(
+		com.swaydy.opencraft.e2e.E2EContext ctx = new com.swaydy.opencraft.e2e.E2EContext(
 				level.getServer(), level, owner, assistant, configBlock,
 				actualSpawn, worldSpawn, ORIGINAL_CONFIG_STATES.get(configBlock));
+		// 任务场景准备（SPI 钩子，服务端线程）：发放任务承诺的初始物品（木镐/工作台等）。
+		// 必须在助手进服且清空背包之后、下发指令之前调用，否则任务 prompt 声称的
+		// 初始物品与助手真实背包不一致，会把 harness 缺陷误判成模型能力问题。
+		try {
+			task.setup(ctx);
+		} catch (RuntimeException e) {
+			throw new IllegalStateException("任务 setup 失败: " + e, e);
+		}
+		taskLog("场景准备 setup 后助手背包: " + inventorySummary(assistant));
+		return ctx;
+	}
+
+	/** 助手主背包物品摘要（e2e 日志用），如 "minecraft:wooden_pickaxe x1"。 */
+	private static String inventorySummary(net.minecraft.world.entity.player.Player player) {
+		StringBuilder sb = new StringBuilder();
+		for (net.minecraft.world.item.ItemStack stack : player.getInventory().getNonEquipmentItems()) {
+			if (stack.isEmpty()) {
+				continue;
+			}
+			if (sb.length() > 0) {
+				sb.append(", ");
+			}
+			sb.append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()))
+					.append(" x").append(stack.getCount());
+		}
+		return sb.length() > 0 ? sb.toString() : "空";
 	}
 
 	/**
@@ -500,6 +567,10 @@ public final class E2EHarness {
 			cfg.apiKey = AiBlockConfig.defaultApiKey();
 			cfg.model = AiBlockConfig.defaultModel();
 			cfg.agent = "general_agent";
+			// e2e 把单轮 LLM 超时放宽到 180s：真实上游（尤其首次请求带完整
+			// 系统提示 + 20 个工具）可能 1-3 分钟才吐第一个 token，默认 60s 的
+			// SSE 看门狗会把"慢"误判成失败直接结束整轮。
+			cfg.timeoutSeconds = 180;
 			be.markConfigChanged();
 			ORIGINAL_CONFIG_STATES.put(GlobalPos.of(level.dimension(), pos), originalState);
 			return GlobalPos.of(level.dimension(), pos);
@@ -569,6 +640,25 @@ public final class E2EHarness {
 			synchronized (sb) {
 				appendLogFile(sb.toString().stripTrailing());
 			}
+		}
+	}
+
+	/**
+	 * 任务结束时把本服务器的 opencraft-debug.log（LLM 逐轮请求/回复/重试/失败）
+	 * 另存为按任务命名的文件——debug 日志每个 JVM 覆盖式重写，
+	 * 而全量套件每个任务都是独立 JVM，不另存就只剩最后一个任务的证据。
+	 */
+	private static void preserveDebugLog(String taskId) {
+		try {
+			Path src = Path.of("logs/opencraft-debug.log");
+			if (!Files.exists(src)) {
+				return;
+			}
+			Path dst = Path.of("logs/e2e-debug-" + taskId + ".log");
+			Files.copy(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			appendLogFile("[E2E] LLM 调试日志: " + dst.toAbsolutePath());
+		} catch (Exception e) {
+			OpenCraftMod.LOGGER.debug("[OpenCraft] 保存 e2e debug 日志失败: {}", e.toString());
 		}
 	}
 

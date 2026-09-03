@@ -56,6 +56,10 @@ loom {
 			// 可选：-Pe2eBaseUrl=http://127.0.0.1:18923/v1 把 e2e 方块 LLM 指向 mock 服务器
 			// （AiBlockConfig.defaultBaseUrl 优先读 -Dopencraft.baseUrl；空值回退正常配置）
 			vmArg "-Dopencraft.baseUrl=${project.findProperty('e2eBaseUrl') ?: ''}"
+			// e2e 默认开启 OpenCraft 业务调试日志（LLM 逐轮请求/回复/重试/失败写
+			// logs/opencraft-debug.log，任务结束另存 e2e-debug-<task>.log）——
+			// 否则"助手什么都没做就结束"这类失败没有 LLM 层证据可查。
+			vmArg '-Dopencraft.debug=true'
 		}
 	}
 

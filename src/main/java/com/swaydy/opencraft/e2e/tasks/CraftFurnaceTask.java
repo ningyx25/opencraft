@@ -37,6 +37,13 @@ public class CraftFurnaceTask implements E2ETask {
 	}
 
 	@Override
+	public void setup(E2EContext ctx) {
+		// 与 taskPrompt 承诺一致：给助手一个工作台和一把木镐，任务只验收自然挖石 + 合成熔炉。
+		ctx.assistant().getInventory().add(new ItemStack(Items.CRAFTING_TABLE, 1));
+		ctx.assistant().getInventory().add(new ItemStack(Items.WOODEN_PICKAXE, 1));
+	}
+
+	@Override
 	public boolean verify(E2EContext ctx) {
 		return ctx.countInAnyInventory("minecraft:furnace") >= 1;
 	}
