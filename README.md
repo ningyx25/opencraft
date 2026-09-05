@@ -1,176 +1,201 @@
 # OpenCraft
 
-一个为 Minecraft 1.21.11（Fabric）开发的 AI 游戏助手模组。助手是一个**真正的 ServerPlayer bot**——像多人联机玩家一样进服、出现在玩家列表与实体追踪中，由大模型通过原生 function calling 驱动，能够挖掘、放置、合成、递物品，支持任意 OpenAI 兼容的 Chat Completions 接口（含流式 SSE）。
+An AI game assistant mod for **Minecraft 1.21.11 (Fabric)**. The assistant is a **real `ServerPlayer` bot** — it joins the server like a multiplayer client, shows up in the player list and entity tracker, and is driven by an LLM through native function calling to mine, place, craft, and hand items to the owner. Works with any OpenAI-compatible Chat Completions endpoint (streaming SSE included).
 
-## 演示
+> **Languages:** English (this file) · [中文 (zh-CN)](README_zh.md)
 
-https://github.com/user-attachments/assets/c4a91eff-5ded-4788-9cba-8ecffc6c3d61
+## Demo
+
+[demo.mp4](docs/media/demo.mp4)
 
 ---
 
-## 功能概览
+## Highlights
 
-### AI 助手（真实玩家 Bot）
+### AI assistant — a real `ServerPlayer` bot
 
-- 通过 `/opencraft summon` 或右键 AI 徽标方块召唤，助手以正式 `PlayerList.placeNewPlayer` 方式进服，拥有 43 槽玩家背包、游戏模式、经验值。
-- **默认跟随**：平时自动跟着主人走（太远/跨维度会直接瞬移回主人身边）；当你下达任务指令时退出跟随、专注执行，指令完成后自动回到跟随。
-- 生存模式 + 无敌 + 食物补满——拥有玩家的全部能力，不会轻易死亡。
-- 绑定状态与背包随存档持久化，重新召唤后自动读回。
-- **多助手共存**：每个 AI 徽标方块绑定一个助手，一位玩家可同时拥有多个助手。
+- Summon with `/opencraft summon` or by right-clicking an **AI Logo Block**; the bot joins via `PlayerList.placeNewPlayer` with a full 43-slot player inventory, game mode, and XP.
+- **Auto-follow by default** — keeps up with you, teleport-rejoins across distances/dimensions. Exits follow the moment a task starts and resumes when it finishes.
+- Survival mode + invulnerable + auto-fed — can take hits without dying, owns the same capabilities as a real player.
+- Bind state and inventory persist with the world; reload after dismiss rehydrates everything.
+- **Many assistants, one each** — every AI Logo Block binds to a single assistant, and one player can own several at once.
 
-### 大模型对话
+### LLM chat
 
-- `/opencraft ask <消息>` 与最近的助手对话；`/opencraft ask <名字> <消息>` 精确指定某位助手（Tab 补全）。
-- **流式回复**：大模型生成时逐字实时显示在 action bar，生成完毕后广播到聊天栏。
-- 每个助手拥有独立对话记忆，记忆过长时自动压缩为摘要而非直接丢弃。
-- 助手上下文包含玩家实时游戏状态（维度、坐标、时间、生命、饥饿、手持物品等）。
-- AI 请求在独立线程池异步执行，不阻塞服务端主线程。
+- `/opencraft ask <message>` to talk to the nearest assistant; `/opencraft ask <name> <message>` to target a specific one (Tab-completable).
+- **Streaming replies** — token-by-token output in the action bar while the model is generating, then broadcast to chat on completion.
+- Each assistant has its own conversation memory; long histories are compacted into summaries, not truncated.
+- The dynamic game context (dimension, coords, time, health, hunger, held item, weather, biome, status effects, nearby mobs, what's underfoot, where the owner is) is appended to the first user message and refreshed on later turns.
+- LLM requests run on a daemon pool, never on the server thread.
 
-### Agent 预设与工具调用
+### Agent presets & tool calling
 
-助手通过 **Agent 预设**决定大模型的行为——每个预设组合若干插件，插件向大模型暴露 OpenAI 格式的工具（tools schema），由 LLM 原生 function calling 决定调用，服务端执行后把结果喂回，循环直到模型给出最终回复（agentic loop）。
+An **agent preset** decides how the LLM behaves — each preset composes a set of plugins, plugins expose OpenAI-style tool schemas, the LLM picks which to call via native function calling, the server executes them, the result goes back, and the loop continues until the model gives a final answer.
 
-内置两个预设（在配置界面「对话与动作」页切换）：
+Two presets ship in the config UI's "Agent Preset" tab:
 
-| 预设 | 插件 | 最大工具轮次 |
+| Preset | Plugins | Max tool rounds |
 |---|---|---|
-| `chat_agent`（纯聊天） | 助手控制 | 3 |
-| `general_agent`（全能，默认） | 助手控制 + 玩家动作 | 250 |
+| `chat_agent` (pure chat) | assistant control | 3 |
+| `general_agent` (full, default) | assistant control + player actions | 250 |
 
-玩家动作工具（`general_agent` 专属，全部以真实玩家方式执行）：
+Player-action tools (exclusive to `general_agent`, all run through real player code paths):
 
-| 工具 | 作用 |
+| Tool | Effect |
 |---|---|
-| `player_goto` / `player_stop` / `player_jump` | 走到指定坐标 / 停止移动 / 跳一下 |
-| `player_find` | 按关键词找方块/实体/掉落物，返回精确坐标 + 方位 + 距离 |
-| `player_mine` | 走到方块旁用 `ServerPlayerGameMode.destroyBlock` 破坏，掉落物自动拾取 |
-| `player_place` | 用主手物品以 `useItemOn` 贴着指定面放置方块 |
-| `player_craft` | 按玩家规则合成（2×2 随时可合，3×3 需附近有工作台） |
-| `player_inventory` | 查看自己或主人的完整背包与装备（逐槽号 + 数量 + 耐久） |
-| `player_hand_to_player` | 从背包取物品递给主人（背包满则掉在主人脚边） |
-| `player_container_open` / `player_container_close` | 像真实玩家右键一样打开/关闭容器（箱子/桶/潜影盒/熔炉…） |
-| `player_container_list` | 查看已打开容器的内容与自己的背包（只读） |
-| `player_container_take` / `player_container_put` | 在容器与背包间 shift 点击整栈取/放物品 |
-| `teleport_to_player` | 瞬间传送到主人身边（支持跨维度，所有预设可用） |
+| `player_goto` / `player_stop` / `player_jump` | Walk to coords / stop moving / jump once |
+| `player_find` | Find blocks/entities/drops by keyword — returns exact coords, bearing, distance |
+| `player_mine` | Walk next to a block and break it via `ServerPlayerGameMode.destroyBlock`; drops auto-pickup |
+| `player_place` | Place the held item against a face via `useItemOn` |
+| `player_craft` | Craft like a real player (2×2 anywhere, 3×3 needs a nearby table) |
+| `player_inventory` | List full inventory + equipment (slot id, count, durability) |
+| `player_hand_to_player` | Hand an item from inventory to the owner (drops at their feet if full) |
+| `player_container_open` / `_close` | Right-click open / close a container (chest, barrel, shulker, furnace, …) |
+| `player_container_list` | List the open container + own inventory (read-only) |
+| `player_container_take` / `_put` | Shift-click whole stacks between container and inventory |
+| `teleport_to_player` | Instantly teleport to the owner (cross-dim; all presets) |
 
-**Agentic loop 健壮性**：自动退避重试网络错误；检测重复工具调用死循环并打断；工具结果超长自动裁剪；对话历史过长时 LLM 压缩为摘要；破坏性操作前向玩家提问确认（`/opencraft answer` 回复，90 秒超时后按合理假设继续）；多步任务自动列计划并实时更新进度。
+**Agentic-loop robustness**: exponential-backoff retry on transient network errors; repeat-call detection breaks dead loops; oversized tool results are head/tail-truncated; long histories are LLM-summarized; destructive actions confirm with the player (`/opencraft answer`, 90s timeout, then continue on a reasonable assumption); multi-step tasks get a live-updating plan.
 
-### AI 徽标方块
+### AI Logo Block
 
-合成配方：**4 铁锭 + 4 红石 + 1 玻璃**（可徒手挖掘，必定掉落自身）。
+Crafting recipe: **4 iron ingots + 4 redstone + 1 glass** (mineable by hand, always drops itself).
 
-右键打开游戏内配置编辑器（4 页 Tab）：
+Right-click opens an in-game config editor (4 tabs):
 
-| 页签 | 配置项 |
+| Tab | Contents |
 |---|---|
-| 接口与密钥 | 接口地址、API Key、模型、语言 |
-| 对话与动作 | 助手名字、Agent 预设、温度、请求超时、记忆条数 |
-| 行动行为 | 行动最大距离、移动速度 |
-| 聊天 | 内置聊天窗口（流式增量显示，与命令行共享记忆） |
+| Endpoint & API key | `baseUrl`, API key, model |
+| Agent preset | Assistant name, preset, temperature, request timeout, history size |
+| Loop events | Per-loop enable toggles + live status |
+| Chat | Built-in chat window (streaming, shares memory with `/opencraft ask`) |
 
-- 点"保存配置"立即生效；仅 op 可保存，非 op 只读。
-- API Key 不会发送到客户端，界面只显示"已设置（已隐藏）/未设置"。
-- 底部按钮兼具召唤与送走功能：无助手时点击召唤，已绑定时点击送走。
-- 有助手绑定时方块亮起（亮度 15），助手消失后自动熄灭。
+- "Save config" applies immediately. Ops can save; non-ops are read-only.
+- The API key never leaves the server — the UI only shows "set (hidden) / not set".
+- The bottom button doubles as summon / dismiss: summons when unbound, dismisses when bound.
+- Bound blocks emit light level 15; the block darkens when the assistant leaves.
 
-**默认配置烘焙**：将 `OPEN_CRAFT_BASE_URL`、`OPEN_CRAFT_MODEL`、`OPEN_CRAFT_API_KEY` 写入项目根目录 `.env` 后执行 `./gradlew build`，生成的 jar 自带这些默认值（XOR 混淆存储，jar 内无明文）。运行时优先级：JVM 参数 > 环境变量 > jar 内烘焙值 > 代码内置回退。
+**Baked-in defaults**: put `OPEN_CRAFT_BASE_URL`, `OPEN_CRAFT_MODEL`, and `OPEN_CRAFT_API_KEY` in a project-root `.env` and run `./gradlew build` — the produced jar ships with those defaults (XOR-obfuscated, no plaintext in the jar). Runtime resolution: JVM flag > env var > baked-in > code fallback.
 
-### 循环事件（触发条件 → 执行事件 → 监测条件）
+### Loop events (trigger → act → monitor)
 
-内置循环事件模块：召唤助手后，其绑定的方块自动运行 `heal_aura`（治疗光环）——当主人生命值不满时每 2 秒恢复 1 点血，直到满血；满血后循环自动闲置，再次受伤时自动重新治疗。可用 `/opencraft loop status` 查看循环状态（框架为通用设计，[条件] + [事件] + [监测函数] 可组合出任意循环事件）。
+The built-in **loop event module** runs the moment an assistant is summoned. Six guard-style loops ship out of the box — all are `persistent`, so they return to "waiting" after each round instead of dying:
 
----
-
-## 快速上手
-
-1. 放置 AI 徽标方块（合成：4 铁锭 + 4 红石 + 1 玻璃）。
-2. 右键方块，在配置编辑器中填入接口地址、模型和 API Key，点"保存配置"。
-3. 点底部"用本方块召唤助手"，助手以玩家 bot 形态进服并默认跟随你。
-4. 用 `/opencraft ask <消息>` 开始对话，或直接在配置界面的聊天页输入。
-5. 用 `/opencraft dismiss` 送走助手；破坏方块时绑定的助手与记忆一并移除。
-
----
-
-## 指令
-
-| 指令 | 说明 |
+| Loop id | Effect |
 |---|---|
-| `/opencraft ask <消息>` | 与最近的助手对话 |
-| `/opencraft ask <名字> <消息>` | 与指定助手对话（Tab 补全名字） |
-| `/opencraft answer <回答>` | 回答助手提出的确认问题 |
-| `/opencraft interrupt`（别名 `stop`） | 中断最近助手正在执行的任务 |
-| `/opencraft summon` | 召唤助手（绑定最近的未绑定方块） |
-| `/opencraft dismiss [all]` | 送走最近 / 全部助手 |
-| `/opencraft status` | 列出全部助手及配置状态 |
-| `/opencraft reset [all]` | 清空最近 / 全部助手的对话记忆 |
-| `/opencraft debug [on\|off]` | 查看或切换调试模式（需 op） |
-| `/opencraft loop status` | 查看循环事件（触发条件→事件→监测）的定义与活动实例 |
-| `/opencraft help` | 显示帮助 |
+| `heal_aura` | Heal owner 1 HP every 2 s while injured |
+| `feed_aura` | Feed owner 1 hunger point every 2 s while hungry (also restores saturation) |
+| `breath_aura` | Refill +60 air every 0.5 s while underwater |
+| `extinguish_fire` | Extinguish owner every 0.5 s while on fire |
+| `pickup_aura` | Pull unprotected drops within 5 m of the assistant into its inventory (3D, not just horizontal) |
+| `mob_repel` | Knockback hostiles within 6 m of the owner every 1 s (no damage) |
+
+The framework is generic — a loop is `LoopCondition` + `LoopEvent` + `LoopMonitor` plus a `LoopDefinition`. `/opencraft loop status` lists every registered definition and active instance. See [docs/agent-architecture.md](docs/agent-architecture.md) for the engine design.
 
 ---
 
-## 调试模式
+## Quick start
 
-开启后，业务日志（对话收发、LLM 请求/回复、工具调用与结果、任务状态、召唤/送走等，**不含 API Key**）写入 `<游戏目录>/logs/opencraft-debug.log`，格式为 `[时间] [分类] 内容`。
-
-- 每次开启会清空旧日志，只保留本次会话内容。
-- 启动时默认开启：JVM 参数 `-Dopencraft.debug=true` 或环境变量 `OPEN_CRAFT_DEBUG=true`。
-- 单次会话日志超过 5 MB 自动从头重写；默认关闭。
+1. Place an AI Logo Block (craft: 4 iron + 4 redstone + 1 glass).
+2. Right-click the block, fill in `baseUrl` / model / API key on the first tab, click **Save config**.
+3. Click the bottom button (**Summon**) — the assistant joins as a player bot and starts following you.
+4. Run `/opencraft ask <message>` to chat, or use the Chat tab in the config UI.
+5. Run `/opencraft dismiss` to send the bot away; breaking the block also discards it and its memory.
 
 ---
 
-## 构建与运行
+## Commands
 
-要求：JDK 21+（CI 使用 JDK 25，`--release 21` 锁定字节码版本）。
+| Command | Description |
+|---|---|
+| `/opencraft ask <message>` | Talk to the nearest assistant |
+| `/opencraft ask <name> <message>` | Talk to a specific assistant (Tab-completable; coordinate-suffix disambiguates same-name bots) |
+| `/opencraft answer <reply>` | Reply to the assistant's confirmation question |
+| `/opencraft interrupt` (alias `stop`) | Abort the nearest assistant's running task immediately |
+| `/opencraft summon` | Summon an assistant (binds the nearest unbound block) |
+| `/opencraft dismiss [all]` | Dismiss the nearest / all assistants |
+| `/opencraft status` | List every assistant and its config state |
+| `/opencraft reset [all]` | Clear conversation memory for the nearest / all assistants |
+| `/opencraft loop status` | List every registered loop definition and active instance |
+| `/opencraft debug [on\|off\|status]` | View or toggle debug mode (ops only) |
+| `/opencraft help` | Show in-game help |
+
+---
+
+## Building & running
+
+Requires **JDK 21+** (CI uses JDK 25; `--release 21` pins bytecode level).
 
 ```bash
-./gradlew build              # 编译 + 打包（含纯 Java 单元测试）
-./gradlew runClient          # 启动客户端
-./gradlew runServer          # 启动专用服务器
-./gradlew runGametestServer  # 运行 Fabric 游戏测试（无头服务器）
-./gradlew test               # 仅运行 JUnit 单元测试
+./gradlew build              # compile + package (+ pure-Java unit tests)
+./gradlew runClient          # launch the Minecraft client with the mod
+./gradlew runServer          # launch a dedicated server with the mod
+./gradlew runGametestServer  # run Fabric gametests (headless server)
+./gradlew test               # JUnit 5 only — no Minecraft runtime
+./gradlew runE2E -Pe2eTask=<id>   # run a single end-to-end natural-spawn task
 ```
 
-- 纯 Java 单元测试（`src/test/java/`，JUnit 5）：验证 LLM 客户端的 SSE 工具调用分片合并，无需 Minecraft 运行时。
-- Fabric 游戏测试（`src/main/java/com/swaydy/opencraft/test/`）：覆盖助手生命周期、配置编辑器、多助手共存、背包/拾取/挖掘等，需配置可达的 mock LLM 端点。
+- **JUnit** (`./gradlew test`, no Minecraft) — covers the SSE/tool-call chunk protocol, error mapping, watchdogs, retry policy, history compression, repeat-call guard, stall guard, loop engine, presets, skills, agent definition.
+- **Fabric gametests** (`./gradlew runGametestServer`) — covers the assistant lifecycle, config UI, multi-assistant coexistence, inventory, mining, loop events. Needs a reachable mock LLM endpoint (e.g. `bin/mock_llm_server.py`).
+- **End-to-end** (`./gradlew runE2E`) — boots a real world with a fixed seed, drives a player-form assistant from spawn with `general_agent`, verifies the outcome against the owner's inventory. Run a single task or `bash bin/run_e2e_all.sh` for the whole suite. Results land in `run/logs/e2e-results.txt`.
 
 ---
 
-## 项目结构
+## Debug mode
+
+When enabled, business logs (chat send/receive, LLM requests and replies, tool calls and results, task state, summon/dismiss, … — **never the API key**) are written to `<game-dir>/logs/opencraft-debug.log` in the format `[timestamp] [category] content`.
+
+- Each session starts fresh: the file is wiped when debug is turned on.
+- Default on at boot: JVM flag `-Dopencraft.debug=true` or env var `OPEN_CRAFT_DEBUG=true`.
+- Single-session cap of 5 MB; over the cap the file is overwritten from the top.
+- Toggle in-game with `/opencraft debug on|off` (op-only).
+
+---
+
+## Project structure
 
 ```
 src/
 ├── main/java/com/swaydy/opencraft/
-│   ├── OpenCraftMod.java          # 模组入口，注册方块/命令/网络包
-│   ├── agent/                     # Agent 框架：薄驱动 AgentRuntime、工具管线 ToolExecutor、
-│   │                              #   hooks/（LoopHook 生命周期钩子）、GameContext（动态上下文）、
-│   │                              #   HistoryCompactor（历史压缩）
-│   │   └── presets/               # Agent 预设：chat_agent、general_agent
-│   ├── assistant/                 # 助手抽象：AiAssistant 统一接口、AssistantFacade、
-│   │                              #   player/（AiAssistantPlayer 真 ServerPlayer bot）
-│   ├── plugins/                   # 内置插件：助手控制 + 玩家动作能力族（移动/感知/挖掘放置/
-│   │                              #   合成/背包物品/容器，共享 PlayerActionMechanics）
-│   ├── ai/                        # LLM 客户端（SSE 流式 + 工具调用）、配置模型
-│   ├── block/                     # AI 徽标方块与方块实体
-│   ├── command/                   # /opencraft 指令
-│   ├── inventory/                 # 右键助手的双面板背包菜单（AssistantInventoryMenu）
-│   ├── net/                       # 自定义网络包
-│   └── test/                      # Fabric 游戏测试
+│   ├── OpenCraftMod.java          # mod entrypoint, registers blocks/commands/packets
+│   ├── agent/                     # AgentRuntime (thin driver), ToolExecutor,
+│   │                              #   LlmRetryPolicy / RepeatToolGuard / StallGuard,
+│   │                              #   GameContext (dynamic), HistoryCompactor,
+│   │                              #   TaskPlan / TaskCompletionGuard, presets/, skills/, hooks/
+│   ├── ai/                        # LlmClient (SSE + tool calls), AiCompanionService,
+│   │                              #   AiBlockConfig / AiConfigHandler (config UI plumbing)
+│   ├── assistant/                 # AiAssistant interface, AssistantFacade, player/ (bot)
+│   ├── plugins/                   # Built-in plugins: assistant control + player actions,
+│   │                              #   presets/
+│   ├── block/                     # AI Logo Block + block entity (config storage)
+│   ├── command/                   # /opencraft command tree
+│   ├── inventory/                 # Double-panel inventory menu (right-click the bot)
+│   ├── loop/                      # Loop engine + registry + Minecraft wiring, presets/
+│   ├── e2e/                       # End-to-end natural-spawn harness + trace + replay
+│   ├── logging/                   # SLF4J → debug file logger
+│   ├── net/                       # Custom networking payloads
+│   └── test/                      # Fabric gametests
 ├── client/java/com/swaydy/opencraft/client/
-│   ├── OpenCraftModClient.java    # 客户端入口
-│   ├── gui/                       # 配置界面（4 页 Tab）、右键助手的双面板背包界面
-│   └── render/                    # 助手实体渲染器、世界内流式浮层
-└── main/resources/                # fabric.mod.json、语言文件、贴图、配方、战利品表
+│   ├── OpenCraftModClient.java    # client entrypoint
+│   ├── gui/                       # Config UI (4 tabs), double-panel inventory screen
+│   ├── render/                    # Bot entity renderer, world-space streaming overlay
+│   ├── skin/                      # Skin picker
+│   └── ShotAutoCapture.java       # Dev-only e2e screenshot helper
+└── main/resources/                # fabric.mod.json, lang files, textures, recipes, loot
 ```
-
-Agent 架构细节（DeepSeek Harness 包映射、扩展方式与验证要求）见
-[docs/agent-architecture.md](docs/agent-architecture.md)。
 
 ---
 
-## 版本依赖
+## Further reading
 
-| 组件 | 版本 |
+- [docs/agent-architecture.md](docs/agent-architecture.md) — Agent design and its mapping to DeepSeek Harness.
+- [CLAUDE.md](CLAUDE.md) — developer guidance for working in this repo (build commands, architecture summary, conventions).
+
+---
+
+## Versions
+
+| Component | Version |
 |---|---|
 | Minecraft | 1.21.11 |
 | Fabric Loader | 0.19.3 |
@@ -183,4 +208,4 @@ Agent 架构细节（DeepSeek Harness 包映射、扩展方式与验证要求）
 
 ## License
 
-CC0-1.0（保留自 FabricMC example-mod 模板的许可声明）。
+CC0-1.0 (inherited from the FabricMC example-mod template).
