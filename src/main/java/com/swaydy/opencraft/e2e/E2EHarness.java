@@ -130,6 +130,8 @@ public final class E2EHarness {
 
 	/** 当前 e2e 任务的助手（截图客户端要粘到它的眼睛上）；任务结束/hold 时清除。 */
 	private static volatile AiAssistantPlayer shotTarget;
+	/** 当前 e2e 任务的服务端 Replay 录制器（无头 .mcpr 录制）；任务结束时打包收尾。 */
+	private static volatile ReplayRecorder replayRecorder;
 
 	/** 真客户端 glue：任务进行中把连接进来的真客户端 TP 到助手眼睛位置并同步朝向。 */
 	private static void registerShotClientGlue() {
@@ -174,6 +176,10 @@ public final class E2EHarness {
 		suiteLogPath = String.format(E2E_LOG_FILE, stamp);
 		appendLogFile("======== E2E 自然世界详细日志 " + stamp + " ========");
 		writeSuiteHeader();
+		com.swaydy.opencraft.e2e.E2ETrace.begin(tasks.get(0).id(), stamp);
+		if (!"false".equalsIgnoreCase(System.getProperty("opencraft.e2e.replay", "true"))) {
+			replayRecorder = ReplayRecorder.start(level.getServer(), tasks.get(0).id(), stamp);
+		}
 		log("[E2E] 开始自然世界端到端任务: " + tasks.get(0).id());
 		runNext(level, tasks, 0, new ArrayList<>(), onAllDone);
 	}
@@ -215,12 +221,19 @@ public final class E2EHarness {
 			taskLog("启动失败: " + e);
 			flushTaskLog();
 			report(fail);
+			ReplayRecorder rec0 = replayRecorder;
+			if (rec0 != null) {
+				rec0.finish();
+				replayRecorder = null;
+			}
+			com.swaydy.opencraft.e2e.E2ETrace.close();
 			runNext(level, tasks, index + 1, results, onAllDone);
 			return;
 		}
 		long start = System.currentTimeMillis();
 		taskLog("下发指令: " + task.taskPrompt());
 		log("[E2E] 已向助手下发指令（绑方块 " + ctx.configBlock().pos().toShortString() + "）");
+		com.swaydy.opencraft.e2e.E2ETrace.taskStart(task.id(), task.taskPrompt(), ctx.spawnPos());
 		AiCompanionService.ask(ctx.owner(), ctx.assistant(), task.taskPrompt());
 		startWatcher(level, tasks, index, results, ctx, task, start, onAllDone);
 	}
@@ -334,6 +347,18 @@ public final class E2EHarness {
 			log("[E2E] 任务 " + task.id() + " teardown 异常: " + e);
 		}
 		dismissAssistant(ctx);
+		String replayRel = null;
+		ReplayRecorder rec = replayRecorder;
+		if (rec != null) {
+			replayRel = rec.finish();
+			replayRecorder = null;
+			if (replayRel != null) {
+				taskLog("Replay 回放: " + Path.of(replayRel).toAbsolutePath());
+			}
+		}
+		com.swaydy.opencraft.e2e.E2ETrace.taskFinish(
+				task.id(), passed, timedOut, duration, hist, a, replayRel, message);
+		com.swaydy.opencraft.e2e.E2ETrace.close();
 		com.swaydy.opencraft.e2e.E2EResult result =
 				new com.swaydy.opencraft.e2e.E2EResult(task.id(), passed, duration, message);
 		results.add(result);
@@ -428,6 +453,9 @@ public final class E2EHarness {
 				+ " 出生点=(" + (int) assistant.getX() + "," + (int) assistant.getY() + "," + (int) assistant.getZ() + ")"
 				+ "（真实空背包，已设无敌）");
 		shotTarget = assistant;
+		if (replayRecorder != null) {
+			replayRecorder.setTarget(assistant);
+		}
 		com.swaydy.opencraft.e2e.E2EContext ctx = new com.swaydy.opencraft.e2e.E2EContext(
 				level.getServer(), level, owner, assistant, configBlock,
 				actualSpawn, worldSpawn, ORIGINAL_CONFIG_STATES.get(configBlock));
@@ -589,6 +617,9 @@ public final class E2EHarness {
 		ORIGINAL_CONFIG_STATES.remove(ctx.configBlock());
 		AiCompanionService.resetHistory(ctx.configBlock());
 		shotTarget = null;
+		if (replayRecorder != null) {
+			replayRecorder.setTarget(null);
+		}
 	}
 
 	// ------------------------------------------------------------------

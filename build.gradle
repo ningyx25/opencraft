@@ -20,12 +20,21 @@ repositories {
 	// 连接建立瞬间短暂爆发后持续限速到 ~10KB/s，换国内镜像后稳定在多 MB/s，其他环境照常可用。
 	maven { url = 'https://maven.aliyun.com/repository/central' }
 	mavenCentral()
+	// ReplayMod（仅开发期：无头回放渲染 .mcpr -> mp4，不打包进生产 jar）
+	maven { url = 'https://api.modrinth.com/maven' }
 }
 
 // shade 配置：声明在这里的库会被 shadowJar flat 进 mod jar，不走 JiJ
 configurations {
 	shade
 	implementation.extendsFrom shade
+}
+
+// 回放渲染器小 mod 的源集（dev-only，见 loom.mods 与 afterEvaluate 接线）
+sourceSets {
+	renderer {
+		runtimeClasspath += output + compileClasspath
+	}
 }
 
 loom {
@@ -68,6 +77,46 @@ loom {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
+		// 回放渲染器小 mod（src/renderer，独立 fabric.mod.json），dev 运行时随 mods 容器自动加入
+		"opencraft-replay-renderer" {
+			sourceSet sourceSets.renderer
+		}
+	}
+
+}
+
+// ------------------------------------------------------------------
+// 回放自动渲染器（dev-only 小 mod）：源码 src/renderer，自己的 fabric.mod.json
+// （mod id opencraft-replay-renderer，纯 client）。只挂到 runClient 运行时
+// classpath（runs.client.source）；shadowJar 只 from main+client，生产 jar 不含它。
+// ReplayMod 仅 modCompileOnly/modRuntimeOnly，不打包。
+// ------------------------------------------------------------------
+loom {
+	runs {
+		client {
+			vmArg "-Dopencraft.render.replay=${project.findProperty('renderReplay') ?: ''}"
+			vmArg "-Dopencraft.render.out=${project.findProperty('renderOut') ?: ''}"
+			vmArg "-Dopencraft.render.follow=${project.findProperty('renderFollow') ?: ''}"
+			vmArg "-Dopencraft.render.width=${project.findProperty('renderWidth') ?: '1280'}"
+			vmArg "-Dopencraft.render.height=${project.findProperty('renderHeight') ?: '720'}"
+			vmArg "-Dopencraft.render.fps=${project.findProperty('renderFps') ?: '20'}"
+			vmArg "-Dopencraft.render.from=${project.findProperty('renderFrom') ?: '0'}"
+			vmArg "-Dopencraft.render.to=${project.findProperty('renderTo') ?: '0'}"
+		}
+	}
+}
+
+// renderer 源集需要 client 源集（splitEnvironmentSourceSets 在 loom 内创建），
+// 类路径接线延迟到评估完成；ReplayMod 经 modClientCompileOnly（loom remap）随之可见。
+afterEvaluate {
+	sourceSets.renderer.compileClasspath += sourceSets.main.compileClasspath + sourceSets.client.compileClasspath
+	tasks.named('compileRendererJava') { dependsOn 'compileClientJava' }
+	// 把渲染器小 mod 的类与资源（fabric.mod.json）追加到 runClient 类路径。
+	// 注意：不用 loom runs 的 source()——它会整体重写 run classpath 导致 dev-launch-injector 丢失；
+	// 外部依赖（ReplayMod 等）已在类路径上，这里只需 renderer 自己的输出目录。
+	tasks.named('runClient') {
+		classpath += files(sourceSets.renderer.java.classesDirectory, sourceSets.renderer.output.resourcesDir)
+		dependsOn tasks.named('compileRendererJava'), tasks.named('processRendererResources')
 	}
 }
 
@@ -159,6 +208,10 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
+	// ReplayMod：仅开发期无头回放渲染用（modClientCompileOnly 不打包；modRuntimeOnly 进 runClient）
+	modClientCompileOnly "maven.modrinth:replaymod:1.21.11-2.6.27"
+	modClientRuntimeOnly "maven.modrinth:replaymod:1.21.11-2.6.27"
+
 	// OpenAI 兼容 Chat Completions 客户端（openai-java，纯库非 mod）：
 	// shade 配置：Shadow 插件会把该库及全部传递依赖（openai-java-core、OkHttp、Jackson、
 	// Kotlin stdlib 等）flat 进 mod jar，游戏启动器无需提前把这些库放到 classpath。
@@ -173,6 +226,11 @@ dependencies {
 
 test {
 	useJUnitPlatform()
+}
+
+// 构建时顺带编译回放渲染器（防止 tools 代码腐烂；它不参与 jar 打包）
+tasks.named('build') {
+	dependsOn tasks.named('compileRendererJava')
 }
 
 // ------------------------------------------------------------------

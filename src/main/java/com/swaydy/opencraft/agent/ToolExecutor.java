@@ -98,6 +98,8 @@ final class ToolExecutor {
 			executedNames.add(claimName);
 			com.swaydy.opencraft.logging.DebugLog.log("tool",
 					"助手执行工具 {} → {}", claimName, handle.result().message());
+			com.swaydy.opencraft.e2e.E2ETrace.toolCall(
+					claimName, claim.call().arguments(), handle.result(), ctx.assistant);
 			host.notifyToolExecuted(claimName, handle.result());
 			if (handle.pausesForAnswer()) {
 				host.pauseForAnswer(ctx, handle.askQuestion(), round + 1);
@@ -193,6 +195,8 @@ final class ToolExecutor {
 			com.swaydy.opencraft.logging.DebugLog.log("tool",
 					"助手执行工具 {} 参数={} → 结果={}", toolName,
 					call.arguments() == null ? "{}" : call.arguments(), result.message());
+			com.swaydy.opencraft.e2e.E2ETrace.toolCall(
+					toolName, call.arguments(), result, ctx.assistant);
 			results.add(toolResultMessage(call.id(), toolName, result));
 			OpenCraftMod.LOGGER.info("[OpenCraft] 助手为 {} 执行工具 {} → {}",
 					ownerName(ctx), toolName, result.message());

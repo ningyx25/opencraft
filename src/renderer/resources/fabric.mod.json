@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "opencraft-replay-renderer",
+  "version": "0.1.0",
+  "name": "OpenCraft Replay Renderer",
+  "description": "Dev-only automation: headlessly loads an .mcpr replay and renders an mp4 via ReplayMod (third-person chase cam). Not shipped in the production mod jar.",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.swaydy.opencraft.renderer.RenderAutomation"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "replaymod": "*"
+  }
+}
