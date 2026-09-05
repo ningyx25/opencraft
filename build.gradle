@@ -331,15 +331,19 @@ shadowJar {
 	// 把所有 shaded 进 jar 的三方库 relocate 到 com.swaydy.opencraft.shadow.* 下，
 	// 避免与 Mojang 自带类、其它 mod 共用 FQN 时的 NoSuchMethod / 重复类问题。
 	// 当前实际已经在发生的冲突：org.slf4j（MC 1.17+ 自带）、kotlin.*（fabric-language-kotlin）。
-	relocate 'org.slf4j',                 'com.swaydy.opencraft.shadow.slf4j'
-	relocate 'org.jetbrains.kotlin',      'com.swaydy.opencraft.shadow.kotlin'
-	relocate 'org.jetbrains.annotations', 'com.swaydy.opencraft.shadow.annotations'
-	relocate 'kotlin',                    'com.swaydy.opencraft.shadow.kotlin'
-	relocate 'kotlinx',                   'com.swaydy.opencraft.shadow.kotlinx'
-	relocate 'okhttp3',                   'com.swaydy.opencraft.shadow.okhttp3'
-	relocate 'okio',                      'com.swaydy.opencraft.shadow.okio'
-	relocate 'com.fasterxml',             'com.swaydy.opencraft.shadow.fasterxml'
-	relocate 'com.openai',                'com.swaydy.opencraft.shadow.openai'
+	// v0.1.1 反馈：relocate 后游戏内对话卡死（createStreaming 阻塞、无错误日志），
+	// 怀疑是 OkHttp/Kotlin 路径上某处 FQN 字符串（如 SPI 文件、Class.forName、generic
+	// signature）没被 rewrite 干净。先撤掉所有 relocate 把对话恢复，size 仍靠 excludes
+	// 留在 ~16 MB；冲突风险回到 v0.1.0（已知可接受）。等定位到具体坏哪条再分批加回。
+	// relocate 'org.slf4j',                 'com.swaydy.opencraft.shadow.slf4j'
+	// relocate 'org.jetbrains.kotlin',      'com.swaydy.opencraft.shadow.kotlin'
+	// relocate 'org.jetbrains.annotations', 'com.swaydy.opencraft.shadow.annotations'
+	// relocate 'kotlin',                    'com.swaydy.opencraft.shadow.kotlin'
+	// relocate 'kotlinx',                   'com.swaydy.opencraft.shadow.kotlinx'
+	// relocate 'okhttp3',                   'com.swaydy.opencraft.shadow.okhttp3'
+	// relocate 'okio',                      'com.swaydy.opencraft.shadow.okio'
+	// relocate 'com.fasterxml',             'com.swaydy.opencraft.shadow.fasterxml'
+	// relocate 'com.openai',                'com.swaydy.opencraft.shadow.openai'
 }
 
 // remapJar 改用 shadowJar 的输出作为输入，这样 Loom 在重新映射字节码的同时
