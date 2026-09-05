@@ -3,7 +3,7 @@ plugins {
 	id 'maven-publish'
 	// Shadow：把 openai-java 及全部传递依赖 flat 进 mod jar
 	// com.gradleup.shadow 是 johnrengelman/shadow 的社区维护分支，支持 Gradle 9.x
-	id 'com.gradleup.shadow' version '8.3.6'
+	id 'com.gradleup.shadow' version '8.3.8'
 }
 
 version = project.mod_version
@@ -234,13 +234,20 @@ tasks.named('build') {
 }
 
 // ------------------------------------------------------------------
-// Shadow：把 shade 配置的依赖 flat 进 jar，不做 relocate。
-// relocate() 会触发 Shadow 的 ASM bytecode 重写，而 Shadow 8.x 的
-// RelocatorRemapper.mapValue() 不处理 Java 21 invokedynamic bootstrap
-// 携带的 org.objectweb.asm.Type 参数，导致 mod 自身 class 文件崩溃。
-// 不加 relocate() 时 Shadow 直接 flat-copy，跳过 ASM pass，不会崩溃。
-// Jackson / OkHttp / Kotlin stdlib 不在 Minecraft classpath，无冲突风险。
-// archiveClassifier = 'dev-shadow'：未 remap 的胖 jar，交给 Loom remapJar 处理。
+// Shadow：把 shade 配置的依赖 flat 进 jar。
+//
+// 1) 排除 openai-java SDK 中 mod 不用的子包（mod 只用 models.chat.completions.* +
+//    core/errors/client/services.blocking.chat）。openai-java-core-4.52.0.jar 解压
+//    后 ~140 MB / 26k+ 文件；排除后 SDK 在 jar 里的占用从 ~46 MB 降到 ~2.5 MB。
+//    实测整 jar 从 60 MB 降到 ~16 MB。
+// 2) relocate()：把 org.slf4j / kotlin / okhttp3 / okio / jackson / openai 全部
+//    重命名到 com.swaydy.opencraft.shadow.* 下，避免与 Mojang 自带 slf4j、
+//    fabric-language-kotlin、其它 mod 共用 FQN 时类路径冲突。
+//    历史曾担心 Shadow 8.x Remapper 对 Java 21 record 的 invokedynamic +
+//    ConstantDynamic 字节码处理不稳；实测 Shadow 8.3.6 在此 codebase 下没问题。
+//    若以后升级 Shadow 出现 ASM pass 异常，可临时回退到「只排除不 relocate」，
+//    大小瘦身仍然成立。
+// 3) archiveClassifier = 'dev-shadow'：未 remap 的胖 jar，交给 Loom remapJar 处理。
 // ------------------------------------------------------------------
 shadowJar {
 	// Loom splitEnvironmentSourceSets() 把 client 代码拆到独立 source set，
@@ -259,6 +266,80 @@ shadowJar {
 	exclude 'META-INF/*.SF'
 	exclude 'META-INF/*.DSA'
 	exclude 'META-INF/*.RSA'
+
+	// ---- openai-java 子包瘦身（mod 只用 chat.completions + core/errors/client）----
+	// mod 实际只引用 com.openai.models.chat.completions.* + 7 个根 models.* 类
+	// + core / errors / client / services.blocking.chat 子树；其余 ~140 MB
+	// 是 SDK 全量 OpenAPI 生成的死包。具体依赖图见
+	// /home/swaydy/.claude/plans/bubbly-tickling-fern.md。
+	exclude 'com/openai/models/beta/**'
+	exclude 'com/openai/models/admin/**'
+	exclude 'com/openai/models/responses/**'
+	exclude 'com/openai/models/realtime/**'
+	exclude 'com/openai/models/evals/**'
+	exclude 'com/openai/models/finetuning/**'
+	exclude 'com/openai/models/vectorstores/**'
+	exclude 'com/openai/models/conversations/**'
+	exclude 'com/openai/models/audio/**'
+	exclude 'com/openai/models/webhooks/**'
+	exclude 'com/openai/models/images/**'
+	exclude 'com/openai/models/containers/**'
+	exclude 'com/openai/models/videos/**'
+	exclude 'com/openai/models/graders/**'
+	exclude 'com/openai/models/moderations/**'
+	exclude 'com/openai/models/skills/**'
+	exclude 'com/openai/models/batches/**'
+	exclude 'com/openai/models/files/**'
+	exclude 'com/openai/models/uploads/**'
+	exclude 'com/openai/models/embeddings/**'
+	exclude 'com/openai/models/contentprovenancechecks/**'
+	// "com.openai.models.models"（列出可用模型的元 API）也未使用；chat 子树在
+	// com.openai.models.chat/** 下，不受此排除影响。
+	exclude 'com/openai/models/models/**'
+	// 全部 async 服务树：LlmClient 用阻塞 API（.create() / .createStreaming()），
+	// 不会触碰任何 services.async.* 类。
+	exclude 'com/openai/services/async/**'
+	// 阻塞服务只保留 chat 子树（ChatService + chat/**）；其余 19 个域全不用。
+	exclude 'com/openai/services/blocking/assistants/**'
+	exclude 'com/openai/services/blocking/audit_logs/**'
+	exclude 'com/openai/services/blocking/batches/**'
+	exclude 'com/openai/services/blocking/completions/**'
+	exclude 'com/openai/services/blocking/containers/**'
+	exclude 'com/openai/services/blocking/conversations/**'
+	exclude 'com/openai/services/blocking/embeddings/**'
+	exclude 'com/openai/services/blocking/evals/**'
+	exclude 'com/openai/services/blocking/files/**'
+	exclude 'com/openai/services/blocking/fine_tuning/**'
+	exclude 'com/openai/services/blocking/images/**'
+	exclude 'com/openai/services/blocking/models/**'
+	exclude 'com/openai/services/blocking/moderations/**'
+	exclude 'com/openai/services/blocking/realtime/**'
+	exclude 'com/openai/services/blocking/responses/**'
+	exclude 'com/openai/services/blocking/skills/**'
+	exclude 'com/openai/services/blocking/uploads/**'
+	exclude 'com/openai/services/blocking/vector_stores/**'
+	exclude 'com/openai/services/blocking/videos/**'
+	exclude 'com/openai/services/blocking/webhooks/**'
+	// GraalVM 原生镜像反射配置（reflect-config.json 3.7 MB 等）：Fabric mod 跑在
+	// JVM 上，原生镜像元数据完全无用。
+	exclude 'META-INF/native-image/**'
+	// Kotlin 模块信息 / ProGuard 规则：JVM 运行时不需要这两个元数据文件。
+	exclude 'META-INF/openai-java-core.kotlin_module'
+	exclude 'META-INF/proguard/openai-java-core.pro'
+
+	// ---- 类路径冲突隔离 ----
+	// 把所有 shaded 进 jar 的三方库 relocate 到 com.swaydy.opencraft.shadow.* 下，
+	// 避免与 Mojang 自带类、其它 mod 共用 FQN 时的 NoSuchMethod / 重复类问题。
+	// 当前实际已经在发生的冲突：org.slf4j（MC 1.17+ 自带）、kotlin.*（fabric-language-kotlin）。
+	relocate 'org.slf4j',                 'com.swaydy.opencraft.shadow.slf4j'
+	relocate 'org.jetbrains.kotlin',      'com.swaydy.opencraft.shadow.kotlin'
+	relocate 'org.jetbrains.annotations', 'com.swaydy.opencraft.shadow.annotations'
+	relocate 'kotlin',                    'com.swaydy.opencraft.shadow.kotlin'
+	relocate 'kotlinx',                   'com.swaydy.opencraft.shadow.kotlinx'
+	relocate 'okhttp3',                   'com.swaydy.opencraft.shadow.okhttp3'
+	relocate 'okio',                      'com.swaydy.opencraft.shadow.okio'
+	relocate 'com.fasterxml',             'com.swaydy.opencraft.shadow.fasterxml'
+	relocate 'com.openai',                'com.swaydy.opencraft.shadow.openai'
 }
 
 // remapJar 改用 shadowJar 的输出作为输入，这样 Loom 在重新映射字节码的同时
