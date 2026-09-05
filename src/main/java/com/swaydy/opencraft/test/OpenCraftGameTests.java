@@ -73,6 +73,20 @@ public class OpenCraftGameTests {
 		}
 	}
 
+	/**
+	 * 创建 GameTest 用的 mock ServerPlayer。
+	 *
+	 * <p>旧 API {@code makeMockServerPlayerInLevel()} 在 1.21.11 已被 Mojang 标记
+	 * {@code forRemoval}（未来版本计划删除），但目前仍是创建“真实加入服务器、可交互”
+	 * ServerPlayer 的唯一官方途径；新 API {@code makeMockPlayer(GameType)} 返回的是轻量
+	 * {@code Player}，不满足本文件对 ServerPlayer 专属行为（teleportTo/closeContainer 等）
+	 * 的要求。因此把调用集中到这里并压制 removal 警告：将来该方法被删除时只需改这一处。
+	 */
+	@SuppressWarnings("removal")
+	private static ServerPlayer mockServerPlayer(GameTestHelper helper) {
+		return helper.makeMockServerPlayerInLevel();
+	}
+
 	/** 把 mock 玩家的 LLM 配置写进指定方块（指向本地 mock 服务器）。 */
 	private static void configureMockBlock(GameTestHelper helper, BlockPos relPos,
 	                                       ServerPlayer player) {
@@ -141,7 +155,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
 	public void aiLogoBlockConfigEditor(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 把玩家放到结构内并放置 AI 徽标方块（结构区块保持加载）
 		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
@@ -282,7 +296,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
 	public void configScreenSummonDismissToggle(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -323,7 +337,7 @@ public class OpenCraftGameTests {
 						throw new AssertionError("召唤后绑定方块应亮起");
 					}
 					// 3) 别人尝试送走 → 被拒绝，助手仍在（合并按钮对他人显示为禁用态）
-					ServerPlayer other = helper.makeMockServerPlayerInLevel();
+					ServerPlayer other = mockServerPlayer(helper);
 					other.teleportTo(playerPos.x, playerPos.y, playerPos.z);
 					AiConfigHandler.dismissWithBlock(other, absPos, dimension);
 					if (com.swaydy.opencraft.assistant.AssistantFacade.findBoundTo(level, bindPos) == null) {
@@ -360,7 +374,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
 	public void assistantVanishesWithBlock(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 平台 + 玩家 + 配置方块
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -424,7 +438,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 120)
 	public void summonRequiresConfigBlock(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 平台 + 玩家（不放任何 AI 徽标方块）
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -461,7 +475,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 120)
 	public void aiLogoBlockMiningAndRecipe(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 把玩家放到结构内，放置 AI 徽标方块
 		net.minecraft.world.phys.Vec3 playerPos = helper.absoluteVec(
@@ -532,7 +546,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 8000)
 	public void askTargetsSpecificAssistant(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 平台 + 玩家
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -741,7 +755,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 120)
 	public void assistantInventoryMenuLayoutAndTransfer(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 平台 + 玩家 + 配置方块 + 召唤助手（右键打开的正是该助手的背包）
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -866,7 +880,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
 	public void botMinesWithVanillaProgression(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -936,7 +950,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
 	public void assistantBotInventoryOpensEndToEnd(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 平台 + 玩家 + 配置方块
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -1086,7 +1100,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 4000)
 	public void configScreenChatWindow(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -1151,7 +1165,7 @@ public class OpenCraftGameTests {
 				})
 				.thenExecute(() -> {
 					// 4) 别人对已占用方块聊天 → 被拒绝：历史不变、原助手仍在
-					ServerPlayer other = helper.makeMockServerPlayerInLevel();
+					ServerPlayer other = mockServerPlayer(helper);
 					other.teleportTo(playerPos.x, playerPos.y, playerPos.z);
 					int size = AiCompanionService.historySize(bindPos);
 					AiConfigHandler.chatWithBlock(other, absPos, dimension, "我能和你聊聊吗");
@@ -1190,7 +1204,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 2000)
 	public void skillsInjectedIntoSystemPrompt(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -1286,7 +1300,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 2000)
 	public void promptCacheFriendlyRequestShape(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -1421,7 +1435,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
 	public void craftUsesWholeBackpack(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -1610,7 +1624,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 400)
 	public void assistantPlayerFormLifecycle(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 平台 + 玩家
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -1790,7 +1804,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 400)
 	public void playerTeleportTool(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 7×7 石砖平台（相对 y=0 实心，y≥1 空气）：bot 与传送目标都站在 y=1 空气层上
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -1936,7 +1950,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 300)
 	public void playerMovementPhysics(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 上层平台（相对 y=0，方块顶面 = playerPos.y-1）：bot 站在上面，向东走出边缘
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -2060,7 +2074,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
 	public void assistantHandsOverModdedItem(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -2139,7 +2153,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 200)
 	public void assistantOpensAndUsesChest(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -2286,7 +2300,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 300)
 	public void playerMovementJumpAndClimb(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 平地平台（方块在相对 y=0，顶面 = playerPos.y-1，bot 会落在其上）
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -2455,7 +2469,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 4000)
 	public void agentInterruptReleasesLoop(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -2536,7 +2550,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 4000)
 	public void playerAssistantFollowMode(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		BlockPos platform = new BlockPos(4, 1, 4);
 		for (int dx = -3; dx <= 3; dx++) {
@@ -2674,7 +2688,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 2000)
 	public void healAuraLoopHealsOwner(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 铺平台 + 放 AI 徽标方块（heal 不调 LLM,配置随意）
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -2772,7 +2786,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 400)
 	public void configLoopToggleStartsAndStops(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 
 		// 铺平台 + 放 AI 徽标方块（heal 不调 LLM，配置随意）
 		BlockPos platform = new BlockPos(4, 1, 4);
@@ -2891,7 +2905,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 2000)
 	public void feedAuraLoopFeedsOwner(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 		GlobalPos bindPos = prepareLoopTest(helper, player);
 
 		helper.startSequence()
@@ -2963,7 +2977,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 1000)
 	public void extinguishLoopExtinguishesOwner(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 		GlobalPos bindPos = prepareLoopTest(helper, player);
 
 		helper.startSequence()
@@ -3051,7 +3065,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 1000)
 	public void breathAuraLoopRestoresAir(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 		GlobalPos bindPos = prepareLoopTest(helper, player);
 
 		helper.startSequence()
@@ -3128,7 +3142,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 1000)
 	public void pickupAuraLoopCollectsDrops(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 		GlobalPos bindPos = prepareLoopTest(helper, player);
 
 		helper.startSequence()
@@ -3198,7 +3212,7 @@ public class OpenCraftGameTests {
 	@GameTest(structure = "fabric-gametest-api-v1:empty", maxTicks = 1000)
 	public void repelMonstersLoopPushesHostiles(GameTestHelper helper) {
 		dismissAllPlayerBots();
-		ServerPlayer player = helper.makeMockServerPlayerInLevel();
+		ServerPlayer player = mockServerPlayer(helper);
 		GlobalPos bindPos = prepareLoopTest(helper, player);
 		// 尸壳引用：在序列里生成、后续断言/清理用（lambda 捕获要求容器 effectively final）
 		net.minecraft.world.entity.monster.zombie.Husk[] huskRef = new net.minecraft.world.entity.monster.zombie.Husk[1];
